@@ -1,0 +1,5 @@
+"""PDF_Editor – viewer sub-package."""
+from app.viewer.canvas_1 import _SelectCanvas
+from app.viewer.panel import PdfViewerPanel
+
+__all__ = ["_SelectCanvas", "PdfViewerPanel"]

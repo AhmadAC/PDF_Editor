@@ -1,0 +1,247 @@
+# app/tools/compress.py
+"""PDF_Editor – TabComprimir: compress PDF tool."""
+
+import contextlib
+import os
+from typing import Any
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QGroupBox, QFormLayout, QLabel, QFileDialog, QMessageBox,
+    QProgressDialog, QSizePolicy,
+)
+
+from app.base import BasePage
+from app.i18n import t
+from app.utils import (
+    section, info_lbl, _compress_pdf, _find_gs,
+    show_error, result_label_style,
+    format_size_localized,
+)
+from app.worker import TaskRunner, run_task
+from app.constants import DESKTOP, TEXT_SEC, _LQ
+from app.widgets import DropFileEdit, FocusComboBox
+
+
+class TabComprimir(BasePage):
+    _LEVEL_KEYS = ["extreme", "recommended", "low"]
+
+    def __init__(self, status_fn):
+        super().__init__("fa5s.compress-arrows-alt", t("tool.compress.name"),
+                         t("tool.compress.desc"),
+                         t("tool.compress.btn"), status_fn)
+        self._pipeline_supported = True
+        f = self._form
+        sec_src = section(t("tool.compress.source"))
+        f.addWidget(sec_src)
+        self.drop_in = DropFileEdit()
+        try:
+            self.drop_in.btn.clicked.disconnect()
+        except RuntimeError:
+            pass
+        self.drop_in.btn.clicked.connect(self._pick_input)
+        self.drop_in.path_changed.connect(self._load_input)
+        self.lbl_info = info_lbl()
+        f.addWidget(self.drop_in)
+        f.addWidget(self.lbl_info)
+
+        grp = QGroupBox(t("tool.compress.section"))
+        gl = QFormLayout(grp)
+        gl.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.cmb_level = FocusComboBox()
+        self._level_full = [
+            t("tool.compress.extreme"),
+            t("tool.compress.recommended"),
+            t("tool.compress.low"),
+        ]
+        self._level_short = [s.split("—")[0].strip() for s in self._level_full]
+        self.cmb_level.addItems(self._level_short)
+        for i, full in enumerate(self._level_full):
+            self.cmb_level.setItemData(i, full, Qt.ItemDataRole.ToolTipRole)
+        self.cmb_level.setCurrentIndex(1)
+        self.cmb_level.setMinimumContentsLength(10)
+        self.cmb_level.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        gl.addRow(t("tool.compress.level_label"), self.cmb_level)
+        self._lbl_level_hint = QLabel("")
+        self._lbl_level_hint.setWordWrap(True)
+        self._lbl_level_hint.setStyleSheet(f"color:{TEXT_SEC}; font-size:10pt;")
+        gl.addRow("", self._lbl_level_hint)
+
+        def _update_hint(i):
+            parts = self._level_full[i].split("—", 1)
+            self._lbl_level_hint.setText(parts[1].strip() if len(parts) > 1 else "")
+
+        self.cmb_level.currentIndexChanged.connect(_update_hint)
+        _update_hint(self.cmb_level.currentIndex())
+        f.addWidget(grp)
+
+        sec_out = section(t("tool.compress.output"))
+        f.addWidget(sec_out)
+        self.drop_out = DropFileEdit(save=True, default_name="compressed.pdf")
+        f.addWidget(self.drop_out)
+
+        self.lbl_result = QLabel("")
+        self.lbl_result.setStyleSheet(result_label_style())
+        f.addWidget(self.lbl_result)
+        f.addStretch()
+        self._compact_hidden = [sec_src, self.drop_in, self.lbl_info]
+        sec_out.setVisible(False)
+        self.drop_out.setVisible(False)
+
+    def update_theme(self, dark: bool) -> None:
+        super().update_theme(dark)
+        sec = TEXT_SEC if dark else _LQ
+        try:
+            self.lbl_result.setStyleSheet(result_label_style(dark))
+        except RuntimeError:
+            pass
+        try:
+            self._lbl_level_hint.setStyleSheet(f"color:{sec}; font-size:10pt;")
+        except RuntimeError:
+            pass
+
+    def _pick_input(self):
+        p, _ = QFileDialog.getOpenFileName(self, t("btn.open_pdf"), DESKTOP, t("file_filter.pdf"))
+        if p:
+            self._load_input(p)
+
+    def _load_input(self, p: str):
+        self.drop_in.blockSignals(True)
+        self.drop_in.set_path(p)
+        self.drop_in.blockSignals(False)
+        if not self._maybe_prompt_password(p):
+            self.drop_in.blockSignals(True)
+            self.drop_in.set_path("")
+            self.drop_in.blockSignals(False)
+            return
+        if not self.drop_out.path():
+            base, ext = os.path.splitext(p)
+            self.drop_out.set_path(base + "_compressed" + ext)
+        size = os.path.getsize(p)
+        try:
+            r = self._open_reader(p)
+            self.lbl_info.setText(t("tool.compress.pages_info", n=len(r.pages),
+                                    size=format_size_localized(size / 1024)))
+        except Exception as e:
+            self.lbl_info.setText(t("tool.split.error_info", e=e))
+
+    def auto_load(self, path: str):
+        if path and not self.drop_in.path():
+            self._load_input(path)
+
+    def _run(self):
+        pdf_path = self.drop_in.path()
+        if not pdf_path or not os.path.isfile(pdf_path):
+            win: Any = self.window()
+            viewer = getattr(win, "_viewer", None)
+            if viewer and viewer.current_path():
+                pdf_path = viewer.current_path()
+        if not pdf_path or not os.path.isfile(pdf_path):
+            QMessageBox.warning(self, t("msg.warning"), t("msg.select_valid_pdf"))
+            return
+
+        default_name = "compressed.pdf"
+        if pdf_path:
+            base, ext = os.path.splitext(os.path.basename(pdf_path))
+            default_name = f"{base}_compressed{ext}"
+        start_dir = os.path.dirname(pdf_path) if pdf_path else ""
+        out_path = self._prompt_save_as(default_name, start_dir)
+        if not out_path:
+            return
+        self.drop_out.set_path(out_path)
+
+        level = self._LEVEL_KEYS[self.cmb_level.currentIndex()]
+        password = self._pdf_password or None
+
+        progress = QProgressDialog(t("progress.compress.passA"),
+                                   t("progress.cancel"), 0, 100, self)
+        progress.setWindowTitle(t("progress.compress.title"))
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
+        _stage_labels = {
+            "passA":        t("progress.compress.passA"),
+            "passB_setup":  t("progress.compress.passB_setup"),
+            "passB_save":   t("progress.compress.passB_save"),
+            "passC":        t("progress.compress.passC"),
+        }
+
+        class _CompressRunner(TaskRunner):
+            def do_work(_self):
+                def progress_fn(stage, cur=0, tot=0):
+                    if _self.is_cancelled():
+                        return False
+                    if stage == "passB_images":
+                        if cur < tot:
+                            pct = -1
+                        else:
+                            pct = 65
+                        label = t("progress.compress.passB_images",
+                                  current=cur, total=tot)
+                    else:
+                        pct = {"passA": 10, "passB_setup": 20,
+                               "passB_save": 70, "passC": 85}.get(stage, 0)
+                        label = _stage_labels.get(stage, "")
+                    _self.progress.emit(pct, label)
+                    return True
+                try:
+                    win_sub: Any = self.window()
+                    viewer_sub = getattr(win_sub, "_viewer", None)
+                    if viewer_sub and viewer_sub.current_path() and os.path.abspath(viewer_sub.current_path()) == os.path.abspath(out_path):
+                        viewer_sub._canvas.close_doc()
+                        if viewer_sub._fitz_doc:
+                            with contextlib.suppress(Exception):
+                                viewer_sub._fitz_doc.close()
+                            viewer_sub._fitz_doc = None
+                        viewer_sub._thumbnails._stop_all_workers()
+
+                    return _compress_pdf(pdf_path, out_path, level,
+                                         progress_fn=progress_fn,
+                                         password=password)
+                except ValueError as ve:
+                    return ("__no_gain__", str(ve))
+
+        self.action_btn.setEnabled(False)
+
+        def _on_done(result):
+            self.action_btn.setEnabled(True)
+            if result is None:
+                self._status(t("progress.cancelled"))
+                return
+            if isinstance(result, tuple) and result and result[0] == "__no_gain__":
+                before_kb = os.path.getsize(pdf_path) / 1024
+                self.lbl_result.setText(f"  {before_kb:.0f} KB")
+                self._status(f"ℹ  {t('msg.no_gain')}")
+                QMessageBox.information(self, t("msg.no_gain"),
+                    t("tool.compress.no_gain", e=result[1]))
+                return
+            before, after = result
+            ratio = (1 - after / before) * 100 if before else 0
+            msg = t("tool.compress.done",
+                    before=f"{before/1024:.0f}",
+                    after=f"{after/1024:.0f}",
+                    pct=f"{ratio:.0f}")
+            self.lbl_result.setText(msg)
+            self._status(f"✔  {msg.strip()}")
+
+            win_done: Any = self.window()
+            viewer_done = getattr(win_done, "_viewer", None)
+            if win_done and hasattr(win_done, "_cleanup_pipeline") and viewer_done:
+                win_done._cleanup_pipeline(id(viewer_done))
+
+            if viewer_done:
+                viewer_done.load(out_path)
+
+            gs_hint = "" if _find_gs() else "\n\n" + t("tool.compress.gs_hint")
+            QMessageBox.information(self, t("msg.done"),
+                t("msg.pdf_saved", path=out_path) + gs_hint)
+
+        def _on_err(exc):
+            self.action_btn.setEnabled(True)
+            if not isinstance(exc, BaseException):
+                exc = RuntimeError(str(exc))
+            show_error(self, exc)
+
+        self._runner = _CompressRunner()
+        self._runner_thread = run_task(self, self._runner, progress, _on_done, _on_err)

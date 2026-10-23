@@ -1,0 +1,1009 @@
+# app/window_actions.py
+"""PDF_Editor – Navigation, themes, UI interactions, and page control mixin."""
+from __future__ import annotations
+
+import contextlib
+import logging
+import os
+import sys
+from typing import TYPE_CHECKING, Any, cast
+
+from PySide6.QtCore import Qt, QTimer, QProcess, QProcessEnvironment
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QApplication, QMenu, QMessageBox, QFileDialog,
+    QLineEdit, QTextEdit, QPlainTextEdit,
+)
+import qtawesome as qta
+from shiboken6 import isValid
+
+from app.constants import ACCENT, TEXT_PRI, TEXT_SEC, _LQ, _LP, DESKTOP, OPEN_ALL_FILES_FILTER
+from app.i18n import t, set_language, get_language, add_recent_file
+from app.styles import STYLE, STYLE_LIGHT
+from app.utils import _make_palette, show_error
+from app.widgets import DropFileEdit, MultiDropWidget
+from app.viewer.presentation import PresentationWidget
+from app.nav_config import NAV_ITEMS, _NAV_KEYS
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import (
+        QMainWindow, QWidget, QStackedWidget, QSplitter, QLabel,
+        QPushButton, QListWidget, QLineEdit, QHBoxLayout, QStatusBar,
+        QListWidgetItem,
+    )
+    from app.viewer.panel import PdfViewerPanel
+    from app.workspace_bar import WorkspaceBar
+    from app.window_tabs import _ViewerTabBar
+    _Base = QMainWindow
+else:
+    _Base = object
+
+
+class WindowActionsMixin(_Base):
+    """Mixin for navigation, page transitions, themes, and presentation."""
+
+    if TYPE_CHECKING:
+        stack: QStackedWidget
+        nav: QListWidget
+        _tab_bar: _ViewerTabBar
+        _viewers: list[PdfViewerPanel]
+        _viewer: PdfViewerPanel | None
+        _current_tool: int
+        _saved_right_width: int
+        _right_tool_container: QWidget
+        _splitter: QSplitter
+        _breadcrumb: QLabel
+        _undo_top_btn: QPushButton
+        _redo_top_btn: QPushButton
+        _tool_usage: dict[str, int]
+        _zoom_widget: QWidget
+        _zm_btn: QPushButton
+        _zp_btn: QPushButton
+        _z0_btn: QPushButton
+        _lbl_zoom: QLabel
+        _sidebar_collapsed: bool
+        _sidebar: QWidget
+        _brand_layout: QHBoxLayout
+        _brand_text_w: QWidget
+        _brand_title: QLabel
+        _brand_sub: QLabel
+        _nav_search: QLineEdit
+        _footer_w: QWidget
+        _sidebar_toggle_btn: QPushButton
+        _pages_toggle_btn: QPushButton
+        _right_pane_toggle_btn: QPushButton
+        _tab_container: QWidget
+        _page_nav_widget: QWidget
+        _first_pg_btn: QPushButton
+        _prev_pg_btn: QPushButton
+        _next_pg_btn: QPushButton
+        _last_pg_btn: QPushButton
+        _page_input: QLineEdit
+        _page_total_lbl: QLabel
+        _lang_btn: QPushButton
+        _toc_top_btn: QPushButton
+        _night_top_btn: QPushButton
+        _presentation: PresentationWidget | None
+        _dark_mode: bool
+        _qapp: QApplication
+        _workspace_bar: WorkspaceBar
+        _sb: QStatusBar
+        _fullscreen: bool
+
+        def _get_or_create_tool(self, index: int) -> QWidget | None: ...
+        def _add_viewer_tab(self, path: str = ...) -> PdfViewerPanel: ...
+        def _update_tab_bar_visibility(self) -> None: ...
+        def _wait_for_workers_on_all_pages(self) -> None: ...
+        def _wipe_all_pdf_passwords(self) -> None: ...
+
+    @staticmethod
+    def _get_canvas_page_count(canvas: Any) -> int:
+        """Safely extract page_count as integer from dynamic canvas objects without Pylance typing issues."""
+        fn = getattr(canvas, "page_count", None)
+        if callable(fn):
+            try:
+                return int(cast(Any, fn)())
+            except Exception:
+                return 0
+        return 0
+
+    def _zoom_in_current(self):
+        pres = getattr(self, "_presentation", None)
+        if pres is not None and isValid(pres) and pres.isVisible():
+            return
+        edit_idx = self._edit_tool_idx()
+        if self._current_tool == edit_idx:
+            edit_w: Any = self._get_or_create_tool(edit_idx)
+            canvas = getattr(edit_w, "_canvas", None)
+            if canvas is not None:
+                if getattr(canvas, "_selected_overlay_idx", -1) >= 0:
+                    scale_fn = getattr(canvas, "scale_selected_overlay", None)
+                    if callable(scale_fn):
+                        scale_fn(1.10)
+                        return
+                zoom_in_fn = getattr(canvas, "zoom_in", None)
+                if callable(zoom_in_fn):
+                    zoom_in_fn()
+                    return
+        if self._viewer:
+            canvas = getattr(self._viewer, "_canvas", None)
+            if canvas is not None and hasattr(canvas, "zoom_in"):
+                canvas.zoom_in()
+
+    def _zoom_out_current(self):
+        pres = getattr(self, "_presentation", None)
+        if pres is not None and isValid(pres) and pres.isVisible():
+            return
+        edit_idx = self._edit_tool_idx()
+        if self._current_tool == edit_idx:
+            edit_w: Any = self._get_or_create_tool(edit_idx)
+            canvas = getattr(edit_w, "_canvas", None)
+            if canvas is not None:
+                if getattr(canvas, "_selected_overlay_idx", -1) >= 0:
+                    scale_fn = getattr(canvas, "scale_selected_overlay", None)
+                    if callable(scale_fn):
+                        scale_fn(0.90)
+                        return
+                zoom_out_fn = getattr(canvas, "zoom_out", None)
+                if callable(zoom_out_fn):
+                    zoom_out_fn()
+                    return
+        if self._viewer:
+            canvas = getattr(self._viewer, "_canvas", None)
+            if canvas is not None and hasattr(canvas, "zoom_out"):
+                canvas.zoom_out()
+
+    def _zoom_reset_current(self):
+        pres = getattr(self, "_presentation", None)
+        if pres is not None and isValid(pres) and pres.isVisible():
+            return
+        edit_idx = self._edit_tool_idx()
+        if self._current_tool == edit_idx:
+            edit_w: Any = self._get_or_create_tool(edit_idx)
+            canvas = getattr(edit_w, "_canvas", None)
+            if canvas is not None:
+                reset_fn = getattr(canvas, "zoom_reset", None)
+                if callable(reset_fn):
+                    reset_fn()
+                    return
+        if self._viewer:
+            canvas = getattr(self._viewer, "_canvas", None)
+            if canvas is not None and hasattr(canvas, "zoom_reset"):
+                canvas.zoom_reset()
+
+    def _tool_idx_for_key(self, target_key: str) -> int:
+        for idx, (key, _, _) in enumerate(_NAV_KEYS):
+            if key == target_key:
+                return idx
+        return -1
+
+    def _edit_tool_idx(self) -> int:
+        return self._tool_idx_for_key("nav.edit")
+
+    def _rotate_tool_idx(self) -> int:
+        return self._tool_idx_for_key("nav.rotate")
+
+    def _crop_tool_idx(self) -> int:
+        return self._tool_idx_for_key("nav.crop")
+
+    def _reorder_tool_idx(self) -> int:
+        return self._tool_idx_for_key("nav.reorder")
+
+    def _page_numbers_tool_idx(self) -> int:
+        return self._tool_idx_for_key("nav.page_numbers")
+
+    def _toggle_pages_sidebar(self):
+        edit_idx = self._edit_tool_idx()
+        if self._current_tool == edit_idx:
+            edit_w: Any = self._get_or_create_tool(edit_idx)
+            toggle_fn = getattr(edit_w, "toggle_pages_sidebar", None)
+            if callable(toggle_fn):
+                toggle_fn()
+                return
+        viewer = self._viewer
+        if viewer:
+            viewer._toggle_pages_sidebar()
+            if self.sender() is getattr(self, "_toc_top_btn", None) and not viewer._pages_sidebar_collapsed:
+                if viewer._toc_tree.topLevelItemCount() > 0:
+                    viewer._sidebar_tabs.setCurrentIndex(viewer._toc_tab_idx)
+
+    def _toggle_right_pane(self):
+        edit_idx = self._edit_tool_idx()
+        if self._current_tool == edit_idx:
+            edit_w: Any = self._get_or_create_tool(edit_idx)
+            toggle_fn = getattr(edit_w, "toggle_controls", None)
+            if callable(toggle_fn):
+                toggle_fn()
+            return
+        if self._right_tool_container.isVisible():
+            self._saved_right_width = max(260, self._right_tool_container.width())
+            self._right_tool_container.setVisible(False)
+            total = self._splitter.width()
+            self._splitter.setSizes([total, 0])
+        else:
+            self._right_tool_container.setVisible(True)
+            total = self._splitter.width()
+            tool_w = max(280, getattr(self, "_saved_right_width", 380))
+            self._splitter.setSizes([max(260, total - tool_w), tool_w])
+
+    def _on_rotations_changed(self, rotations: dict[int, int]):
+        if self._viewer:
+            self._viewer.set_page_rotations(rotations)
+
+    def _on_crop_changed(self, crop_data: dict | None):
+        if self._viewer:
+            self._viewer.set_crop_preview(crop_data)
+
+    def _on_crops_changed(self, crops: dict[int, tuple[float, float, float, float]]):
+        if self._viewer:
+            self._viewer.set_page_crops(crops)
+
+    def _on_crop_mode_toggled(self, active: bool):
+        if self._viewer:
+            self._viewer.set_crop_mode(active)
+
+    def _on_order_changed(self, order: list[int] | None):
+        if self._viewer:
+            self._viewer.set_page_order(order)
+
+    def _on_numbers_preview_changed(self, preview_data: dict | None):
+        if self._viewer:
+            self._viewer.set_numbers_preview(preview_data)
+
+    def _update_breadcrumb(self):
+        cur_file = ""
+        viewer = self._viewer
+        if viewer and viewer.current_path():
+            cur_file = os.path.basename(viewer._original_doc_path or viewer.current_path())
+
+        file_part = f"  ›  {cur_file}" if cur_file else ""
+        if getattr(self, "_current_tool", -1) >= 0 and self._current_tool < len(NAV_ITEMS):
+            tool_name = NAV_ITEMS[self._current_tool][0]
+            self._breadcrumb.setText(f"{t('workspace.title')}{file_part}  ›  {tool_name}")
+        elif cur_file:
+            self._breadcrumb.setText(f"{t('workspace.title')}{file_part}")
+        else:
+            self._breadcrumb.setText(t("workspace.title"))
+
+        if viewer and viewer.current_path():
+            self._breadcrumb.setToolTip(viewer._original_doc_path or viewer.current_path())
+        else:
+            self._breadcrumb.setToolTip("")
+
+    def _update_undo_redo_buttons(self):
+        if not hasattr(self, "_undo_top_btn") or not hasattr(self, "_redo_top_btn"):
+            return
+        edit_idx = self._edit_tool_idx()
+        crop_idx = self._crop_tool_idx()
+        page_numbers_idx = self._page_numbers_tool_idx()
+        viewer = self._viewer
+
+        if getattr(self, "_current_tool", -1) == -1:
+            self._undo_top_btn.setVisible(True)
+            self._redo_top_btn.setVisible(True)
+            can_u = viewer.can_undo() if viewer and hasattr(viewer, "can_undo") else False
+            can_r = viewer.can_redo() if viewer and hasattr(viewer, "can_redo") else False
+            self._undo_top_btn.setEnabled(can_u)
+            self._redo_top_btn.setEnabled(can_r)
+        elif self._current_tool == edit_idx:
+            self._undo_top_btn.setVisible(True)
+            self._redo_top_btn.setVisible(True)
+            edit_w: Any = self._get_or_create_tool(edit_idx)
+            pending = getattr(edit_w, "_pending", None)
+            redo_stack = getattr(edit_w, "_redo_stack", None)
+            self._undo_top_btn.setEnabled(bool(pending))
+            self._redo_top_btn.setEnabled(bool(redo_stack))
+        elif self._current_tool in (crop_idx, page_numbers_idx):
+            self._undo_top_btn.setVisible(True)
+            self._redo_top_btn.setVisible(True)
+            tool_w: Any = self._get_or_create_tool(self._current_tool)
+            btn_u = getattr(tool_w, "btn_undo", None)
+            btn_r = getattr(tool_w, "btn_redo", None)
+            self._undo_top_btn.setEnabled(btn_u.isEnabled() if btn_u else False)
+            self._redo_top_btn.setEnabled(btn_r.isEnabled() if btn_r else False)
+        else:
+            self._undo_top_btn.setVisible(False)
+            self._redo_top_btn.setVisible(False)
+
+    def _handle_global_select_all(self):
+        focus_w = self.focusWidget()
+        if isinstance(focus_w, (QLineEdit, QTextEdit, QPlainTextEdit)):
+            focus_w.selectAll()
+            return
+        edit_idx = self._edit_tool_idx()
+        if self._current_tool == edit_idx:
+            edit_w: Any = self._get_or_create_tool(edit_idx)
+            canvas = getattr(edit_w, "_canvas", None)
+            if canvas is not None:
+                inline_edit = getattr(canvas, "_inline_edit", None)
+                if inline_edit and inline_edit.isVisible():
+                    inline_edit.selectAll()
+                    return
+        if self._viewer:
+            self._viewer._select_all_text()
+
+    def _open_tool_by_name(self, tool_name: str):
+        for i, (name, _, _) in enumerate(NAV_ITEMS):
+            if name == tool_name or t(name) == tool_name:
+                for r in range(self.nav.count()):
+                    item = self.nav.item(r)
+                    if item and item.data(Qt.ItemDataRole.UserRole) == i:
+                        self.nav.setCurrentRow(r)
+                        self._on_nav_clicked(item)
+                        return
+                self._activate_tool(i)
+                return
+
+    def _try_auto_load(self, index: int):
+        nav_key = _NAV_KEYS[index][0]
+        self._tool_usage[nav_key] = self._tool_usage.get(nav_key, 0) + 1
+        with contextlib.suppress(Exception):
+            from app.i18n import _update_config
+            usage = dict(self._tool_usage)
+            _update_config(lambda cfg: cfg.__setitem__("tool_usage", usage))
+        widget: Any = self._get_or_create_tool(index)
+        if widget is None:
+            return
+        viewer = self._viewer
+        path = viewer.current_path() if viewer else ""
+        if path:
+            viewer_pwd = getattr(viewer, "_pdf_password", "")
+            if hasattr(widget, "_pdf_password"):
+                setattr(widget, "_pdf_password", viewer_pwd)
+            fn = getattr(widget, "auto_load", None)
+            if callable(fn):
+                fn(path)
+
+        compact_fn = getattr(widget, "set_compact_mode", None)
+        if callable(compact_fn):
+            compact_fn(bool(path), path or "")
+
+    def _setup_zoom_bar(self, active: bool, canvas=None):
+        self._zoom_widget.setVisible(active)
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            for btn in (self._zm_btn, self._zp_btn, self._z0_btn):
+                try:
+                    btn.clicked.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+        if canvas is None and hasattr(self, "_edit_tool_idx"):
+            edit_idx = self._edit_tool_idx()
+            if edit_idx >= 0 and self._current_tool == edit_idx:
+                edit_w: Any = self._get_or_create_tool(edit_idx)
+                canvas = getattr(edit_w, '_canvas', None)
+        viewer = self._viewer
+        if canvas is None and viewer:
+            canvas = getattr(viewer, '_canvas', None)
+        if canvas is None:
+            return
+        if active:
+            self._zm_btn.clicked.connect(lambda: canvas.zoom_out())
+            self._zp_btn.clicked.connect(lambda: canvas.zoom_in())
+            self._z0_btn.clicked.connect(lambda: canvas.zoom_reset())
+            canvas.zoom_changed.connect(lambda pct: self._lbl_zoom.setText(f"{pct}%"))
+            self._lbl_zoom.setText(f"{round(canvas._zoom_factor * 100)}%")
+
+    def _activate_tool(self, tool_idx: int):
+        for r in range(self.nav.count()):
+            it = self.nav.item(r)
+            if it and it.data(Qt.ItemDataRole.UserRole) == tool_idx:
+                self.nav.setCurrentRow(r)
+                self._on_nav_clicked(it)
+                return
+
+    def _filter_nav(self, text: str):
+        q = text.lower().strip()
+        visible_groups = set()
+        for r in range(self.nav.count()):
+            it = self.nav.item(r)
+            if it:
+                tool_idx = it.data(Qt.ItemDataRole.UserRole)
+                if tool_idx is not None and tool_idx >= 0:
+                    match = not q or q in it.text().lower()
+                    it.setHidden(not match)
+                    if match:
+                        visible_groups.add(r)
+        for r in range(self.nav.count()):
+            it = self.nav.item(r)
+            if it and it.data(Qt.ItemDataRole.UserRole) == -1:
+                has_visible = False
+                for r2 in range(r + 1, self.nav.count()):
+                    it2 = self.nav.item(r2)
+                    if it2 and it2.data(Qt.ItemDataRole.UserRole) == -1:
+                        break
+                    if it2 and not it2.isHidden():
+                        has_visible = True
+                        break
+                it.setHidden(not has_visible)
+
+    def _on_nav_clicked(self, item: QListWidgetItem):
+        row = item.data(Qt.ItemDataRole.UserRole)
+        if row is None or row < 0:
+            self.nav.clearSelection()
+            return
+        edit_idx = self._edit_tool_idx()
+        rotate_idx = self._rotate_tool_idx()
+        crop_idx = self._crop_tool_idx()
+        reorder_idx = self._reorder_tool_idx()
+        page_numbers_idx = self._page_numbers_tool_idx()
+        viewer = self._viewer
+
+        if row == self._current_tool:
+            self.nav.clearSelection()
+            self._current_tool = -1
+            self.stack.setVisible(False)
+            self._right_tool_container.setVisible(False)
+            self._right_pane_toggle_btn.setVisible(False)
+            self._pages_toggle_btn.setVisible(True)
+            self._tab_container.setVisible(True)
+            self._update_breadcrumb()
+            self._setup_zoom_bar(True, canvas=viewer._canvas if viewer else None)
+            if viewer:
+                viewer.set_page_rotations({})
+                viewer.set_crop_mode(False)
+                viewer.set_crop_preview(None)
+                viewer.set_numbers_preview(None)
+                viewer.set_page_crops({})
+                viewer.set_page_order(None)
+        else:
+            self._setup_zoom_bar(False)
+            self._current_tool = row
+            tool_widget: Any = self._get_or_create_tool(row)
+            self.stack.setCurrentIndex(row)
+            self._right_tool_container.setVisible(True)
+            self.stack.setVisible(True)
+            self._right_pane_toggle_btn.setVisible(True)
+
+            if row == edit_idx:
+                self.stack.setMinimumWidth(0)
+                self.stack.setMaximumWidth(16777215)
+                self._right_tool_container.setMinimumWidth(0)
+                self._right_tool_container.setMaximumWidth(16777215)
+                self._tab_container.setVisible(False)
+                self._pages_toggle_btn.setVisible(True)
+                self._setup_zoom_bar(True)
+                ctrl_scroll = getattr(tool_widget, "_ctrl_scroll", None)
+                if ctrl_scroll is not None:
+                    ctrl_scroll.setVisible(True)
+                if viewer:
+                    viewer.set_page_rotations({})
+                    viewer.set_crop_mode(False)
+                    viewer.set_crop_preview(None)
+                    viewer.set_numbers_preview(None)
+                    viewer.set_page_crops({})
+                    viewer.set_page_order(None)
+            else:
+                self._pages_toggle_btn.setVisible(True)
+                self.stack.setMinimumWidth(260)
+                self.stack.setMaximumWidth(600)
+                self._right_tool_container.setMinimumWidth(260)
+                self._right_tool_container.setMaximumWidth(600)
+                self._tab_container.setVisible(True)
+                total = self._splitter.width()
+                tool_w = max(280, min(420, total // 3))
+                self._splitter.setSizes([max(260, total - tool_w), tool_w])
+
+                if row == rotate_idx:
+                    rot_w = tool_widget
+                    rotations = getattr(rot_w, "_rotations", None)
+                    if rotations is not None and viewer:
+                        viewer.set_page_rotations(rotations)
+                elif viewer:
+                    viewer.set_page_rotations({})
+
+                if row == crop_idx:
+                    crop_w = tool_widget
+                    btn_draw = getattr(crop_w, "btn_draw_crop", None)
+                    if btn_draw is not None:
+                        active = btn_draw.isChecked()
+                        if viewer:
+                            viewer.set_crop_mode(active)
+                            emit_fn = getattr(crop_w, "_emit_preview", None)
+                            if callable(emit_fn):
+                                emit_fn()
+                            applied_crops = getattr(crop_w, "_applied_crops", None)
+                            if applied_crops is not None:
+                                viewer.set_page_crops(applied_crops)
+                elif viewer:
+                    viewer.set_crop_mode(False)
+                    viewer.set_crop_preview(None)
+                    viewer.set_page_crops({})
+
+                if row == page_numbers_idx:
+                    pn_w = tool_widget
+                    emit_fn = getattr(pn_w, "_emit_preview", None)
+                    if callable(emit_fn):
+                        emit_fn()
+                    update_fn = getattr(pn_w, "_update_undo_redo_state", None)
+                    if callable(update_fn):
+                        update_fn()
+                elif viewer:
+                    viewer.set_numbers_preview(None)
+
+                if row == reorder_idx:
+                    reorder_w = tool_widget
+                    get_order_fn = getattr(reorder_w, "get_order", None)
+                    if callable(get_order_fn):
+                        order = get_order_fn()
+                        if order and viewer:
+                            viewer.set_page_order(cast(list[int] | None, order))
+                elif viewer:
+                    viewer.set_page_order(None)
+
+            self._update_breadcrumb()
+            self._try_auto_load(row)
+
+        self._update_undo_redo_buttons()
+
+    def _open_pdf(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            t("btn.open_pdf"),
+            DESKTOP,
+            OPEN_ALL_FILES_FILTER,
+        )
+        for path in paths:
+            self._load_and_track(path)
+
+    def _load_and_track(self, path: str):
+        from app.window_tabs import WindowTabsMixin
+        return WindowTabsMixin._load_and_track(cast(Any, self), path)
+
+    def _on_second_instance(self, paths: list):
+        _wlog = logging.getLogger(__name__)
+        for path in paths:
+            if isinstance(path, str) and os.path.isfile(path):
+                try:
+                    self._load_and_track(path)
+                except Exception as exc:
+                    _wlog.warning("second instance: failed to load %s: %s", path, exc)
+        if self.isMinimized():
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _clear_recent(self):
+        from app.i18n import _update_config
+        try:
+            _update_config(lambda cfg: cfg.__setitem__("recent_files", []))
+        except Exception:
+            pass
+        for v in self._viewers:
+            refresh = getattr(v, "_refresh_recents", None)
+            if callable(refresh):
+                with contextlib.suppress(Exception):
+                    refresh()
+
+    def _set_status(self, msg: str):
+        self._sb.showMessage(msg)
+
+    def _update_page_nav(self):
+        edit_idx = self._edit_tool_idx()
+        if self._current_tool == edit_idx:
+            edit_w: Any = self._get_or_create_tool(edit_idx)
+            canvas = getattr(edit_w, "_canvas", None)
+            if canvas is not None:
+                n = self._get_canvas_page_count(canvas)
+                if n > 0:
+                    self._page_nav_widget.setVisible(True)
+                    idx = int(cast(Any, getattr(edit_w, "_page_idx", 0) or 0))
+                    self._page_input.setText(str(idx + 1))
+                    self._page_total_lbl.setText(f"/ {n}")
+                    self._first_pg_btn.setEnabled(idx > 0)
+                    self._prev_pg_btn.setEnabled(idx > 0)
+                    self._next_pg_btn.setEnabled(idx < n - 1)
+                    self._last_pg_btn.setEnabled(idx < n - 1)
+                    self._update_undo_redo_buttons()
+                    return
+
+        viewer = self._viewer
+        if not viewer:
+            self._page_nav_widget.setVisible(False)
+            return
+        canvas = getattr(viewer, "_canvas", None)
+        if canvas is None:
+            self._page_nav_widget.setVisible(False)
+            return
+        entries = getattr(canvas, "_entries", None)
+        if not entries:
+            self._page_nav_widget.setVisible(False)
+            return
+        self._page_nav_widget.setVisible(True)
+        sb_scroll = getattr(viewer, "_canvas_scroll", None)
+        sb = sb_scroll.verticalScrollBar() if sb_scroll else None
+        sb_val = sb.value() if sb else 0
+        idx = int(canvas.page_at_y(sb_val))
+        total = int(len(entries))
+        self._page_input.setText(str(idx + 1))
+        self._page_total_lbl.setText(f"/ {total}")
+        self._first_pg_btn.setEnabled(idx > 0)
+        self._prev_pg_btn.setEnabled(idx > 0)
+        self._next_pg_btn.setEnabled(idx < total - 1)
+        self._last_pg_btn.setEnabled(idx < total - 1)
+        self._update_undo_redo_buttons()
+
+    def _goto_first_page(self):
+        edit_idx = self._edit_tool_idx()
+        if self._current_tool == edit_idx:
+            edit_w: Any = self._get_or_create_tool(edit_idx)
+            scroll_fn = getattr(edit_w, "_scroll_to", None)
+            if callable(scroll_fn):
+                scroll_fn(0)
+                return
+        viewer = self._viewer
+        if not viewer:
+            return
+        canvas = getattr(viewer, "_canvas", None)
+        if canvas is None:
+            return
+        entries = getattr(canvas, "_entries", None)
+        if not entries:
+            return
+        sb_scroll = getattr(viewer, "_canvas_scroll", None)
+        sb = sb_scroll.verticalScrollBar() if sb_scroll else None
+        if sb:
+            sb.setValue(canvas.scroll_to_page(0))
+
+    def _goto_prev_page(self):
+        edit_idx = self._edit_tool_idx()
+        if self._current_tool == edit_idx:
+            edit_w: Any = self._get_or_create_tool(edit_idx)
+            prev_fn = getattr(edit_w, "_prev_page", None)
+            if callable(prev_fn):
+                prev_fn()
+                return
+        viewer = self._viewer
+        if not viewer:
+            return
+        canvas = getattr(viewer, "_canvas", None)
+        if canvas is None:
+            return
+        entries = getattr(canvas, "_entries", None)
+        if not entries:
+            return
+        sb_scroll = getattr(viewer, "_canvas_scroll", None)
+        sb = sb_scroll.verticalScrollBar() if sb_scroll else None
+        if sb:
+            idx = canvas.page_at_y(sb.value())
+            if idx > 0:
+                sb.setValue(canvas.scroll_to_page(idx - 1))
+
+    def _goto_next_page(self):
+        edit_idx = self._edit_tool_idx()
+        if self._current_tool == edit_idx:
+            edit_w: Any = self._get_or_create_tool(edit_idx)
+            next_fn = getattr(edit_w, "_next_page", None)
+            if callable(next_fn):
+                next_fn()
+                return
+        viewer = self._viewer
+        if not viewer:
+            return
+        canvas = getattr(viewer, "_canvas", None)
+        if canvas is None:
+            return
+        entries = getattr(canvas, "_entries", None)
+        if not entries:
+            return
+        sb_scroll = getattr(viewer, "_canvas_scroll", None)
+        sb = sb_scroll.verticalScrollBar() if sb_scroll else None
+        if sb:
+            idx = canvas.page_at_y(sb.value())
+            if idx < len(entries) - 1:
+                sb.setValue(canvas.scroll_to_page(idx + 1))
+
+    def _goto_last_page(self):
+        edit_idx = self._edit_tool_idx()
+        if self._current_tool == edit_idx:
+            edit_w: Any = self._get_or_create_tool(edit_idx)
+            canvas = getattr(edit_w, "_canvas", None)
+            if canvas is not None:
+                n = self._get_canvas_page_count(canvas)
+                if n > 0:
+                    scroll_fn = getattr(edit_w, "_scroll_to", None)
+                    if callable(scroll_fn):
+                        scroll_fn(n - 1)
+                return
+        viewer = self._viewer
+        if not viewer:
+            return
+        canvas = getattr(viewer, "_canvas", None)
+        if canvas is None:
+            return
+        entries = getattr(canvas, "_entries", None)
+        if not entries:
+            return
+        sb_scroll = getattr(viewer, "_canvas_scroll", None)
+        sb = sb_scroll.verticalScrollBar() if sb_scroll else None
+        if sb:
+            sb.setValue(canvas.scroll_to_page(len(entries) - 1))
+
+    def _goto_input_page(self):
+        edit_idx = self._edit_tool_idx()
+        if self._current_tool == edit_idx:
+            edit_w: Any = self._get_or_create_tool(edit_idx)
+            canvas = getattr(edit_w, "_canvas", None)
+            if canvas is not None:
+                n = self._get_canvas_page_count(canvas)
+                try:
+                    p = int(self._page_input.text())
+                except ValueError:
+                    return
+                p = max(1, min(p, n))
+                scroll_fn = getattr(edit_w, "_scroll_to", None)
+                if callable(scroll_fn):
+                    scroll_fn(p - 1)
+                return
+        viewer = self._viewer
+        if not viewer:
+            return
+        canvas = getattr(viewer, "_canvas", None)
+        if canvas is None:
+            return
+        entries = getattr(canvas, "_entries", None)
+        if not entries:
+            return
+        try:
+            page_num = int(self._page_input.text())
+        except ValueError:
+            return
+        page_num = max(1, min(page_num, len(entries)))
+        self._page_input.setText(str(page_num))
+        sb_scroll = getattr(viewer, "_canvas_scroll", None)
+        sb = sb_scroll.verticalScrollBar() if sb_scroll else None
+        if sb:
+            sb.setValue(canvas.scroll_to_page(page_num - 1))
+
+    def _show_language_menu(self):
+        _langs = [("en", "English"), ("pt", "Português"), ("es", "Español"), ("fr", "Français"),
+                  ("de", "Deutsch"), ("zh", "中文"), ("it", "Italiano"), ("nl", "Nederlands")]
+        menu = QMenu(self)
+        current = get_language()
+        for code, name in _langs:
+            action = menu.addAction(f"  {'● ' if code == current else '  '}{name}")
+            action.triggered.connect(lambda checked=False, c=code, n=name: self._set_language(c, n))
+        menu.exec(self._lang_btn.mapToGlobal(self._lang_btn.rect().bottomLeft()))
+
+    def _set_language(self, code: str, name: str):
+        if code == get_language():
+            return
+        ans = QMessageBox.question(
+            self, t("lang.selector"), t("lang.restart", lang=name),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        set_language(code)
+        _labels = {"en": "EN", "pt": "PT", "es": "ES", "fr": "FR", "de": "DE", "zh": "ZH", "it": "IT", "nl": "NL"}
+        self._lang_btn.setText(_labels.get(code, "EN"))
+        self._restart_app()
+
+    def _restart_app(self):
+        self._wait_for_workers_on_all_pages()
+        self._wipe_all_pdf_passwords()
+        pdf_args = [a for a in sys.argv[1:] if os.path.isfile(a)]
+        if getattr(sys, "frozen", False):
+            program = sys.executable
+            args = pdf_args
+            cwd = os.path.dirname(sys.executable) or os.getcwd()
+        else:
+            script = os.path.abspath(sys.argv[0])
+            program = sys.executable
+            args = [script] + pdf_args
+            cwd = os.path.dirname(script) or os.getcwd()
+        proc = QProcess()
+        proc.setProgram(program)
+        proc.setArguments(args)
+        proc.setWorkingDirectory(cwd)
+        env = QProcessEnvironment.systemEnvironment()
+        for _k in list(env.keys()):
+            if _k.startswith("_PYI_") or _k.startswith("_MEIPASS"):
+                env.remove(_k)
+        proc.setProcessEnvironment(env)
+        proc.startDetached()
+        app = QApplication.instance()
+        if app is not None:
+            app.exit(0)
+
+    def dragEnterEvent(self, e):
+        if not e.mimeData().hasUrls():
+            return
+        for url in e.mimeData().urls():
+            local = url.toLocalFile()
+            if not local:
+                continue
+            if os.path.isfile(local) or os.path.isdir(local):
+                e.acceptProposedAction()
+                return
+
+    def dropEvent(self, e):
+        for url in e.mimeData().urls():
+            path = url.toLocalFile()
+            if not path:
+                scheme = url.scheme().lower() if url.isValid() else ""
+                if scheme in ("http", "https", "ftp"):
+                    QMessageBox.warning(self, t("msg.warning"), t("viewer.drop_url_not_supported"))
+                    return
+                continue
+            if os.path.isdir(path):
+                try:
+                    entries = os.listdir(path)
+                except OSError:
+                    entries = []
+                valid_files = sorted(os.path.join(path, f) for f in entries if os.path.isfile(os.path.join(path, f)))
+                if len(valid_files) > 20:
+                    reply = QMessageBox.question(self, t("msg.confirm"), t("viewer.drop_many_pdfs_confirm", count=len(valid_files)),
+                                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+                    if reply != QMessageBox.StandardButton.Yes:
+                        continue
+                for fpath in valid_files:
+                    self._load_and_track(fpath)
+                continue
+            if os.path.isfile(path):
+                self._load_and_track(path)
+
+    def _toggle_night_mode_top(self):
+        viewer = self._viewer
+        if viewer:
+            active = self._night_top_btn.isChecked()
+            canvas = getattr(viewer, "_canvas", None)
+            if canvas:
+                canvas.set_night_mode(active)
+            bar_color = TEXT_PRI if self._dark_mode else _LP
+            self._night_top_btn.setIcon(qta.icon("fa5s.sun" if active else "fa5s.moon", color=ACCENT if active else bar_color))
+
+    def _refresh_viewer_top_buttons(self):
+        try:
+            v = self._viewer
+            if v:
+                self._toc_top_btn.setVisible(v._toc_tree.topLevelItemCount() > 0)
+                canvas = getattr(v, "_canvas", None)
+                is_night = bool(getattr(canvas, "_night_mode", False))
+                self._night_top_btn.setChecked(is_night)
+                bar_color = TEXT_PRI if self._dark_mode else _LP
+                self._night_top_btn.setIcon(qta.icon("fa5s.sun" if is_night else "fa5s.moon", color=ACCENT if is_night else bar_color))
+            else:
+                self._toc_top_btn.setVisible(False)
+                self._night_top_btn.setChecked(False)
+        except Exception:
+            self._toc_top_btn.setVisible(False)
+            self._night_top_btn.setChecked(False)
+
+    def _toggle_fullscreen(self):
+        self._fullscreen = not self._fullscreen
+        if self._fullscreen:
+            self._workspace_bar.setVisible(False)
+            self._sidebar.setVisible(False)
+            self._sb.setVisible(False)
+            self.showFullScreen()
+        else:
+            self._workspace_bar.setVisible(True)
+            if not self._sidebar_collapsed:
+                self._sidebar.setVisible(True)
+            self._sb.setVisible(True)
+            self.showMaximized()
+
+    def _start_presentation(self):
+        viewer = self._viewer
+        if not viewer or not viewer._current_path:
+            return
+        canvas = getattr(viewer, "_canvas", None)
+        if canvas is None:
+            return
+        sb_scroll = getattr(viewer, "_canvas_scroll", None)
+        sb = sb_scroll.verticalScrollBar() if sb_scroll else None
+        start_page = canvas.page_at_y(sb.value()) if canvas.page_count() > 0 and sb else 0
+        try:
+            pres = PresentationWidget(
+                viewer._current_path,
+                getattr(viewer, "_pdf_password", ""),
+                start_page,
+                canvas.page_count(),
+                dark_mode=self._dark_mode,
+                viewer=viewer,
+            )
+        except Exception as e:
+            show_error(self, e)
+            return
+        pres.destroyed.connect(lambda _=None, w=pres: setattr(self, "_presentation", None) if getattr(self, "_presentation", None) is w else None)
+        self._presentation = pres
+        self._presentation.show()
+
+    def _toggle_sidebar(self):
+        if not self._sidebar_collapsed and self._sidebar.width() > 60:
+            self._sidebar_collapsed = False
+            self._sidebar.setFixedWidth(52)
+            self._brand_layout.setContentsMargins(0, 10, 0, 10)
+            self._brand_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._brand_text_w.setVisible(False)
+            self._brand_title.setVisible(False)
+            self._brand_sub.setVisible(False)
+            self._nav_search.setVisible(False)
+            self._footer_w.setVisible(False)
+            for r in range(self.nav.count()):
+                it = self.nav.item(r)
+                if it:
+                    idx = it.data(Qt.ItemDataRole.UserRole)
+                    if idx is not None and idx < 0:
+                        it.setHidden(True)
+            self._sidebar_toggle_btn.setIcon(self._workspace_bar._ico_bars)
+            self.nav.updateGeometries()
+            self.nav.viewport().update()
+        elif not self._sidebar_collapsed:
+            self._sidebar_collapsed = True
+            self._sidebar.setVisible(False)
+            self._sidebar_toggle_btn.setIcon(self._workspace_bar._ico_bars)
+        else:
+            self._sidebar_collapsed = False
+            self._sidebar.setVisible(True)
+            self._sidebar.setFixedWidth(228)
+            self._brand_layout.setContentsMargins(12, 10, 10, 10)
+            self._brand_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self._brand_text_w.setVisible(True)
+            self._brand_title.setVisible(True)
+            self._brand_sub.setVisible(True)
+            self._nav_search.setVisible(True)
+            self._footer_w.setVisible(True)
+            for r in range(self.nav.count()):
+                it = self.nav.item(r)
+                if it:
+                    idx = it.data(Qt.ItemDataRole.UserRole)
+                    if idx is not None and idx < 0:
+                        it.setHidden(False)
+            self._sidebar_toggle_btn.setIcon(self._workspace_bar._ico_bars)
+            self.nav.updateGeometries()
+            self.nav.viewport().update()
+        QTimer.singleShot(50, self._relayout_viewer)
+
+    def _relayout_viewer(self):
+        for v in self._viewers:
+            canvas = getattr(v, "_canvas", None)
+            if canvas and getattr(canvas, "_doc", None) and getattr(canvas, "_zoom_factor", 0.0) == 1.0:
+                canvas._layout_and_schedule()
+
+    def _toggle_theme(self):
+        self._dark_mode = not self._dark_mode
+        self._apply_theme()
+        from app.i18n import _update_config
+        dark = self._dark_mode
+        try:
+            _update_config(lambda cfg: cfg.__setitem__("dark_mode", dark))
+        except Exception:
+            pass
+
+    def _apply_theme(self):
+        style = STYLE if self._dark_mode else STYLE_LIGHT
+        nav_color = TEXT_SEC if self._dark_mode else _LQ
+        self._qapp.setPalette(_make_palette(self._dark_mode))
+        self._qapp.setStyleSheet(style)
+        self._workspace_bar.update_theme(self._dark_mode, self._sidebar_collapsed)
+        if hasattr(self, "_tab_bar") and hasattr(self._tab_bar, "update_theme"):
+            self._tab_bar.update_theme(self._dark_mode)
+        for r in range(self.nav.count()):
+            it = self.nav.item(r)
+            if it:
+                tool_idx = it.data(Qt.ItemDataRole.UserRole)
+                if tool_idx is not None and tool_idx >= 0:
+                    _, icon_name, _ = _NAV_KEYS[tool_idx]
+                    it.setIcon(qta.icon(icon_name, color=nav_color))
+                else:
+                    it.setForeground(QColor(nav_color))
+        self.nav.viewport().update()
+        for v in self._viewers:
+            v.update_theme(self._dark_mode)
+        for i in range(self.stack.count()):
+            w = self.stack.widget(i)
+            if w and not getattr(w, "_is_lazy_placeholder", False):
+                fn = getattr(w, "update_theme", None)
+                if callable(fn):
+                    fn(self._dark_mode)
+                for cls in (DropFileEdit, MultiDropWidget):
+                    for child in w.findChildren(cls):
+                        child_fn = getattr(child, "update_theme", None)
+                        if callable(child_fn):
+                            with contextlib.suppress(RuntimeError):
+                                child_fn(self._dark_mode)
+        pres = getattr(self, "_presentation", None)
+        if pres is not None and isValid(pres):
+            pres.update_theme(self._dark_mode)

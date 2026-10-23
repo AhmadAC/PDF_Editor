@@ -1,0 +1,343 @@
+# app/viewer/thumbnail_model.py
+"""Thumbnail list model and custom delegate rendering page previews and selection."""
+
+from __future__ import annotations
+
+from PySide6.QtCore import (
+    QAbstractListModel,
+    QModelIndex,
+    QRect,
+    QSize,
+    Qt,
+)
+from PySide6.QtGui import (
+    QColor,
+    QPainter,
+    QPen,
+    QPixmap,
+)
+from PySide6.QtWidgets import (
+    QStyle,
+    QStyledItemDelegate,
+)
+
+from app.constants import ACCENT, TEXT_SEC
+from app.viewer.thumbnail_worker import (
+    CACHE_MAX,
+    DEFAULT_THUMB_HEIGHT,
+    DEFAULT_THUMB_WIDTH,
+    PAGE_NUM_HEIGHT,
+    THUMB_PADDING,
+)
+
+
+class ThumbnailModel(QAbstractListModel):
+    """List model: one row per page. Decoration = QPixmap thumbnail."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._page_count = 0
+        self._cache: dict[int, QPixmap] = {}
+        self._doc_path = ""
+        self._page_order: list[int] | None = None
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else self._page_count
+
+    def flags(self, index: QModelIndex) -> Qt.ItemFlag:
+        default_flags = super().flags(index)
+        if index.isValid():
+            return default_flags | Qt.ItemFlag.ItemIsDragEnabled
+        return default_flags
+
+    def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
+        row = index.row()
+        if row < 0 or row >= self._page_count:
+            return None
+        if role == Qt.ItemDataRole.DecorationRole:
+            return self._cache.get(row)
+        if role == Qt.ItemDataRole.DisplayRole:
+            return (
+                f"{row + 1} / {self._page_count}"
+                if self._page_count > 0
+                else str(row + 1)
+            )
+        return None
+
+    def set_document(self, doc_path: str, page_count: int) -> None:
+        self.beginResetModel()
+        self._doc_path = doc_path
+        self._page_count = max(0, int(page_count))
+        self._page_order = None
+        self._cache.clear()
+        self.endResetModel()
+
+    def set_page_order(self, order: list[int] | None, page_count: int) -> None:
+        self.beginResetModel()
+        self._page_order = list(order) if order is not None else None
+        self._page_count = max(0, int(page_count))
+        self._cache.clear()
+        self.endResetModel()
+
+    def clear(self) -> None:
+        self.set_document("", 0)
+
+    def clear_cache(self) -> None:
+        """Clear cached pixmaps and signal decoration changes to refresh visible items."""
+        self._cache.clear()
+        if self._page_count > 0:
+            top = self.index(0)
+            bottom = self.index(self._page_count - 1)
+            self.dataChanged.emit(
+                top,
+                bottom,
+                [Qt.ItemDataRole.DecorationRole, Qt.ItemDataRole.DisplayRole],
+            )
+
+    def cache_pixmap(self, page_idx: int, pix: QPixmap) -> None:
+        if page_idx in self._cache:
+            self._cache.pop(page_idx, None)
+        self._cache[page_idx] = pix
+        while len(self._cache) > CACHE_MAX:
+            oldest = next(iter(self._cache))
+            del self._cache[oldest]
+        idx = self.index(page_idx)
+        self.dataChanged.emit(idx, idx, [Qt.ItemDataRole.DecorationRole])
+
+    def cache_size(self) -> int:
+        return len(self._cache)
+
+    def has_pixmap(self, page_idx: int) -> bool:
+        return page_idx in self._cache
+
+    def refresh_decorations(self) -> None:
+        if self._page_count <= 0:
+            return
+        top = self.index(0)
+        bottom = self.index(self._page_count - 1)
+        self.dataChanged.emit(
+            top,
+            bottom,
+            [Qt.ItemDataRole.DecorationRole, Qt.ItemDataRole.DisplayRole],
+        )
+
+
+class ThumbnailDelegate(QStyledItemDelegate):
+    """Paint each item centered: thumbnail + page number in '1 / N' format,
+    with multi-column responsive grid support, current-page highlight, and Foxit-style viewport indicator."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._current_page = -1
+        self._viewport_rect: tuple[float, float, float, float] | None = None
+        self._total_pages = 0
+        self._dark = True
+        self._thumb_w = DEFAULT_THUMB_WIDTH
+        self._thumb_h = DEFAULT_THUMB_HEIGHT
+        self._cell_w = DEFAULT_THUMB_WIDTH + 2 * THUMB_PADDING
+
+    def set_current_page(
+        self,
+        page_idx: int,
+        viewport_rect: tuple[float, float, float, float] | None = None,
+    ) -> int:
+        old = self._current_page
+        self._current_page = page_idx
+        self._viewport_rect = viewport_rect
+        return old
+
+    def set_viewport_rect(
+        self, viewport_rect: tuple[float, float, float, float] | None
+    ) -> None:
+        self._viewport_rect = viewport_rect
+
+    def set_total_pages(self, total: int) -> None:
+        self._total_pages = max(0, int(total))
+
+    def set_dark(self, dark: bool) -> None:
+        self._dark = bool(dark)
+
+    def set_thumb_size(self, w: int, h: int) -> None:
+        self._thumb_w = max(60, min(360, w))
+        self._thumb_h = max(80, min(480, h))
+
+    def set_cell_width(self, w: int) -> None:
+        self._cell_w = max(60, int(w))
+
+    def sizeHint(self, option, index):
+        w = (
+            self._cell_w
+            if getattr(self, "_cell_w", 0) > 0
+            else (self._thumb_w + 2 * THUMB_PADDING)
+        )
+        return QSize(
+            w,
+            self._thumb_h + 2 * THUMB_PADDING + PAGE_NUM_HEIGHT,
+        )
+
+    def get_thumbnail_pixmap_rect(self, item_rect: QRect, page_idx: int) -> QRect:
+        """Calculate the exact on-screen geometry of the rendered page thumbnail pixmap."""
+        thumb_w = min(self._thumb_w, max(40, item_rect.width() - 2 * THUMB_PADDING))
+        thumb_h = self._thumb_h
+        thumb_x = item_rect.x() + (item_rect.width() - thumb_w) // 2
+        thumb_y = item_rect.y() + THUMB_PADDING
+
+        parent_w = self.parent()
+        model = getattr(parent_w, "_model", None)
+        pix = model._cache.get(page_idx) if model else None
+
+        if pix is not None and not pix.isNull():
+            dpr = pix.devicePixelRatio() or 1.0
+            scaled = pix.scaled(
+                round(thumb_w * dpr),
+                round(thumb_h * dpr),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            lw = round(scaled.width() / dpr)
+            lh = round(scaled.height() / dpr)
+            cx = item_rect.x() + (item_rect.width() - lw) // 2
+            cy = thumb_y + (thumb_h - lh) // 2
+            return QRect(cx, cy, lw, lh)
+        return QRect(thumb_x, thumb_y, thumb_w, thumb_h)
+
+    def get_red_box_rect(self, item_rect: QRect, page_idx: int) -> QRect | None:
+        """Compute the screen rectangle of the red viewport box on the active page thumbnail."""
+        if page_idx != self._current_page or not self._viewport_rect:
+            return None
+        pix_rect = self.get_thumbnail_pixmap_rect(item_rect, page_idx)
+        cx = pix_rect.x()
+        cy = pix_rect.y()
+        lw = pix_rect.width()
+        lh = pix_rect.height()
+        if lw <= 0 or lh <= 0:
+            return None
+
+        norm_x, norm_y, norm_w, norm_h = self._viewport_rect
+        rx = cx + int(round(norm_x * lw))
+        ry = cy + int(round(norm_y * lh))
+        rw = max(4, int(round(norm_w * lw)))
+        rh = max(4, int(round(norm_h * lh)))
+
+        rx0 = max(cx, min(cx + lw - 3, rx))
+        ry0 = max(cy, min(cy + lh - 3, ry))
+        rw_clamped = max(4, min(cx + lw - rx0, rw))
+        rh_clamped = max(4, min(cy + lh - ry0, rh))
+
+        return QRect(rx0, ry0, rw_clamped, rh_clamped)
+
+    def paint(self, painter: QPainter, option, index: QModelIndex) -> None:
+        page_idx = index.row()
+        rect = option.rect
+        pix = index.data(Qt.ItemDataRole.DecorationRole)
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        is_current = page_idx == self._current_page
+
+        # Centered thumbnail within available cell width
+        thumb_w = min(self._thumb_w, max(40, rect.width() - 2 * THUMB_PADDING))
+        thumb_h = self._thumb_h
+        thumb_x = rect.x() + (rect.width() - thumb_w) // 2
+        thumb_y = rect.y() + THUMB_PADDING
+        thumb_rect = QRect(thumb_x, thumb_y, thumb_w, thumb_h)
+
+        # Card bounding box snugly wraps the thumbnail + page number label
+        card_w = min(rect.width() - 8, thumb_w + 16)
+        card_x = rect.x() + (rect.width() - card_w) // 2
+        card_h = thumb_h + PAGE_NUM_HEIGHT + 8
+        card_y = thumb_y - 4
+        card_rect = QRect(card_x, card_y, card_w, card_h)
+
+        # Highlight background box covering item
+        if is_selected or is_current:
+            accent = QColor(ACCENT)
+            accent.setAlpha(70 if is_selected else 40)
+            painter.setBrush(accent)
+            if is_selected and is_current:
+                painter.setPen(QPen(QColor(ACCENT), 2))
+            elif is_selected:
+                painter.setPen(QPen(QColor(ACCENT), 1.5))
+            else:
+                painter.setPen(QPen(QColor(ACCENT), 1.5, Qt.PenStyle.DashLine))
+            painter.drawRoundedRect(card_rect, 6, 6)
+        elif option.state & QStyle.StateFlag.State_MouseOver:
+            hover = (
+                QColor(255, 255, 255, 22) if self._dark else QColor(0, 0, 0, 20)
+            )
+            painter.setBrush(hover)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(card_rect, 6, 6)
+
+        if pix is not None and not pix.isNull():
+            dpr = pix.devicePixelRatio() or 1.0
+            scaled = pix.scaled(
+                round(thumb_w * dpr),
+                round(thumb_h * dpr),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            scaled.setDevicePixelRatio(dpr)
+            lw = round(scaled.width() / dpr)
+            lh = round(scaled.height() / dpr)
+            cx = rect.x() + (rect.width() - lw) // 2
+            cy = thumb_y + (thumb_h - lh) // 2
+            painter.drawPixmap(cx, cy, scaled)
+            painter.setPen(QColor(0, 0, 0, 80))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(cx, cy, lw - 1, lh - 1)
+        else:
+            painter.setPen(QColor(TEXT_SEC))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(thumb_rect)
+            painter.drawText(thumb_rect, Qt.AlignmentFlag.AlignCenter, "…")
+            cx = thumb_x
+            cy = thumb_y
+            lw = thumb_w
+            lh = thumb_h
+
+        # Draw red viewport rectangle on the active page (Foxit-style page view indicator)
+        if page_idx == self._current_page and self._viewport_rect and lw > 0 and lh > 0:
+            norm_x, norm_y, norm_w, norm_h = self._viewport_rect
+            rx = cx + int(round(norm_x * lw))
+            ry = cy + int(round(norm_y * lh))
+            rw = max(4, int(round(norm_w * lw)))
+            rh = max(4, int(round(norm_h * lh)))
+
+            rx0 = max(cx, min(cx + lw - 3, rx))
+            ry0 = max(cy, min(cy + lh - 3, ry))
+            rw_clamped = max(4, min(cx + lw - rx0, rw))
+            rh_clamped = max(4, min(cy + lh - ry0, rh))
+
+            red_box = QRect(rx0, ry0, rw_clamped, rh_clamped)
+
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            painter.setPen(QPen(QColor("#EF4444"), 2, Qt.PenStyle.SolidLine))
+            painter.setBrush(QColor(239, 68, 68, 20))
+            painter.drawRect(red_box)
+            painter.restore()
+
+        # Centered page number displaying "1 / N"
+        m = index.model()
+        total = self._total_pages or (m.rowCount() if m else 0)
+        label_text = (
+            f"{page_idx + 1} / {total}" if total > 0 else str(page_idx + 1)
+        )
+
+        if is_selected or is_current:
+            painter.setPen(QColor(ACCENT))
+        else:
+            painter.setPen(QColor(TEXT_SEC))
+
+        num_rect = QRect(
+            card_x,
+            thumb_y + self._thumb_h + 2,
+            card_w,
+            PAGE_NUM_HEIGHT,
+        )
+        painter.drawText(num_rect, Qt.AlignmentFlag.AlignCenter, label_text)
+
+        painter.restore()

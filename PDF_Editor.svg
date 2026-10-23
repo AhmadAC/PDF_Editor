@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Soft document drop shadow, scaled for the larger icon -->
+    <filter id="doc-shadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="20" stdDeviation="24" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+
+    <!-- Flap shadow -->
+    <filter id="flap-shadow" x="-20%" y="-20%" width="150%" height="150%">
+      <feDropShadow dx="-6" dy="8" stdDeviation="10" flood-color="#22053B" flood-opacity="0.6"/>
+    </filter>
+
+    <!-- Main page gradient (Vibrant Purple to Deep Purple) -->
+    <linearGradient id="page-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#8E24AA"/>
+      <stop offset="100%" stop-color="#4A148C"/>
+    </linearGradient>
+
+    <!-- Folded corner gradient -->
+    <linearGradient id="flap-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#AB47BC"/>
+      <stop offset="100%" stop-color="#7B1FA2"/>
+    </linearGradient>
+
+    <!-- Badge gradient (Deep Midnight Purple) -->
+    <linearGradient id="badge-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2A0845"/>
+      <stop offset="100%" stop-color="#140124"/>
+    </linearGradient>
+
+    <!-- Accent text/border silver gradient -->
+    <linearGradient id="silver-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#E0E0E0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Document Sheet -->
+  <g filter="url(#doc-shadow)">
+    <!-- Sheet Base (Expanded to a larger, square-like dimension matching standard app icons) -->
+    <path d="M 80,48 
+             L 320,48 
+             L 464,192 
+             L 464,432 
+             A 32,32 0 0 1 432,464 
+             L 80,464 
+             A 32,32 0 0 1 48,432 
+             L 48,80 
+             A 32,32 0 0 1 80,48 Z" 
+          fill="url(#page-grad)" 
+          stroke="#A843C9" 
+          stroke-width="2"/>
+
+    <!-- Subtle Page Edge Highlight (Top & Left Inner Glow) -->
+    <path d="M 80,50 L 316,50 M 50,80 L 50,432" 
+          stroke="#BA68C8" 
+          stroke-width="2" 
+          stroke-linecap="round"
+          fill="none"/>
+  </g>
+
+  <!-- Folded Corner Flap -->
+  <g filter="url(#flap-shadow)">
+    <path d="M 320,48 
+             L 320,160 
+             A 32,32 0 0 0 352,192 
+             L 464,192 Z" 
+          fill="url(#flap-grad)" 
+          stroke="#A843C9" 
+          stroke-width="2"/>
+  </g>
+
+  <!-- Decorative Document Lines (Subtle Purple Placeholders) -->
+  <g fill="#CE93D8" opacity="0.35">
+    <rect x="104" y="112" width="120" height="12" rx="6"/>
+    <rect x="104" y="140" width="180" height="12" rx="6"/>
+    <rect x="104" y="168" width="140" height="12" rx="6"/>
+    
+    <rect x="104" y="380" width="220" height="12" rx="6"/>
+    <rect x="104" y="408" width="160" height="12" rx="6"/>
+  </g>
+
+  <!-- Central "PDF" Badge -->
+  <g>
+    <!-- Badge Background Plate -->
+    <rect x="96" y="210" width="320" height="130" rx="24" 
+          fill="url(#badge-grad)" 
+          stroke="#6A1B9A" 
+          stroke-width="3"/>
+
+    <!-- Inner Keyline -->
+    <rect x="104" y="218" width="304" height="114" rx="16" 
+          fill="none" 
+          stroke="#4A148C" 
+          stroke-width="2"/>
+
+    <!-- Pure Vector "PDF" Text (Scaled x1.8 and re-centered to fit the larger icon) -->
+    <g transform="translate(256, 275) scale(1.8) translate(-255, -280)" fill="url(#silver-grad)" fill-rule="evenodd">
+      <!-- "P" -->
+      <path d="M 188,258 H 213 C 220.5,258 225,262.5 225,269.5 C 225,276.5 220.5,281 213,281 H 198.5 V 302 H 188 Z 
+               M 198.5,266.5 V 272.5 H 212 C 214.5,272.5 216,271.2 216,269.5 C 216,267.8 214.5,266.5 212,266.5 Z"/>
+
+      <!-- "D" -->
+      <path d="M 236,258 H 258 C 268.5,258 276,265.5 276,280 C 276,294.5 268.5,302 258,302 H 236 Z 
+               M 246.5,266.5 V 293.5 H 257 C 263,293.5 265.5,288.5 265.5,280 C 265.5,271.5 263,266.5 257,266.5 Z"/>
+
+      <!-- "F" -->
+      <path d="M 288,258 H 322 V 266.5 H 298.5 V 276.5 H 318 V 285 H 298.5 V 302 H 288 Z"/>
+    </g>
+  </g>
+</svg>

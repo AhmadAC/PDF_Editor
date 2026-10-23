@@ -1,0 +1,532 @@
+# app/window_tabs.py
+"""PDF_Editor – Tab management and multi-viewer window mixin."""
+
+from __future__ import annotations
+
+import contextlib
+import os
+import shutil
+import sys
+from typing import TYPE_CHECKING, Any
+
+from PySide6.QtCore import QPoint, QSize, Qt, Signal
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import (
+    QApplication,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QTabBar,
+)
+import qtawesome as qta
+
+from app.constants import TEXT_PRI, _LQ, OPEN_ALL_FILES_FILTER
+from app.i18n import add_recent_file, t
+from app.utils import reveal_file, show_error
+from app.viewer.panel import PdfViewerPanel
+from app.tools.import_pdf import convert_file_to_pdf
+
+if TYPE_CHECKING:
+    from PySide6.QtGui import QDragEnterEvent, QDropEvent
+    from PySide6.QtWidgets import (
+        QMainWindow,
+        QStackedWidget,
+        QStatusBar,
+        QWidget,
+    )
+    _Base = QMainWindow
+else:
+    _Base = object
+
+__all__ = ["_ViewerTabBar", "WindowTabsMixin"]
+
+
+class _ViewerTabBar(QTabBar):
+    """Custom tab bar supporting middle-click to close, left-click on active tab to toggle thumbnails, and double-click to open."""
+
+    active_tab_clicked = Signal()
+
+    def tabInserted(self, index: int) -> None:
+        super().tabInserted(index)
+        btn = QPushButton(self)
+        btn.setObjectName("tab_close_btn")
+        btn.setFixedSize(16, 16)
+        btn.setIconSize(QSize(9, 9))
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        btn.setToolTip(t("btn.close") if t("btn.close") != "btn.close" else "Close Tab")
+        self._update_close_btn_icon(btn)
+        btn.clicked.connect(lambda _=False, b=btn: self._on_close_btn_clicked(b))
+        self.setTabButton(index, QTabBar.ButtonPosition.RightSide, btn)
+
+    def _update_close_btn_icon(self, btn: QPushButton, dark: bool | None = None) -> None:
+        if dark is None:
+            win = self.window()
+            dark = getattr(win, "_dark_mode", True) if win else True
+        icon_color = "#D1D5DB" if dark else "#4B5563"
+        btn.setIcon(qta.icon("fa5s.times", color=icon_color, color_active="#FFFFFF"))
+
+    def _on_close_btn_clicked(self, btn: QPushButton) -> None:
+        for i in range(self.count()):
+            if self.tabButton(i, QTabBar.ButtonPosition.RightSide) is btn:
+                self.tabCloseRequested.emit(i)
+                return
+
+    def update_theme(self, dark: bool) -> None:
+        for i in range(self.count()):
+            btn = self.tabButton(i, QTabBar.ButtonPosition.RightSide)
+            if isinstance(btn, QPushButton):
+                self._update_close_btn_icon(btn, dark=dark)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        pos = (
+            event.position().toPoint()
+            if hasattr(event, "position")
+            else event.pos()
+        )
+
+        if event.button() == Qt.MouseButton.MiddleButton:
+            idx = self.tabAt(pos)
+            if idx >= 0:
+                self.tabCloseRequested.emit(idx)
+                event.accept()
+                return
+
+        if event.button() == Qt.MouseButton.LeftButton:
+            idx = self.tabAt(pos)
+            if idx >= 0 and idx == self.currentIndex():
+                is_close_click = False
+                for side in (QTabBar.ButtonPosition.RightSide, QTabBar.ButtonPosition.LeftSide):
+                    btn = self.tabButton(idx, side)
+                    if btn and btn.isVisible() and btn.geometry().contains(pos):
+                        is_close_click = True
+                        break
+                if not is_close_click:
+                    self.active_tab_clicked.emit()
+
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        pos = (
+            event.position().toPoint()
+            if hasattr(event, "position")
+            else event.pos()
+        )
+        idx = self.tabAt(pos)
+        if idx < 0:
+            parent = self.window()
+            open_fn = getattr(parent, "_open_pdf", None)
+            if callable(open_fn):
+                open_fn()
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
+
+
+class WindowTabsMixin(_Base):
+    """Mixin for MainWindow managing viewer tabs, document routing, and tab lifecycle."""
+
+    if TYPE_CHECKING:
+        _viewers: list[PdfViewerPanel]
+        _viewer_stack: QStackedWidget
+        _tab_bar: _ViewerTabBar
+        stack: QStackedWidget
+        _current_tool: int
+        _dark_mode: bool
+        _sb: QStatusBar
+        _pipeline_state: dict[int, dict[str, Any]]
+
+        def _set_status(self, msg: str) -> None: ...
+        def _handle_global_undo(self) -> None: ...
+        def _handle_global_redo(self) -> None: ...
+        def _update_page_nav(self) -> None: ...
+        def _update_breadcrumb(self) -> None: ...
+        def _viewer_has_unsaved(self, viewer: Any = ...) -> bool: ...
+        def _save_pipeline(self) -> None: ...
+        def _cleanup_pipeline(self, viewer_id: int) -> None: ...
+        def _crop_tool_idx(self) -> int: ...
+        def _setup_zoom_bar(self, active: bool, canvas: Any = ...) -> None: ...
+        def _toggle_pages_sidebar(self) -> None: ...
+
+    @property
+    def _viewer(self) -> PdfViewerPanel | None:
+        if hasattr(self, "_viewers") and self._viewers:
+            idx = self._viewer_stack.currentIndex()
+            if 0 <= idx < len(self._viewers):
+                return self._viewers[idx]
+            return self._viewers[0]
+        return None
+
+    def _on_active_tab_clicked(self) -> None:
+        """Toggle page thumbnails when the currently previewed tab is clicked."""
+        toggle_fn = getattr(self, "_toggle_pages_sidebar", None)
+        if callable(toggle_fn):
+            toggle_fn()
+
+    def _add_viewer_tab(self, path: str = "") -> PdfViewerPanel:
+        viewer = PdfViewerPanel()
+
+        viewer.crop_selected.connect(self._on_canvas_crop_selected)
+        viewer.crop_applied.connect(self._on_canvas_crop_applied)
+        viewer.crop_undo_requested.connect(self._handle_global_undo)
+        viewer.crop_redo_requested.connect(self._handle_global_redo)
+        if hasattr(viewer, "page_action_requested"):
+            viewer.page_action_requested.connect(self._on_thumbnail_action_requested)
+
+        viewer._canvas_scroll.verticalScrollBar().valueChanged.connect(
+            lambda _: self._update_page_nav()
+        )
+        viewer._canvas.zoom_changed.connect(lambda _: self._update_page_nav())
+
+        self._viewers.append(viewer)
+        self._viewer_stack.addWidget(viewer)
+
+        tab_title = os.path.basename(path) if path else t("viewer.title")
+        tab_idx = self._tab_bar.addTab(tab_title)
+        self._tab_bar.setTabToolTip(tab_idx, path or "")
+        self._tab_bar.setCurrentIndex(tab_idx)
+        self._viewer_stack.setCurrentIndex(tab_idx)
+
+        if path:
+            viewer.load(path)
+
+        self._update_tab_bar_visibility()
+        if hasattr(self, "_update_page_nav"):
+            self._update_page_nav()
+        if hasattr(self, "_update_breadcrumb"):
+            self._update_breadcrumb()
+        return viewer
+
+    def _update_tab_bar_visibility(self) -> None:
+        has_multiple = len(self._viewers) > 1
+        has_open_doc = any(bool(v.current_path()) for v in self._viewers)
+        self._tab_bar.setVisible(has_multiple or has_open_doc)
+        if hasattr(self, "_update_breadcrumb"):
+            self._update_breadcrumb()
+
+    def _close_tab(self, index: int) -> None:
+        if not (0 <= index < len(self._viewers)):
+            return
+        viewer = self._viewers[index]
+
+        if hasattr(self, "_viewer_has_unsaved") and self._viewer_has_unsaved(viewer):
+            ans = QMessageBox.question(
+                self,
+                t("msg.warning"),
+                t("pipeline.unsaved_prompt"),
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if ans == QMessageBox.StandardButton.Cancel:
+                return
+            if ans == QMessageBox.StandardButton.Save:
+                self._save_pipeline()
+
+        if hasattr(self, "_cleanup_pipeline"):
+            self._cleanup_pipeline(id(viewer))
+
+        viewer.close_doc()
+        self._viewer_stack.removeWidget(viewer)
+        self._viewers.pop(index)
+
+        self._tab_bar.blockSignals(True)
+        self._tab_bar.removeTab(index)
+        self._tab_bar.blockSignals(False)
+        viewer.deleteLater()
+
+        if not self._viewers:
+            self._add_viewer_tab()
+        else:
+            new_idx = min(index, len(self._viewers) - 1)
+            self._tab_bar.setCurrentIndex(new_idx)
+            self._viewer_stack.setCurrentIndex(new_idx)
+
+        self._update_tab_bar_visibility()
+        if hasattr(self, "_update_page_nav"):
+            self._update_page_nav()
+        if hasattr(self, "_update_breadcrumb"):
+            self._update_breadcrumb()
+
+    def _close_current_tab(self) -> None:
+        if hasattr(self, "_viewer_stack"):
+            self._close_tab(self._viewer_stack.currentIndex())
+
+    def _on_tab_changed(self, index: int) -> None:
+        if 0 <= index < len(self._viewers):
+            self._viewer_stack.setCurrentIndex(index)
+            viewer = self._viewers[index]
+            self._update_tab_bar_visibility()
+            if hasattr(self, "_update_page_nav"):
+                self._update_page_nav()
+            if hasattr(self, "_update_breadcrumb"):
+                self._update_breadcrumb()
+            if hasattr(self, "setWindowTitle"):
+                doc_name = os.path.basename(viewer._original_doc_path or viewer.current_path()) if viewer.current_path() else ""
+                if doc_name:
+                    self.setWindowTitle(f"{t('app.name')} - {doc_name}")
+                else:
+                    self.setWindowTitle(t("app.name"))
+            if getattr(self, "_current_tool", -1) >= 0:
+                tool_w = self.stack.widget(self._current_tool)
+                cur_path = viewer.current_path()
+                fn = getattr(tool_w, "auto_load", None)
+                if cur_path and callable(fn):
+                    fn(cur_path)
+            elif hasattr(self, "_setup_zoom_bar"):
+                self._setup_zoom_bar(True, canvas=viewer._canvas)
+
+    def _on_tab_context_menu(self, point: QPoint) -> None:
+        tab_idx = self._tab_bar.tabAt(point)
+        if tab_idx < 0:
+            return
+        viewer = self._viewers[tab_idx]
+        path = viewer.current_path()
+        dark = getattr(self, "_dark_mode", True)
+        icon_color = TEXT_PRI if dark else _LQ
+
+        menu = QMenu(self)
+
+        act_close = menu.addAction(
+            qta.icon("fa5s.times", color="#EF4444"),
+            "Close Tab",
+        )
+
+        can_close_others = len(self._viewers) > 1
+        act_close_others = menu.addAction(
+            qta.icon("fa5s.window-close", color=icon_color),
+            "Close All Other Tabs",
+        )
+        act_close_others.setEnabled(can_close_others)
+
+        menu.addSeparator()
+
+        act_reveal = None
+        act_copy_path = None
+        act_delete_disk = None
+        if path and os.path.exists(path):
+            if sys.platform == "win32":
+                reveal_label = "Reveal in File Explorer"
+            elif sys.platform == "darwin":
+                reveal_label = "Reveal in Finder"
+            elif shutil.which("dolphin"):
+                reveal_label = "Reveal in Dolphin"
+            else:
+                reveal_label = "Reveal in File Manager"
+
+            act_reveal = menu.addAction(
+                qta.icon("fa5s.folder-open", color=icon_color),
+                reveal_label,
+            )
+            act_copy_path = menu.addAction(
+                qta.icon("fa5s.copy", color=icon_color),
+                "Copy Full Path",
+            )
+            menu.addSeparator()
+            act_delete_disk = menu.addAction(
+                qta.icon("fa5s.trash-alt", color="#EF4444"),
+                "Delete From Disk",
+            )
+
+        chosen = menu.exec(self._tab_bar.mapToGlobal(point))
+        if chosen == act_close:
+            self._close_tab(tab_idx)
+        elif chosen == act_close_others:
+            for i in range(len(self._viewers) - 1, -1, -1):
+                if i != tab_idx:
+                    self._close_tab(i)
+        elif act_reveal and chosen == act_reveal:
+            reveal_file(path)
+        elif act_copy_path and chosen == act_copy_path:
+            QApplication.clipboard().setText(path)
+        elif act_delete_disk and chosen == act_delete_disk:
+            filename = os.path.basename(path)
+            reply = QMessageBox.question(
+                self,
+                "Delete From Disk",
+                f"Are you sure you want to permanently delete '{filename}' from disk?\n\n{path}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                orig_path = getattr(viewer, "_original_doc_path", "") or path
+                if hasattr(self, "_cleanup_pipeline"):
+                    self._cleanup_pipeline(id(viewer))
+                self._close_tab(tab_idx)
+                for target in {path, orig_path}:
+                    if target and os.path.isfile(target):
+                        try:
+                            os.remove(target)
+                        except Exception as exc:
+                            QMessageBox.critical(self, "Error", f"Could not delete file:\n{exc}")
+                try:
+                    from app.i18n import _update_config
+                    norm_targets = {os.path.normpath(t) for t in (path, orig_path) if t}
+                    def _mutate(cfg: dict) -> None:
+                        recents = cfg.get("recent_files", [])
+                        if isinstance(recents, list):
+                            cfg["recent_files"] = [
+                                r for r in recents
+                                if isinstance(r, str) and os.path.normpath(r) not in norm_targets
+                            ]
+                    _update_config(_mutate)
+                except Exception:
+                    pass
+                for v in getattr(self, "_viewers", []):
+                    ref = getattr(v, "_refresh_recents", None)
+                    if callable(ref):
+                        with contextlib.suppress(Exception):
+                            ref()
+                set_status = getattr(self, "_set_status", None)
+                if callable(set_status):
+                    set_status(f"✔ Deleted '{filename}' from disc")
+                elif hasattr(self, "_sb"):
+                    self._sb.showMessage(f"✔ Deleted '{filename}' from disc")
+
+    def _load_and_track(self, path: str) -> PdfViewerPanel | None:
+        """Open a file; if it's a non-PDF (DOCX, PPTX, XLSX, TXT, image, etc.), automatically convert to PDF and load."""
+        if not path or not os.path.isfile(path):
+            return None
+        norm_path = os.path.abspath(path)
+
+        # 1. Switch to tab if already open
+        for i, v in enumerate(self._viewers):
+            orig_p = getattr(v, "_original_doc_path", "")
+            curr_p = v.current_path()
+            if (orig_p and os.path.abspath(orig_p) == norm_path) or (curr_p and os.path.abspath(curr_p) == norm_path):
+                self._tab_bar.setCurrentIndex(i)
+                self._viewer_stack.setCurrentIndex(i)
+                add_recent_file(norm_path)
+                self._update_tab_bar_visibility()
+                if hasattr(self, "_update_page_nav"):
+                    self._update_page_nav()
+                if hasattr(self, "_update_breadcrumb"):
+                    self._update_breadcrumb()
+                return v
+
+        # 2. Check if file is PDF or requires automatic conversion
+        is_pdf = norm_path.lower().endswith(".pdf")
+        if not is_pdf:
+            try:
+                with open(norm_path, "rb") as f:
+                    header = f.read(1024)
+                    if b"%PDF-" in header:
+                        is_pdf = True
+            except Exception:
+                is_pdf = False
+
+        temp_pdf = None
+        target_load_path = norm_path
+
+        if not is_pdf:
+            try:
+                if hasattr(self, "_set_status"):
+                    self._set_status(f"Converting {os.path.basename(norm_path)} to PDF...")
+                temp_pdf = convert_file_to_pdf(norm_path)
+                target_load_path = temp_pdf
+            except Exception as exc:
+                show_error(self, exc)
+                return None
+
+        cur_v = self._viewer
+        if cur_v and not cur_v.current_path():
+            target_v = cur_v
+            idx = self._viewer_stack.currentIndex()
+        else:
+            target_v = self._add_viewer_tab()
+            idx = len(self._viewers) - 1
+
+        target_v._original_doc_path = norm_path
+        if temp_pdf:
+            target_v._history_temp_files.add(temp_pdf)
+            vid = id(target_v)
+            ps = getattr(self, "_pipeline_state", None)
+            if ps is not None:
+                ps[vid] = {
+                    "original_path": norm_path,
+                    "temp_path": temp_pdf,
+                }
+
+        target_v.load(target_load_path, _is_history_step=bool(temp_pdf))
+        target_v._original_doc_path = norm_path
+        add_recent_file(norm_path)
+
+        tab_title = os.path.basename(norm_path)
+        if temp_pdf:
+            tab_title = f"● {tab_title}"
+            tooltip = f"{norm_path} (Converted to PDF)"
+        else:
+            tooltip = norm_path
+
+        self._tab_bar.setTabText(idx, tab_title)
+        self._tab_bar.setTabToolTip(idx, tooltip)
+        self._update_tab_bar_visibility()
+        if hasattr(self, "_update_breadcrumb"):
+            self._update_breadcrumb()
+        if hasattr(self, "_update_page_nav"):
+            self._update_page_nav()
+
+        if getattr(self, "_current_tool", -1) >= 0:
+            tool_w = self.stack.widget(self._current_tool)
+            fn = getattr(tool_w, "auto_load", None)
+            if callable(fn):
+                fn(target_load_path)
+
+        if temp_pdf and hasattr(self, "_set_status"):
+            self._set_status(f"✔ Converted {os.path.basename(norm_path)} to PDF (Ctrl+S to save as PDF)")
+        return target_v
+
+    def _on_second_instance(self, paths: list[str]) -> None:
+        self.setWindowState(
+            self.windowState() & ~Qt.WindowState.WindowMinimized | Qt.WindowState.WindowActive
+        )
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        for p in paths:
+            if os.path.isfile(p):
+                self._load_and_track(p)
+
+    def _on_canvas_crop_selected(self, page_idx: int, rect: tuple) -> None:
+        crop_idx = self._crop_tool_idx() if hasattr(self, "_crop_tool_idx") else -1
+        if crop_idx >= 0:
+            crop_w = self.stack.widget(crop_idx)
+            fn = getattr(crop_w, "on_canvas_crop_selected", None)
+            if callable(fn):
+                fn(page_idx, rect)
+
+    def _on_canvas_crop_applied(self) -> None:
+        crop_idx = self._crop_tool_idx() if hasattr(self, "_crop_tool_idx") else -1
+        if crop_idx >= 0:
+            crop_w = self.stack.widget(crop_idx)
+            fn = getattr(crop_w, "apply_crop_preview", None)
+            if callable(fn):
+                fn()
+
+    def _on_thumbnail_action_requested(self, action: str, pages_arg: object) -> None:
+        if self._viewer and hasattr(self._viewer, "_on_thumbnail_action"):
+            self._viewer._on_thumbnail_action(action, pages_arg)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                local = url.toLocalFile()
+                if local and (os.path.isfile(local) or os.path.isdir(local)):
+                    event.acceptProposedAction()
+                    return
+        super().dragEnterEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        urls = event.mimeData().urls()
+        files = [
+            u.toLocalFile()
+            for u in urls
+            if u.toLocalFile() and os.path.isfile(u.toLocalFile())
+        ]
+        if files:
+            for p in files:
+                self._load_and_track(p)
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)

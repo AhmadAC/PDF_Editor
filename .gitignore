@@ -1,0 +1,18 @@
+*.lnk
+*.desktop
+pw.py
+*.pyc
+/env
+/venv
+env/
+venv/
+__pycache__/
+tempCodeRunnerFile.py
+merged.txt
+*.log
+
+# Ignore any folder (and its contents) starting with 0
+0*/
+0/
+/0
+history.json

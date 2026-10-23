@@ -1,0 +1,12 @@
+{
+  "user_id": "ali",
+  "passcode": "1688",
+  "account_id": "",
+  "printer_ip": "172.31.2.14",
+  "printer_queue": "",
+  "duplex": "2-Sided (Flip on Long Edge)",
+  "paper_size": "A4",
+  "color_mode": "Color",
+  "copies": 1,
+  "collate": true
+}
