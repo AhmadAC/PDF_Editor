@@ -48,7 +48,6 @@ def find_entry_script(project_root: Path) -> Path:
     candidates = [
         "main.py",
         "PDF_Editor.py",
-        "PDF_Editor.py",
         "run.py",
         "app.py",
     ]
@@ -82,26 +81,29 @@ def register_windows_association(
 
     import ctypes
     try:
-        import winreg as _winreg  # type: ignore[import-not-found]
+        import winreg as _winreg
         winreg: Any = _winreg
     except ImportError:
-        winreg = None  # type: ignore
+        winreg = None
 
     if winreg is None:
         return
 
+    # Ensure paths are absolute so Windows doesn't fail to locate the script
+    python_exe_str = os.path.abspath(python_exe)
+    target_script_str = os.path.abspath(target_script)
+
     prog_id = f"{app_name}.Assoc"
-    # %1 tells Windows to forward the double-clicked PDF file path to the script
-    open_command = f'"{python_exe}" "{target_script}" "%1"'
+    open_command = f'"{python_exe_str}" "{target_script_str}" "%1"'
+    capabilities_path = rf"Software\{app_name}\Capabilities"
 
     try:
         # 1. Create the ProgID and set the execution command
         with winreg.CreateKey(
             winreg.HKEY_CURRENT_USER, rf"Software\Classes\{prog_id}"
         ) as key:
-            winreg.SetValueEx(
-                key, "", 0, winreg.REG_SZ, f"{app_name} PDF Document"
-            )
+            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f"{app_name} PDF Document")
+            winreg.SetValueEx(key, "FriendlyTypeName", 0, winreg.REG_SZ, f"{app_name} PDF Document")
 
         with winreg.CreateKey(
             winreg.HKEY_CURRENT_USER,
@@ -109,27 +111,53 @@ def register_windows_association(
         ) as key:
             winreg.SetValueEx(key, "", 0, winreg.REG_SZ, open_command)
 
+        # Handle Icon Assignment properly
+        icon_val = ""
         if icon_path and icon_path.exists():
+            icon_str = str(icon_path.resolve())
+            icon_val = f'"{icon_str}",0'
+
             with winreg.CreateKey(
                 winreg.HKEY_CURRENT_USER,
                 rf"Software\Classes\{prog_id}\DefaultIcon",
             ) as key:
-                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, str(icon_path))
+                winreg.SetValueEx(key, "", 0, winreg.REG_SZ, icon_val)
 
-        # 2. Add to .pdf OpenWithProgids so it shows up in "Open With"
+        # Give the ProgID a distinct Application identity
+        with winreg.CreateKey(
+            winreg.HKEY_CURRENT_USER, rf"Software\Classes\{prog_id}\Application"
+        ) as key:
+            winreg.SetValueEx(key, "ApplicationName", 0, winreg.REG_SZ, app_name)
+            winreg.SetValueEx(key, "ApplicationCompany", 0, winreg.REG_SZ, app_name)
+            winreg.SetValueEx(
+                key, "ApplicationDescription", 0, winreg.REG_SZ, f"{app_name} — fast desktop PDF editor"
+            )
+            if icon_val:
+                winreg.SetValueEx(key, "ApplicationIcon", 0, winreg.REG_SZ, icon_val)
+
+        # Explicitly declare supported file types for this specific ProgID
+        with winreg.CreateKey(
+            winreg.HKEY_CURRENT_USER, rf"Software\Classes\{prog_id}\SupportedTypes"
+        ) as key:
+            winreg.SetValueEx(key, ".pdf", 0, winreg.REG_SZ, "")
+
+        # 2. FORCE overwrite the base .pdf association to remove PDFApps footprint
+        with winreg.CreateKey(
+            winreg.HKEY_CURRENT_USER, r"Software\Classes\.pdf"
+        ) as key:
+            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, prog_id)
+
+        # Add to .pdf OpenWithProgids so it shows up in "Open With"
         with winreg.CreateKey(
             winreg.HKEY_CURRENT_USER, r"Software\Classes\.pdf\OpenWithProgids"
         ) as key:
-            winreg.SetValueEx(key, prog_id, 0, winreg.REG_NONE, b"")
+            winreg.SetValueEx(key, prog_id, 0, winreg.REG_SZ, "")
 
         # 3. Register Application Capabilities for Windows 10/11 Default Apps settings
-        capabilities_path = rf"Software\{app_name}\Capabilities"
         with winreg.CreateKey(
             winreg.HKEY_CURRENT_USER, capabilities_path
         ) as key:
-            winreg.SetValueEx(
-                key, "ApplicationName", 0, winreg.REG_SZ, app_name
-            )
+            winreg.SetValueEx(key, "ApplicationName", 0, winreg.REG_SZ, app_name)
             winreg.SetValueEx(
                 key,
                 "ApplicationDescription",
@@ -148,7 +176,7 @@ def register_windows_association(
         ) as key:
             winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, capabilities_path)
 
-        # 4. Notify the Windows Shell to immediately refresh associations
+        # 4. Notify the Windows Shell to immediately refresh associations and icons
         SHCNE_ASSOCCHANGED = 0x08000000
         SHCNF_IDLIST = 0x0000
         windll: Any = getattr(ctypes, "windll", None)
@@ -158,7 +186,7 @@ def register_windows_association(
             )
 
         print(
-            f"[SUCCESS] Registered Windows default app capabilities for {app_name}"
+            f"[SUCCESS] Registered Windows default app capabilities and icons for {app_name}"
         )
     except Exception as e:
         print(f"[ERROR] Failed registering Windows file association: {e}")
@@ -213,7 +241,7 @@ def create_windows_shortcut(
         $Shortcut.Description = "PDF_Editor — fast desktop PDF editor"
         """
         if icon_path and icon_path.exists():
-            ps_command += f"\n$Shortcut.IconLocation = {ps_quote(icon_path)}"
+            ps_command += f"\n$Shortcut.IconLocation = {ps_quote(icon_path.resolve())}"
 
         ps_command += "\n$Shortcut.Save()"
 
@@ -244,7 +272,7 @@ GenericName=PDF Editor
 Comment=Fast desktop PDF editor
 Exec=env QT_USE_PORTAL=1 "{python_exe}" "{target_script}" %F
 Path={working_dir}
-Icon={icon_path if icon_path and icon_path.exists() else 'application-pdf'}
+Icon={icon_path.resolve() if icon_path and icon_path.exists() else 'application-pdf'}
 Terminal=false
 StartupNotify=true
 MimeType=application/pdf;
@@ -316,11 +344,9 @@ def main():
         png = project_root / "icon_512.png"
         icon_path = ico if ico.exists() else (png if png.exists() else None)
 
-        # 1. Create standard .lnk shortcuts
         create_windows_shortcut(
             app_name, python_exe, target_script, project_root, icon_path
         )
-        # 2. Register file handler for Windows Default Apps & Open With
         register_windows_association(
             app_name, python_exe, target_script, icon_path
         )

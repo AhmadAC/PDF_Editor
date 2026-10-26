@@ -1,4 +1,3 @@
-"""PDF_Editor – entry point."""
 # PDF_Editor.py
 import argparse
 import ctypes
