@@ -1,5 +1,5 @@
 # app/viewer/presentation.py
-
+"""PDF_Editor – Presentation mode: fullscreen single-page viewer with page transitions, auto-advance, and synchronized position/zoom matching normal view."""
 
 from __future__ import annotations
 
@@ -344,6 +344,11 @@ class PresentationWidget(QWidget):
         if new_page == self._current or not (0 <= new_page < self._total):
             return
         self._prev_pixmap = self._pixmap
+        self._prev_pw = getattr(self, "_rendered_pw", float(self.width()))
+        self._prev_ph = getattr(self, "_rendered_ph", float(self.height()))
+        self._prev_pan_x = float(self._pan_x)
+        self._prev_pan_y = float(self._pan_y)
+
         self._current = new_page
         self._pan_x = 0
         self._pan_y = 0
@@ -595,6 +600,8 @@ class PresentationWidget(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor("#000000"))
+        
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
         pixmap = self._pixmap
         if pixmap is not None and not pixmap.isNull():
@@ -603,38 +610,45 @@ class PresentationWidget(QWidget):
 
             x = float(self._pan_x) if pw > self.width() else (self.width() - pw) / 2.0
             y = float(self._pan_y) if ph > self.height() else (self.height() - ph) / 2.0
+            
+            rect_new = QRect(int(round(x)), int(round(y)), int(round(pw)), int(round(ph)))
 
             t = self._trans_progress
             prev_pixmap = self._prev_pixmap
 
             if prev_pixmap is not None and not prev_pixmap.isNull() and t < 1.0 and self._trans_style:
-                old_w = float(prev_pixmap.width())
-                old_h = float(prev_pixmap.height())
-                old_x = (self.width() - old_w) / 2.0
-                old_y = (self.height() - old_h) / 2.0
+                old_w = getattr(self, "_prev_pw", float(self.width()))
+                old_h = getattr(self, "_prev_ph", float(self.height()))
+                old_pan_x = getattr(self, "_prev_pan_x", 0.0)
+                old_pan_y = getattr(self, "_prev_pan_y", 0.0)
+
+                old_x = float(old_pan_x) if old_w > self.width() else (self.width() - old_w) / 2.0
+                old_y = float(old_pan_y) if old_h > self.height() else (self.height() - old_h) / 2.0
+                
+                rect_old = QRect(int(round(old_x)), int(round(old_y)), int(round(old_w)), int(round(old_h)))
 
                 style = self._trans_style
                 if style == "Push":
                     di = self._trans_direction
                     if di == 90:    # bottom to top
                         dy = int(self.height() * t)
-                        p.drawPixmap(int(round(old_x)), int(round(old_y - dy)), prev_pixmap)
-                        p.drawPixmap(int(round(x)), int(round(y + self.height() - dy)), pixmap)
+                        p.drawPixmap(rect_old.translated(0, -dy), prev_pixmap)
+                        p.drawPixmap(rect_new.translated(0, self.height() - dy), pixmap)
                     elif di == 180: # right to left
                         dx = int(self.width() * t)
-                        p.drawPixmap(int(round(old_x + dx)), int(round(old_y)), prev_pixmap)
-                        p.drawPixmap(int(round(x - self.width() + dx)), int(round(y)), pixmap)
+                        p.drawPixmap(rect_old.translated(dx, 0), prev_pixmap)
+                        p.drawPixmap(rect_new.translated(-self.width() + dx, 0), pixmap)
                     elif di == 270: # top to bottom
                         dy = int(self.height() * t)
-                        p.drawPixmap(int(round(old_x)), int(round(old_y + dy)), prev_pixmap)
-                        p.drawPixmap(int(round(x)), int(round(y - self.height() + dy)), pixmap)
+                        p.drawPixmap(rect_old.translated(0, dy), prev_pixmap)
+                        p.drawPixmap(rect_new.translated(0, -self.height() + dy), pixmap)
                     else:           # left to right (0)
                         dx = int(self.width() * t)
-                        p.drawPixmap(int(round(old_x - dx)), int(round(old_y)), prev_pixmap)
-                        p.drawPixmap(int(round(x + self.width() - dx)), int(round(y)), pixmap)
+                        p.drawPixmap(rect_old.translated(-dx, 0), prev_pixmap)
+                        p.drawPixmap(rect_new.translated(self.width() - dx, 0), pixmap)
 
                 elif style in ("Wipe", "Cover"):
-                    p.drawPixmap(int(round(old_x)), int(round(old_y)), prev_pixmap)
+                    p.drawPixmap(rect_old, prev_pixmap)
                     di = self._trans_direction
                     p.save()
                     if di == 90:
@@ -649,36 +663,36 @@ class PresentationWidget(QWidget):
                     else:
                         split_x = int(self.width() * t)
                         p.setClipRect(QRect(0, 0, split_x, self.height()))
-                    p.drawPixmap(int(round(x)), int(round(y)), pixmap)
+                    p.drawPixmap(rect_new, pixmap)
                     p.restore()
 
                 elif style in ("Fade", "Dissolve"):
                     p.setOpacity(max(0.0, 1.0 - t))
-                    p.drawPixmap(int(round(old_x)), int(round(old_y)), prev_pixmap)
+                    p.drawPixmap(rect_old, prev_pixmap)
                     p.setOpacity(min(1.0, t))
-                    p.drawPixmap(int(round(x)), int(round(y)), pixmap)
+                    p.drawPixmap(rect_new, pixmap)
                     p.setOpacity(1.0)
 
                 elif style == "Box":
-                    p.drawPixmap(int(round(old_x)), int(round(old_y)), prev_pixmap)
+                    p.drawPixmap(rect_old, prev_pixmap)
                     bw = int(self.width() * t)
                     bh = int(self.height() * t)
                     bx = (self.width() - bw) // 2
                     by = (self.height() - bh) // 2
                     p.save()
                     p.setClipRect(QRect(bx, by, bw, bh))
-                    p.drawPixmap(int(round(x)), int(round(y)), pixmap)
+                    p.drawPixmap(rect_new, pixmap)
                     p.restore()
 
                 else:
                     p.setOpacity(max(0.0, 1.0 - t))
-                    p.drawPixmap(int(round(old_x)), int(round(old_y)), prev_pixmap)
+                    p.drawPixmap(rect_old, prev_pixmap)
                     p.setOpacity(min(1.0, t))
-                    p.drawPixmap(int(round(x)), int(round(y)), pixmap)
+                    p.drawPixmap(rect_new, pixmap)
                     p.setOpacity(1.0)
             else:
-                # Direct 1:1 hardware pixel output without bilinear scaling blur
-                p.drawPixmap(int(round(x)), int(round(y)), pixmap)
+                # Direct output with correct layout sizing
+                p.drawPixmap(rect_new, pixmap)
 
         p.end()
 

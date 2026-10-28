@@ -622,6 +622,15 @@ class _SelectCanvas(QWidget):
             entry.lines = lines
             self.update()
 
+    def clear_active_selection(self):
+        self._interaction.clear_selection()
+        self.update()
+
+    def release_doc(self):
+        if self._doc:
+            self._doc.close()
+            self._doc = None
+
     # ── Screen and UI Events ──────────────────────────────────────────────
 
     def showEvent(self, event):
