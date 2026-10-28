@@ -1,5 +1,5 @@
 # app/viewer/presentation.py
-"""PDF_Editor – Presentation mode: fullscreen single-page viewer with page transitions, auto-advance, and synchronized position/zoom matching normal view."""
+
 
 from __future__ import annotations
 
@@ -215,8 +215,16 @@ class PresentationWidget(QWidget):
         self._apply_anchored_zoom(new_zoom, anchor_pos)
 
     def _zoom_reset(self):
-        self._zoom = self._base_fit_zoom
-        self._zoom_factor = 1.0
+        if not self._pixmap:
+            return
+        # In presentation mode, reset should fit the whole page on screen
+        sw = float(self.width())
+        sh = float(self.height())
+        eff_w = getattr(self, "_rendered_pw", sw) / (self._zoom or 1.0)
+        eff_h = getattr(self, "_rendered_ph", sh) / (self._zoom or 1.0)
+        fit_screen_zoom = min(sw / max(1.0, eff_w), sh / max(1.0, eff_h))
+        
+        self._zoom = fit_screen_zoom
         self._pan_x = 0
         self._pan_y = 0
         print("[Presentation DEBUG] Resetting zoom to fit screen.")
@@ -383,9 +391,13 @@ class PresentationWidget(QWidget):
             eff_w = max(1.0, eff_w)
             eff_h = max(1.0, eff_h)
 
-            fit_width_zoom = sw / eff_w
-            fit_height_zoom = sh / eff_h
-            self._base_fit_zoom = min(fit_width_zoom, fit_height_zoom)
+            if self._viewer is not None and hasattr(self._viewer, "_canvas"):
+                normal_canvas = self._viewer._canvas
+                vp_w = normal_canvas.get_viewport_width()
+                target_fit_w = max(400, vp_w - 36)
+                self._base_fit_zoom = target_fit_w / eff_w
+            else:
+                self._base_fit_zoom = sw / eff_w
 
             if self._zoom is None or self._zoom <= 0:
                 self._zoom = self._base_fit_zoom * self._zoom_factor

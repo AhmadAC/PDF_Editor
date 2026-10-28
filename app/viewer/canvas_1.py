@@ -246,6 +246,9 @@ class _SelectCanvas(QWidget):
     # ── Document Lifecycle ────────────────────────────────────────────────
 
     def load(self, doc, target_page: int = 0, path: str = "", password: str = "", target_scroll: int = -1):
+        if self._doc:
+            with contextlib.suppress(Exception):
+                self._doc.close()
         self._doc = doc
         self._path = path
         self._password = password
