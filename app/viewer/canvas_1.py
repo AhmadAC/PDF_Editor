@@ -397,11 +397,11 @@ class _SelectCanvas(QWidget):
         first_src_idx = self._page_order[0] if self._page_order is not None and len(self._page_order) > 0 else 0
         if first_src_idx < 0 or first_src_idx >= self._doc.page_count:
             first_src_idx = 0
-            
+
         page0 = self._doc[first_src_idx]
         rot0 = self._page_rotations.get(first_src_idx, 0) % 360
         crop0 = self._page_crops.get(first_src_idx)
-        
+
         orig_rot0 = page0.rotation
         orig_crop0 = page0.cropbox
         try:
@@ -411,7 +411,7 @@ class _SelectCanvas(QWidget):
                     page0.set_cropbox(cr0)
             if rot0:
                 page0.set_rotation((orig_rot0 + rot0) % 360)
-            
+
             ref_w = max(page0.rect.width, 1.0)
         finally:
             if rot0:
@@ -435,7 +435,7 @@ class _SelectCanvas(QWidget):
             pg = self._doc[src_idx]
             rot = self._page_rotations.get(src_idx, 0) % 360
             crop = self._page_crops.get(src_idx)
-            
+
             orig_rot = pg.rotation
             orig_crop = pg.cropbox
             try:
@@ -445,7 +445,7 @@ class _SelectCanvas(QWidget):
                         pg.set_cropbox(cr)
                 if rot:
                     pg.set_rotation((orig_rot + rot) % 360)
-                
+
                 w = pg.rect.width
                 h = pg.rect.height
             finally:
@@ -551,7 +551,7 @@ class _SelectCanvas(QWidget):
                 )
                 pool.start(job)
 
-    def _on_page_ready(self, gen: int, pos: int, pixmap, words):
+    def _on_page_ready(self, gen: int, pos: int, pixmap, lines):
         if gen != self._gen:
             return
         self._pending.discard(pos)
@@ -559,7 +559,7 @@ class _SelectCanvas(QWidget):
             entry: Any = self._entries[pos]
             entry.pixmap = pixmap
             entry.prev_pixmap = None
-            entry.words = words
+            entry.lines = lines
             self.update()
 
     # ── Screen and UI Events ──────────────────────────────────────────────

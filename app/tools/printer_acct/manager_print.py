@@ -1,3 +1,4 @@
+
 # app/tools/printer_acct/manager_print.py
 import os
 import tempfile
@@ -307,6 +308,8 @@ class ManagerPrintMixin(_Base):
                 {
                     "copies": copies_val,
                     "collate": collate_val,
+                    "duplex": duplex_val,
+                    "paper": paper_val,
                     "color": color_val,
                     "orient": orient_setting,
                     "page_indices": pages_to_print if not self.temp_slice_path else None,

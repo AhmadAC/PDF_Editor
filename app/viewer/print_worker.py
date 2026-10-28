@@ -1,11 +1,11 @@
 # app/viewer/print_worker.py
-"""PDF_Editor – Background worker thread for asynchronous high-speed printing."""
+
 import contextlib
 import os
 import socket
 import subprocess
 from PySide6.QtCore import QThread, Signal, QRectF
-from PySide6.QtGui import QImage, QPainter, QPageLayout
+from PySide6.QtGui import QImage, QPainter, QPageLayout, QPageSize
 from PySide6.QtPrintSupport import QPrinter
 
 
@@ -155,9 +155,43 @@ class _FastPrintWorker(QThread):
         elif "Portrait" in orient:
             printer.setPageOrientation(QPageLayout.Orientation.Portrait)
 
-        # Force software loop to guarantee collation and avoid driver-level crashes on virtual printers
-        job_copies = copies
-        printer.setCopyCount(1)
+        # Set Duplex
+        duplex = self.kwargs.get("duplex", "1-Sided")
+        if "Long Edge" in duplex:
+            printer.setDuplex(QPrinter.DuplexMode.DuplexLongSide)
+        elif "Short Edge" in duplex:
+            printer.setDuplex(QPrinter.DuplexMode.DuplexShortSide)
+        else:
+            printer.setDuplex(QPrinter.DuplexMode.DuplexNone)
+
+        # Set Paper Size
+        paper = self.kwargs.get("paper", "A4")
+        _PAGE_SIZES = {
+            "A4": QPageSize.PageSizeId.A4,
+            "A3": QPageSize.PageSizeId.A3,
+            "Letter": QPageSize.PageSizeId.Letter,
+            "Legal": QPageSize.PageSizeId.Legal,
+            "A5": QPageSize.PageSizeId.A5,
+        }
+        if paper in _PAGE_SIZES:
+            printer.setPageSize(QPageSize(_PAGE_SIZES[paper]))
+
+        # Check if the printer supports driver/hardware-level multiple copies and collation
+        is_file_printer = bool(output_file) or any(
+            k in printer_name.lower() for k in ("pdf", "xps", "document writer", "print to file")
+        )
+
+        use_driver_copies = False
+        if not is_file_printer and printer.supportsMultipleCopies():
+            printer.setCopyCount(copies)
+            if collate:
+                with contextlib.suppress(Exception):
+                    printer.setCollateCopies(True)
+            use_driver_copies = True
+            job_copies = 1
+        else:
+            printer.setCopyCount(1)
+            job_copies = copies
 
         painter = QPainter()
         if not painter.begin(printer):
@@ -180,6 +214,18 @@ class _FastPrintWorker(QThread):
             cs = getattr(fitz, "csRGB") if is_color else getattr(fitz, "csGRAY")
             fmt = QImage.Format.Format_RGB888 if is_color else QImage.Format.Format_Grayscale8
 
+            # In-memory page raster cache: rasterize each page ONCE and reuse for all copies
+            rendered_cache: dict[int, QImage] = {}
+
+            def get_rendered_page(p_idx: int) -> QImage:
+                if p_idx in rendered_cache:
+                    return rendered_cache[p_idx]
+                page = doc[p_idx]
+                pix = page.get_pixmap(matrix=mat, colorspace=cs, alpha=False)
+                img = QImage(pix.samples, pix.width, pix.height, pix.stride, fmt).copy()
+                rendered_cache[p_idx] = img
+                return img
+
             first_page = True
             
             def print_page(p_idx):
@@ -195,10 +241,7 @@ class _FastPrintWorker(QThread):
                     printer.newPage()
                 first_page = False
 
-                page = doc[p_idx]
-                pix = page.get_pixmap(matrix=mat, colorspace=cs, alpha=False)
-                img = QImage(pix.samples, pix.width, pix.height, pix.stride, fmt).copy()
-                pix = None
+                img = get_rendered_page(p_idx)
 
                 target_rect = QRectF(painter.viewport())
                 source_rect = QRectF(0, 0, img.width(), img.height())
@@ -209,7 +252,7 @@ class _FastPrintWorker(QThread):
                 y = target_rect.y() + (target_rect.height() - h) / 2
                 painter.drawImage(QRectF(x, y, w, h), img, source_rect)
 
-            if collate:
+            if collate or use_driver_copies:
                 for _ in range(job_copies):
                     for p_idx in pages_to_render:
                         print_page(p_idx)
@@ -217,6 +260,8 @@ class _FastPrintWorker(QThread):
                 for p_idx in pages_to_render:
                     for _ in range(job_copies):
                         print_page(p_idx)
+
+            rendered_cache.clear()
 
         finally:
             if doc is not None:

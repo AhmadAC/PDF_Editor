@@ -16,7 +16,7 @@ import qtawesome as qta
 
 from app.constants import ACCENT, TEXT_SEC
 from app.i18n import t
-from app.viewer.canvas_worker import _NOTE_ICON_SIZE, sort_words_in_reading_order
+from app.viewer.canvas_worker import _NOTE_ICON_SIZE, extract_page_lines
 
 if TYPE_CHECKING:
     from app.viewer.canvas_1 import _SelectCanvas
@@ -56,6 +56,7 @@ class CanvasInteractionHandler:
 
     def __init__(self, canvas: _SelectCanvas):
         self.canvas = canvas
+        self._is_dragging_text: bool = False
 
     def clear_selection(self):
         c = self.canvas
@@ -63,12 +64,13 @@ class CanvasInteractionHandler:
         c._drag_end   = None
         c._sel_rects  = []
         c._sel_text   = ""
+        self._is_dragging_text = False
 
-    def ensure_entry_words(self, entry) -> list:
-        """Ensure page word coordinates are extracted and sorted in reading order, even if off-screen."""
-        words = getattr(entry, "words", None)
-        if words is not None:
-            return words
+    def ensure_entry_lines(self, entry) -> list[dict]:
+        """Ensure page lines with character-level details are extracted and cached."""
+        lines = getattr(entry, "lines", None)
+        if lines is not None:
+            return lines
         c = self.canvas
         if not c._doc:
             return []
@@ -88,30 +90,17 @@ class CanvasInteractionHandler:
                         page.set_cropbox(crop_rect)
                 if rot:
                     page.set_rotation((orig_rot + rot) % 360)
-                raw_words = page.get_text("words")
                 rx0 = page.rect.x0
                 ry0 = page.rect.y0
+                lines = extract_page_lines(page, rx0, ry0)
             finally:
                 if rot:
                     page.set_rotation(orig_rot)
                 if crop:
                     page.set_cropbox(orig_crop)
 
-            norm_words = []
-            for w in raw_words:
-                norm_words.append((
-                    w[0] - rx0,
-                    w[1] - ry0,
-                    w[2] - rx0,
-                    w[3] - ry0,
-                    w[4],
-                    w[5] if len(w) > 5 else 0,
-                    w[6] if len(w) > 6 else 0,
-                    w[7] if len(w) > 7 else 0,
-                ))
-            words = sort_words_in_reading_order(norm_words)
-            entry.words = words
-            return words
+            entry.lines = lines
+            return lines
         except Exception:
             return []
 
@@ -121,23 +110,26 @@ class CanvasInteractionHandler:
         if not c._entries or not c._doc:
             return
 
-        first_pi = -1
-        first_wi = -1
-        last_pi = -1
-        last_wi = -1
+        first_p = -1
+        first_l = 0
+        first_c = 0
+        last_p = -1
+        last_l = 0
+        last_c = 0
 
         for pi, entry in enumerate(c._entries):
-            words = self.ensure_entry_words(entry)
-            if words:
-                if first_pi < 0:
-                    first_pi = pi
-                    first_wi = 0
-                last_pi = pi
-                last_wi = len(words) - 1
+            lines = self.ensure_entry_lines(entry)
+            if lines and any(l.get("chars") for l in lines):
+                if first_p < 0:
+                    first_p = pi
+                    first_l = 0
+                    first_c = 0
+                last_p = pi
+                last_l = len(lines) - 1
+                last_c = len(lines[-1]["chars"])
 
-        if first_pi < 0:
-            c._sel_rects = []
-            c._sel_text = ""
+        if first_p < 0:
+            self.clear_selection()
             c.text_copied.emit("")
             c.update()
             win: Any = c.window()
@@ -146,9 +138,7 @@ class CanvasInteractionHandler:
                 set_status("ℹ No text found in document")
             return
 
-        c._drag_start = None
-        c._drag_end = None
-        self._select_word_range(first_pi, first_wi, last_pi, last_wi)
+        self._select_char_range(first_p, first_l, first_c, last_p, last_l, last_c)
         if c._sel_text:
             QApplication.clipboard().setText(c._sel_text)
         c.text_copied.emit(c._sel_text)
@@ -158,108 +148,89 @@ class CanvasInteractionHandler:
         set_status = getattr(win, "_set_status", None)
         if callable(set_status) and c._sel_text:
             char_count = len(c._sel_text)
-            page_count = last_pi - first_pi + 1
+            page_count = last_p - first_p + 1
             set_status(f"✔ Selected all text across {page_count} page(s) ({char_count:,} characters) — copied to clipboard")
 
-    def _get_page_lines(self, words: list | None) -> list[list[tuple[int, tuple]]]:
-        """Group words into natural reading lines with uniform baseline and vertical bounds."""
-        if not words:
-            return []
-        lines: list[list[tuple[int, tuple]]] = []
-        curr_line: list[tuple[int, tuple]] = []
-        curr_key = None
-
-        for wi, w in enumerate(words):
-            key = (w[5], w[6]) if len(w) >= 7 else (0, 0)
-            if key != curr_key:
-                if curr_line:
-                    lines.append(curr_line)
-                curr_line = [(wi, w)]
-                curr_key = key
-            else:
-                prev_w = curr_line[-1][1]
-                line_h = max(6.0, prev_w[3] - prev_w[1])
-                if abs(w[3] - prev_w[3]) > line_h * 0.8:
-                    lines.append(curr_line)
-                    curr_line = [(wi, w)]
-                else:
-                    curr_line.append((wi, w))
-        if curr_line:
-            lines.append(curr_line)
-        return lines
-
-    def _find_word_index(self, words: list | None, px: float, py: float) -> int:
-        """Find the word index at or closest to the given page coordinates."""
-        if not words:
-            return -1
-        lines = self._get_page_lines(words)
+    def _find_char_at(self, lines: list[dict], px: float, py: float) -> tuple[int, int]:
+        """Find the (line_idx, char_idx) boundary closest to page coordinates (px, py)."""
         if not lines:
-            return -1
+            return (-1, -1)
 
-        for line in lines:
-            for wi, w in line:
-                if w[0] <= px <= w[2] and w[1] <= py <= w[3]:
-                    return wi
+        # Check if py is vertically inside any line
+        matching_lines = []
+        for li, ln in enumerate(lines):
+            if ln["y0"] - 3.0 <= py <= ln["y1"] + 3.0:
+                matching_lines.append((li, ln))
 
-        line_data = []
-        for line in lines:
-            lx0 = min(item[1][0] for item in line)
-            ly0 = min(item[1][1] for item in line)
-            lx1 = max(item[1][2] for item in line)
-            ly1 = max(item[1][3] for item in line)
-            lyc = (ly0 + ly1) / 2.0
-            line_data.append((line, lx0, ly0, lx1, ly1, lyc))
+        if matching_lines:
+            best_li, best_ln = matching_lines[0]
+            best_dist = float("inf")
+            for li, ln in matching_lines:
+                bx0, _, bx1, _ = ln["bbox"]
+                if bx0 <= px <= bx1:
+                    best_li, best_ln = li, ln
+                    break
+                d = min(abs(px - bx0), abs(px - bx1))
+                if d < best_dist:
+                    best_dist = d
+                    best_li, best_ln = li, ln
+            return (best_li, self._find_char_in_line(best_ln["chars"], px))
 
-        for line, lx0, ly0, lx1, ly1, _ in line_data:
-            if ly0 - 3.0 <= py <= ly1 + 3.0:
-                if px <= lx0:
-                    return line[0][0]
-                if px >= lx1:
-                    return line[-1][0]
-                best_wi = line[0][0]
-                best_dist = float("inf")
-                for wi, w in line:
-                    wc = (w[0] + w[2]) / 2.0
-                    d = abs(px - wc)
-                    if d < best_dist:
-                        best_dist = d
-                        best_wi = wi
-                return best_wi
+        # If py is above all lines
+        if py < lines[0]["y0"]:
+            return (0, 0 if px <= lines[0]["bbox"][0] else self._find_char_in_line(lines[0]["chars"], px))
 
-        if py < line_data[0][2]:
-            return line_data[0][0][0][0]
-        if py > line_data[-1][4]:
-            return line_data[-1][0][-1][0]
+        # If py is below all lines
+        if py > lines[-1]["y1"]:
+            last_line = lines[-1]
+            return (len(lines) - 1, len(last_line["chars"]) if px >= last_line["bbox"][2] else self._find_char_in_line(last_line["chars"], px))
 
-        best_line = min(line_data, key=lambda ld: abs(py - ld[5]))
-        line, lx0, ly0, lx1, ly1, _ = best_line
-        if px <= lx0:
-            return line[0][0]
-        if px >= lx1:
-            return line[-1][0]
-        best_wi = line[0][0]
+        # In between lines: pick line with minimal vertical distance
+        best_li = 0
         best_dist = float("inf")
-        for wi, w in line:
-            wc = (w[0] + w[2]) / 2.0
-            d = abs(px - wc)
+        for li, ln in enumerate(lines):
+            mid_y = (ln["y0"] + ln["y1"]) / 2.0
+            d = abs(py - mid_y)
             if d < best_dist:
                 best_dist = d
-                best_wi = wi
-        return best_wi
+                best_li = li
 
-    def _select_word_range(self, p1_page: int, w1: int, p2_page: int, w2: int):
+        chosen_ln = lines[best_li]
+        return (best_li, self._find_char_in_line(chosen_ln["chars"], px))
+
+    @staticmethod
+    def _find_char_in_line(chars: list[tuple[float, float, float, float, str]], px: float) -> int:
+        """Find the character boundary index in a line for coordinate px."""
+        if not chars:
+            return 0
+        if px <= chars[0][0]:
+            return 0
+        if px >= chars[-1][2]:
+            return len(chars)
+
+        for ci, c in enumerate(chars):
+            mid_x = (c[0] + c[2]) / 2.0
+            if px < mid_x:
+                return ci
+        return len(chars)
+
+    def _select_char_range(
+        self,
+        p1_page: int, l1: int, c1: int,
+        p2_page: int, l2: int, c2: int,
+    ) -> None:
         c = self.canvas
         if p1_page < 0 or p2_page < 0:
             c._sel_rects = []
             c._sel_text = ""
             return
 
-        if (p1_page, w1) > (p2_page, w2):
-            p_start, w_start = p2_page, w2
-            p_end, w_end = p1_page, w1
+        if (p1_page, l1, c1) > (p2_page, l2, c2):
+            p_start, l_start, c_start = p2_page, l2, c2
+            p_end, l_end, c_end = p1_page, l1, c1
         else:
-            p_start, w_start = p1_page, w1
-            p_end, w_end = p2_page, w2
+            p_start, l_start, c_start = p1_page, l1, c1
+            p_end, l_end, c_end = p2_page, l2, c2
 
         rects: list[QRect] = []
         page_texts: list[str] = []
@@ -269,66 +240,43 @@ class CanvasInteractionHandler:
             if pi >= len(c._entries):
                 continue
             entry = c._entries[pi]
-            words = self.ensure_entry_words(entry)
-            if not words:
+            lines = self.ensure_entry_lines(entry)
+            if not lines:
                 continue
 
-            pw_start = w_start if pi == p_start else 0
-            pw_end = w_end if pi == p_end else len(words) - 1
-            if pw_start > pw_end or pw_start >= len(words):
+            pl_start = l_start if pi == p_start else 0
+            pl_end = l_end if pi == p_end else len(lines) - 1
+            if pl_start > pl_end or pl_start >= len(lines):
                 continue
-
-            selected_indices = set(range(pw_start, pw_end + 1))
-            lines = self._get_page_lines(words)
 
             x_off = c.page_x_offset(entry)
             line_strings: list[str] = []
 
-            for line in lines:
-                sel_in_line = [item for item in line if item[0] in selected_indices]
-                if not sel_in_line:
+            for li in range(pl_start, min(pl_end + 1, len(lines))):
+                line = lines[li]
+                chars = line.get("chars", [])
+                if not chars:
                     continue
 
-                sel_in_line.sort(key=lambda item: item[1][0])
+                sc = c_start if (pi == p_start and li == pl_start) else 0
+                ec = c_end if (pi == p_end and li == pl_end) else len(chars)
 
-                full_ly0 = min(item[1][1] for item in line)
-                full_ly1 = max(item[1][3] for item in line)
-                line_h = max(6.0, full_ly1 - full_ly0)
+                sc = max(0, min(sc, len(chars)))
+                ec = max(0, min(ec, len(chars)))
 
-                segments: list[tuple[float, float]] = []
-                seg_x0 = sel_in_line[0][1][0]
-                seg_x1 = sel_in_line[0][1][2]
+                if sc >= ec:
+                    continue
 
-                for item in sel_in_line[1:]:
-                    w = item[1]
-                    gap = w[0] - seg_x1
-                    if gap <= max(14.0, line_h * 1.5) and w[0] >= seg_x0:
-                        seg_x1 = max(seg_x1, w[2])
-                    else:
-                        segments.append((seg_x0, seg_x1))
-                        seg_x0 = w[0]
-                        seg_x1 = w[2]
-                segments.append((seg_x0, seg_x1))
+                selected_chars = chars[sc:ec]
+                line_text = "".join(ch[4] for ch in selected_chars)
+                if line_text:
+                    line_strings.append(line_text)
 
-                for sx_start, sx_end in segments:
-                    rx0 = x_off + int(round(sx_start * z))
-                    ry0 = entry.y_off + int(round(full_ly0 * z))
-                    rx1 = x_off + int(round(sx_end * z))
-                    ry1 = entry.y_off + int(round(full_ly1 * z))
-                    rects.append(QRect(rx0, ry0, max(1, rx1 - rx0), max(1, ry1 - ry0)))
-
-                line_parts: list[str] = []
-                for idx, item in enumerate(sel_in_line):
-                    txt = item[1][4]
-                    if idx == 0:
-                        line_parts.append(txt)
-                    else:
-                        prev_txt = sel_in_line[idx - 1][1][4]
-                        if prev_txt and txt and is_cjk(prev_txt[-1]) and is_cjk(txt[0]):
-                            line_parts.append(txt)
-                        else:
-                            line_parts.append(" " + txt)
-                line_strings.append("".join(line_parts))
+                rx0 = x_off + int(round(selected_chars[0][0] * z))
+                ry0 = entry.y_off + int(round(line["y0"] * z))
+                rx1 = x_off + int(round(selected_chars[-1][2] * z))
+                ry1 = entry.y_off + int(round(line["y1"] * z))
+                rects.append(QRect(rx0, ry0, max(1, rx1 - rx0), max(1, ry1 - ry0)))
 
             if line_strings:
                 page_texts.append("\n".join(line_strings))
@@ -359,23 +307,24 @@ class CanvasInteractionHandler:
         p2_x = (end.x() - x_off2) / z
         p2_y = (end.y() - e2.y_off) / z
 
-        words1 = self.ensure_entry_words(e1)
-        words2 = self.ensure_entry_words(e2)
+        lines1 = self.ensure_entry_lines(e1)
+        lines2 = self.ensure_entry_lines(e2)
 
-        w1_idx = self._find_word_index(words1, p1_x, p1_y)
-        w2_idx = self._find_word_index(words2, p2_x, p2_y)
+        l1, c1 = self._find_char_at(lines1, p1_x, p1_y)
+        l2, c2 = self._find_char_at(lines2, p2_x, p2_y)
 
-        if w1_idx < 0 and w2_idx < 0:
+        if l1 < 0 and l2 < 0:
             c._sel_rects = []
             c._sel_text = ""
             return
 
-        if w1_idx < 0:
-            w1_idx = 0
-        if w2_idx < 0:
-            w2_idx = len(words2 or []) - 1
+        if l1 < 0:
+            l1, c1 = 0, 0
+        if l2 < 0:
+            l2 = max(0, len(lines2) - 1)
+            c2 = len(lines2[l2]["chars"]) if lines2 else 0
 
-        self._select_word_range(p1_page, w1_idx, p2_page, w2_idx)
+        self._select_char_range(p1_page, l1, c1, p2_page, l2, c2)
 
     def note_icon_at(self, pos: QPoint) -> tuple[int, int] | None:
         c = self.canvas
@@ -517,12 +466,14 @@ class CanvasInteractionHandler:
             e.accept()
             return
 
-        # ── 4. Standard text selection drag ───────────────────────────
+        # ── 4. Standard text selection ────────────────────────────────
         if e.button() == Qt.MouseButton.LeftButton:
             c.setFocus()
+            self.clear_selection()
+            c.text_copied.emit("")
             c._drag_start = pos
-            c._drag_end   = pos
-            self.compute_selection()
+            c._drag_end   = None
+            self._is_dragging_text = False
             c.update()
             e.accept()
 
@@ -602,10 +553,16 @@ class CanvasInteractionHandler:
             return
 
         if c._drag_start and (e.buttons() & Qt.MouseButton.LeftButton):
-            c._drag_end = pos
-            self.compute_selection()
-            c.update()
-            e.accept()
+            if not self._is_dragging_text:
+                dx = pos.x() - c._drag_start.x()
+                dy = pos.y() - c._drag_start.y()
+                if abs(dx) >= 3 or abs(dy) >= 3:
+                    self._is_dragging_text = True
+            if self._is_dragging_text:
+                c._drag_end = pos
+                self.compute_selection()
+                c.update()
+                e.accept()
 
     def mouse_double_click(self, e):
         c = self.canvas
@@ -623,22 +580,31 @@ class CanvasInteractionHandler:
             c._active_page_idx = page_idx
             if 0 <= page_idx < len(c._entries):
                 entry = c._entries[page_idx]
-                words = self.ensure_entry_words(entry)
-                if words:
+                lines = self.ensure_entry_lines(entry)
+                if lines:
                     x_off = c.page_x_offset(entry)
                     z = c._zoom or 1.0
                     px = (pos.x() - x_off) / z
                     py = (pos.y() - entry.y_off) / z
-                    wi = self._find_word_index(words, px, py)
-                    if wi >= 0:
-                        c._drag_start = pos
-                        c._drag_end = pos
-                        self._select_word_range(page_idx, wi, page_idx, wi)
-                        if c._sel_text:
-                            QApplication.clipboard().setText(c._sel_text)
-                        c.text_copied.emit(c._sel_text)
-                        c.update()
-                        e.accept()
+                    line_idx, char_idx = self._find_char_at(lines, px, py)
+                    if 0 <= line_idx < len(lines):
+                        line = lines[line_idx]
+                        chars = line.get("chars", [])
+                        if chars:
+                            c_idx = max(0, min(char_idx, len(chars) - 1))
+                            if not chars[c_idx][4].isspace():
+                                sc = c_idx
+                                while sc > 0 and not chars[sc - 1][4].isspace():
+                                    sc -= 1
+                                ec = c_idx + 1
+                                while ec < len(chars) and not chars[ec][4].isspace():
+                                    ec += 1
+                                self._select_char_range(page_idx, line_idx, sc, page_idx, line_idx, ec)
+                                if c._sel_text:
+                                    QApplication.clipboard().setText(c._sel_text)
+                                c.text_copied.emit(c._sel_text)
+                                c.update()
+                                e.accept()
 
     def mouse_release(self, e):
         c = self.canvas
@@ -677,32 +643,41 @@ class CanvasInteractionHandler:
 
         if e.button() != Qt.MouseButton.LeftButton or not c._drag_start:
             return
+
         drag_start = c._drag_start
         pos = e.position().toPoint()
-        c._drag_end = pos
-        is_click = (abs(drag_start.x() - pos.x()) < 4
-                    and abs(drag_start.y() - pos.y()) < 4)
-        if is_click:
-            hit = self.note_icon_at(pos)
-            if hit is not None:
-                c._open_note = None if c._open_note == hit else hit
-                c._drag_start = None
-                c._drag_end = None
-                c.update()
-                e.accept()
-                return
-            if c._open_note is not None:
-                c._open_note = None
-                c.update()
-            self.clear_selection()
-            c.text_copied.emit("")
-        else:
-            self.compute_selection()
-            if c._sel_text:
-                QApplication.clipboard().setText(c._sel_text)
-            c.text_copied.emit(c._sel_text)
+        was_dragging = self._is_dragging_text
         c._drag_start = None
         c._drag_end   = None
+        self._is_dragging_text = False
+
+        if was_dragging:
+            c._drag_end = pos
+            c._drag_start = drag_start
+            self.compute_selection()
+            c._drag_start = None
+            c._drag_end = None
+            if c._sel_text:
+                QApplication.clipboard().setText(c._sel_text)
+                c.text_copied.emit(c._sel_text)
+            c.update()
+            e.accept()
+            return
+
+        # It was a single click without dragging
+        hit = self.note_icon_at(pos)
+        if hit is not None:
+            c._open_note = None if c._open_note == hit else hit
+            c.update()
+            e.accept()
+            return
+
+        if c._open_note is not None:
+            c._open_note = None
+            c.update()
+
+        self.clear_selection()
+        c.text_copied.emit("")
         c.update()
         e.accept()
 
@@ -734,7 +709,6 @@ class CanvasInteractionHandler:
             if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
                 c.delete_active_signature()
                 return True
-            # Nudge movement of active placed signature using Arrow keys
             if key in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down):
                 step = 15.0 if (modifiers & Qt.KeyboardModifier.ShiftModifier) else (1.0 if (modifiers & Qt.KeyboardModifier.AltModifier) else 4.0)
                 dx = 0.0
@@ -776,7 +750,6 @@ class CanvasInteractionHandler:
                 c.crop_redo_requested.emit()
                 return True
 
-        # Left / Right Arrow navigation to cycle through pages when clicking on canvas
         if not (modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)):
             if key == Qt.Key.Key_Left:
                 cur_p = getattr(c, "_active_page_idx", None)
@@ -801,7 +774,6 @@ class CanvasInteractionHandler:
                     c.page_action_requested.emit("go_to_page", target)
                 return True
 
-        # When nothing is selected, Up/Down arrow and Page keys navigate/scroll the main page
         if c._active_sig is None and not c._placing_signature:
             if not (modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)):
                 if key in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_PageUp, Qt.Key.Key_PageDown, Qt.Key.Key_Home, Qt.Key.Key_End):

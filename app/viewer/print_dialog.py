@@ -1,5 +1,5 @@
 # app/viewer/print_dialog.py
-"""PDF_Editor – High-speed custom print dialog integrating the worker and UI setup."""
+
 import contextlib
 import json
 import logging
@@ -591,6 +591,8 @@ class _PdfPrintDialog(QDialog):
                 {
                     "copies": copies_val,
                     "collate": collate_val,
+                    "duplex": duplex_val,
+                    "paper": paper_val,
                     "color": color_val,
                     "orient": orient_setting,
                     "page_indices": pages if not self.temp_slice_path else None,
