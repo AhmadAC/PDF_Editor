@@ -1046,6 +1046,18 @@ class PresentationWidget(QWidget):
             doc_to_save = self._doc
 
         viewer: Any = getattr(self, "_viewer", None)
+        
+        # Save zoom pref if supported before load
+        if viewer is not None:
+            canvas = getattr(viewer, "_canvas", None)
+            if canvas is not None:
+                try:
+                    canvas._zoom_factor = self._zoom_factor
+                    if hasattr(canvas, "_save_zoom_pref"):
+                        canvas._save_zoom_pref()
+                except Exception as e:
+                    _log.warning("Failed to save zoom pref to normal view: %s", e)
+
         if doc_to_save and viewer is not None:
             try:
                 save_and_reload = getattr(viewer, "_save_and_reload", None)
@@ -1059,5 +1071,19 @@ class PresentationWidget(QWidget):
                 with contextlib.suppress(Exception):
                     self._doc.close()
                 self._doc = None
+
+        # Apply zoom factor back to normal view
+        if viewer is not None:
+            canvas = getattr(viewer, "_canvas", None)
+            if canvas is not None:
+                try:
+                    canvas._zoom_factor = self._zoom_factor
+                    if hasattr(canvas, "_invalidate_and_relayout"):
+                        try:
+                            canvas._invalidate_and_relayout(preserve_pixmaps=True)
+                        except TypeError:
+                            canvas._invalidate_and_relayout()
+                except Exception as e:
+                    _log.warning("Failed to layout normal view on presentation exit: %s", e)
 
         super().closeEvent(event)
