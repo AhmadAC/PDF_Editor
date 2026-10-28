@@ -11,7 +11,7 @@ _PAGE_GAP       = 4    # px between pages
 _BUFFER_PGS     = 2    # extra pages to pre-render outside the visible area
 _MAX_THREADS    = max(2, min(4, os.cpu_count() or 2))   # simultaneous render workers
 _NOTE_ICON_SIZE = 22   # note icon size in pixels
-_MAX_RENDER_DIM = 6400 # px max dimension for high-DPI 400%+ crisp vector quality
+_MAX_RENDER_DIM = 8192 # Unifies Normal View high-res crispness with Presentation Mode
 
 
 class _RenderSignals(QObject):

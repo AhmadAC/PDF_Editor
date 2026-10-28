@@ -1,5 +1,4 @@
 # app/editor/canvas.py
-
 """PDF_Editor – PdfEditCanvas facade: visual PDF edit canvas with Foxit-style media object selection, vector check/cross stamps & text editing."""
 
 from __future__ import annotations
@@ -350,7 +349,7 @@ class PdfEditCanvas(QWidget):
         QTimer.singleShot(0, self._layout_and_schedule)
 
     def zoom_in(self, anchor_pos: QPoint | None = None):
-        self._zoom_factor = min(4.0, round(self._zoom_factor * 1.25, 4))
+        self._zoom_factor = min(8.0, round(self._zoom_factor * 1.25, 4))
         self._invalidate_and_relayout(anchor_pos=anchor_pos)
 
     def zoom_out(self, anchor_pos: QPoint | None = None):

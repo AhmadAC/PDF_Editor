@@ -1,5 +1,4 @@
 # app/viewer/canvas_1.py
-
 """PDF_Editor – _SelectCanvas: continuous-scroll visual PDF viewer canvas with smooth zooming, persistent zoom preference, cursor-anchored zoom, and screen-fit layout."""
 
 from __future__ import annotations
@@ -10,7 +9,7 @@ import os
 from typing import Any
 
 import fitz
-from PySide6.QtCore import QPoint, QPointF, QRect, Qt, QThreadPool, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QCursor, QPixmap
 from PySide6.QtWidgets import QApplication, QSizePolicy, QWidget
 
@@ -69,7 +68,7 @@ class _SelectCanvas(QWidget):
                         cfg = json.load(f)
                         val = cfg.get("viewer_zoom_factor")
                         if val is not None:
-                            _SelectCanvas._saved_zoom_factor_pref = max(0.2, min(5.0, float(val)))
+                            _SelectCanvas._saved_zoom_factor_pref = max(0.2, min(8.0, float(val)))
             except Exception:
                 pass
             if _SelectCanvas._saved_zoom_factor_pref is None:
@@ -109,6 +108,11 @@ class _SelectCanvas(QWidget):
         self._render_signals = _RenderSignals()
         self._render_signals.page_ready.connect(self._on_page_ready)
         self._interaction = CanvasInteractionHandler(self)
+
+        self._render_debounce_timer = QTimer(self)
+        self._render_debounce_timer.setSingleShot(True)
+        self._render_debounce_timer.setInterval(40)
+        self._render_debounce_timer.timeout.connect(self._schedule_visible_now)
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -261,6 +265,7 @@ class _SelectCanvas(QWidget):
     def close_doc(self):
         self._gen += 1
         self._pending.clear()
+        self._render_debounce_timer.stop()
         self.cancel_signature_placement()
         self._active_sig = None
         if self._doc:
@@ -318,17 +323,15 @@ class _SelectCanvas(QWidget):
                 return i
         return max(0, len(self._entries) - 1)
 
-    def zoom_in(self, anchor_pos: Any = None):
-        pos = anchor_pos if isinstance(anchor_pos, (QPoint, QPointF)) else None
-        self._zoom_factor = min(5.0, round(self._zoom_factor * 1.25, 4))
+    def zoom_in(self, anchor_pos: QPoint | None = None):
+        self._zoom_factor = min(8.0, round(self._zoom_factor * 1.25, 4))
         self._save_zoom_pref()
-        self._invalidate_and_relayout(anchor_pos=pos, preserve_pixmaps=True)
+        self._invalidate_and_relayout(anchor_pos=anchor_pos, preserve_pixmaps=True)
 
-    def zoom_out(self, anchor_pos: Any = None):
-        pos = anchor_pos if isinstance(anchor_pos, (QPoint, QPointF)) else None
+    def zoom_out(self, anchor_pos: QPoint | None = None):
         self._zoom_factor = max(0.2, round(self._zoom_factor / 1.25, 4))
         self._save_zoom_pref()
-        self._invalidate_and_relayout(anchor_pos=pos, preserve_pixmaps=True)
+        self._invalidate_and_relayout(anchor_pos=anchor_pos, preserve_pixmaps=True)
 
     def zoom_reset(self):
         self._zoom_factor = 1.0
@@ -556,7 +559,7 @@ class _SelectCanvas(QWidget):
         n = len(self._entries)
         if not n:
             return (0, 0)
-        buf = 0 if self._zoom_factor >= 1.5 else _BUFFER_PGS
+        buf = 0 if self._zoom_factor >= 2.0 else _BUFFER_PGS
         if not isinstance(sa, _SA):
             return (0, min(n - 1, buf * 2))
         y0 = sa.verticalScrollBar().value()
@@ -578,11 +581,16 @@ class _SelectCanvas(QWidget):
     def _schedule_visible(self):
         if not self._entries or not self._path:
             return
+        self._render_debounce_timer.start(40)
+
+    def _schedule_visible_now(self):
+        if not self._entries or not self._path:
+            return
         first, last = self._visible_range()
         dpr = self.devicePixelRatioF() or 1.0
         gen = self._gen
         pool = QThreadPool.globalInstance()
-        max_threads = 1 if (self._zoom_factor >= 2.0 or (self._zoom * dpr) > 3.0) else _MAX_THREADS
+        max_threads = 1 if self._zoom_factor >= 2.0 else _MAX_THREADS
         pool.setMaxThreadCount(max_threads)
         for i in range(first, last + 1):
             entry = self._entries[i]
@@ -649,13 +657,15 @@ class _SelectCanvas(QWidget):
         self._interaction.mouse_release(e)
 
     def keyPressEvent(self, e):
-        if not self._interaction.key_press(e):
+        self._interaction.key_press(e)
+        if not e.isAccepted():
             super().keyPressEvent(e)
 
     def contextMenuEvent(self, e):
         self._interaction.context_menu(e)
 
     def paintEvent(self, event):
+        from app.viewer.canvas_painter import CanvasPainter
         CanvasPainter.paint(self, event)
 
     def wheelEvent(self, e):

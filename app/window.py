@@ -463,7 +463,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
                 ThumbnailPanel._thumb_scale_pref = max(0.5, min(2.5, float(saved_thumb_scale)))
             saved_zoom = _saved.get("viewer_zoom_factor")
             if saved_zoom is not None:
-                _SelectCanvas._saved_zoom_factor_pref = max(0.2, min(5.0, float(saved_zoom)))
+                _SelectCanvas._saved_zoom_factor_pref = max(0.2, min(8.0, float(saved_zoom)))
         except Exception:
             pass
 
