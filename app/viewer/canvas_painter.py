@@ -45,7 +45,7 @@ class CanvasPainter:
         p.drawLine(cx0, cy1, cx0 + k, cy1)
         p.drawLine(cx0, cy1, cx0, cy1 - k)
         p.drawLine(cx1, cy1, cx1 - k, cy1)
-        p.drawLine(cx1, cy1, cx1, cy1 - k)
+        p.drawLine(cx1, cy1, cx1 - k, cy1)
 
         z = zoom or 1.0
         pt_w = int(round((cx1 - cx0) / z))
@@ -86,16 +86,20 @@ class CanvasPainter:
             x = canvas.page_x_offset(e)
             page_rect = QRect(x, e.y_off, e.w, e.h)
 
+            blank_bg = QColor("#1E1E1E") if canvas._night_mode else QColor("#FFFFFF")
+            p.fillRect(page_rect, blank_bg)
+
             if e.pixmap and not e.pixmap.isNull():
-                p.drawPixmap(x, e.y_off, e.pixmap)
+                p.save()
+                p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+                p.drawPixmap(page_rect, e.pixmap)
+                p.restore()
             elif getattr(e, "prev_pixmap", None) is not None and not e.prev_pixmap.isNull():
                 p.save()
                 p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
                 p.drawPixmap(page_rect, e.prev_pixmap)
                 p.restore()
             else:
-                blank_bg = QColor("#1E1E1E") if canvas._night_mode else QColor("#FFFFFF")
-                p.fillRect(page_rect, blank_bg)
                 p.setPen(QColor(TEXT_SEC))
                 f = QFont()
                 f.setPointSize(9)

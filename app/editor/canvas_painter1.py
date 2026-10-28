@@ -32,19 +32,25 @@ class CanvasPainter:
         for i, qpix in enumerate(canvas._page_pixmaps):
             yo, pw, ph = canvas._page_offsets[i]
             page_r = QRect(0, yo, pw, ph)
-            if qpix is not None:
-                p.drawPixmap(0, yo, qpix)
-            elif i < len(canvas._page_prev_pixmaps) and canvas._page_prev_pixmaps[i] is not None:
+            p.fillRect(page_r, QColor("#FFFFFF"))
+
+            if qpix is not None and not qpix.isNull():
                 p.save()
+                p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+                p.drawPixmap(page_r, qpix)
+                p.restore()
+            elif i < len(canvas._page_prev_pixmaps) and canvas._page_prev_pixmaps[i] is not None and not canvas._page_prev_pixmaps[i].isNull():
+                p.save()
+                p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
                 p.drawPixmap(page_r, canvas._page_prev_pixmaps[i])
                 p.restore()
             else:
-                p.fillRect(page_r, QColor("#FFFFFF"))
                 p.setPen(QColor(TEXT_SEC))
                 f = QFont(); f.setPointSize(9); p.setFont(f)
                 p.drawText(page_r, Qt.AlignmentFlag.AlignCenter, f"⏳ {i+1}")
-                p.setPen(QColor("#E0E0E0"))
-                p.drawRect(QRect(0, yo, pw - 1, ph - 1))
+
+            p.setPen(QColor("#E0E0E0"))
+            p.drawRect(QRect(0, yo, pw - 1, ph - 1))
 
         # 2. Render overlays
         z = canvas._zoom
@@ -56,7 +62,6 @@ class CanvasPainter:
             etype = e["type"]
             is_selected = (ov_idx == canvas._selected_overlay_idx)
 
-            # Cleanly cover deleted items on canvas with white fill
             if e.get("_deleted"):
                 orig_r = e.get("_orig_rect") or e.get("bbox") or e.get("rect")
                 if orig_r:

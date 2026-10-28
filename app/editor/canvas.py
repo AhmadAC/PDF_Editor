@@ -7,8 +7,8 @@ from __future__ import annotations
 import contextlib
 from typing import cast
 import fitz
-from PySide6.QtCore import Qt, Signal, QPoint, QThreadPool
-from PySide6.QtGui import QPainter
+from PySide6.QtCore import Qt, Signal, QPoint, QPointF, QThreadPool
+from PySide6.QtGui import QCursor, QPainter
 from PySide6.QtWidgets import QWidget, QSizePolicy
 
 from app.constants import BG_INNER, _LN
@@ -169,7 +169,6 @@ class PdfEditCanvas(QWidget):
         if width is not None:
             self._draw_width = max(1, int(width))
         if active:
-            # 45-degree angled pen cursor pointing with its tip at (4, 4)
             self.setCursor(_get_icon_cursor("fa5s.pen", 4, 4, size=28, rotate=90))
         else:
             self._current_stroke = None
@@ -222,7 +221,7 @@ class PdfEditCanvas(QWidget):
             self.delete_selection_requested.emit()
 
     def scale_selected_overlay(self, factor: float) -> bool:
-        """Scale the currently selected overlay (image/media/stamp/text) by the given factor around its center."""
+        """Scale the currently selected overlay by the given factor around its center."""
         if not (0 <= self._selected_overlay_idx < len(self._overlays)):
             return False
         ov = self._overlays[self._selected_overlay_idx]
@@ -250,8 +249,6 @@ class PdfEditCanvas(QWidget):
             ov["rect"] = new_r
         if "bbox" in ov:
             ov["bbox"] = [new_r.x0, new_r.y0, new_r.x1, new_r.y1]
-            if "origin" in ov:
-                ov["origin"] = [new_r.x0, new_r.y1]
         if "point" in ov:
             ov["point"] = fitz.Point(new_r.x0, new_r.y0 + ov.get("size", 12) * 0.82)
         if "font_size" in ov:
@@ -476,27 +473,58 @@ class PdfEditCanvas(QWidget):
     def on_scroll(self):
         self._schedule_visible()
 
+    def _calc_anchor(self, anchor_pos: QPoint | None = None) -> tuple[int, float, float, float, float] | None:
+        sa = self._get_scroll_area()
+        if not sa or not self._page_offsets or self.height() <= 0:
+            return None
+
+        vp = sa.viewport()
+        vp_w = float(vp.width())
+        vp_h = float(vp.height())
+        if vp_w <= 0 or vp_h <= 0:
+            return None
+
+        cursor_global = QCursor.pos()
+        cursor_vp = vp.mapFromGlobal(cursor_global)
+
+        if 0 <= cursor_vp.x() <= vp_w and 0 <= cursor_vp.y() <= vp_h:
+            vp_x = float(cursor_vp.x())
+            vp_y = float(cursor_vp.y())
+        elif isinstance(anchor_pos, (QPoint, QPointF)) and 0 <= anchor_pos.x() <= vp_w and 0 <= anchor_pos.y() <= vp_h:
+            vp_x = float(anchor_pos.x())
+            vp_y = float(anchor_pos.y())
+        elif isinstance(anchor_pos, (QPoint, QPointF)):
+            vp_x = float(anchor_pos.x() - sa.horizontalScrollBar().value())
+            vp_y = float(anchor_pos.y() - sa.verticalScrollBar().value())
+            vp_x = max(0.0, min(vp_w, vp_x))
+            vp_y = max(0.0, min(vp_h, vp_y))
+        else:
+            vp_x = vp_w / 2.0
+            vp_y = vp_h / 2.0
+
+        canvas_x = sa.horizontalScrollBar().value() + vp_x
+        canvas_y = sa.verticalScrollBar().value() + vp_y
+
+        target_page = 0
+        for i, (yo, w, h) in enumerate(self._page_offsets):
+            if canvas_y < yo + h + _PAGE_GAP:
+                target_page = i
+                break
+        else:
+            target_page = max(0, len(self._page_offsets) - 1)
+
+        yo, pw, ph = self._page_offsets[target_page]
+        current_zoom = self._zoom if self._zoom > 0 else 1.0
+        pdf_x = canvas_x / current_zoom
+        pdf_y = (canvas_y - yo) / current_zoom
+
+        return (target_page, pdf_x, pdf_y, vp_x, vp_y)
+
     def _invalidate_and_relayout(self, anchor_pos: QPoint | None = None):
         self._gen += 1
         self._pending.clear()
 
-        sa = self._get_scroll_area()
-        anchor_ratio_y = None
-        anchor_vp_y = 0.0
-        anchor_ratio_x = None
-        anchor_vp_x = 0.0
-        if sa and self.height() > 0:
-            sb_v = sa.verticalScrollBar()
-            vp_h = sa.viewport().height()
-            anchor_vp_y = float(anchor_pos.y()) if anchor_pos is not None else vp_h / 2.0
-            doc_y = sb_v.value() + anchor_vp_y
-            anchor_ratio_y = doc_y / max(1.0, float(self.height()))
-
-            sb_h = sa.horizontalScrollBar()
-            vp_w = sa.viewport().width()
-            anchor_vp_x = float(anchor_pos.x()) if anchor_pos is not None else vp_w / 2.0
-            doc_x = sb_h.value() + anchor_vp_x
-            anchor_ratio_x = doc_x / max(1.0, float(self.width()))
+        anchor = self._calc_anchor(anchor_pos)
 
         old_pixmaps = [
             p if p is not None else prev
@@ -507,15 +535,14 @@ class PdfEditCanvas(QWidget):
         ]
         self._layout_and_schedule(
             old_pixmaps=old_pixmaps,
-            anchor_ratio_y=anchor_ratio_y,
-            anchor_vp_y=anchor_vp_y,
-            anchor_ratio_x=anchor_ratio_x,
-            anchor_vp_x=anchor_vp_x,
+            anchor=anchor,
         )
 
-    def _layout_and_schedule(self, old_pixmaps: list | None = None,
-                             anchor_ratio_y: float | None = None, anchor_vp_y: float = 0.0,
-                             anchor_ratio_x: float | None = None, anchor_vp_x: float = 0.0):
+    def _layout_and_schedule(
+        self,
+        old_pixmaps: list | None = None,
+        anchor: tuple[int, float, float, float, float] | None = None,
+    ):
         if not self._doc:
             return
 
@@ -550,16 +577,32 @@ class PdfEditCanvas(QWidget):
         new_h = max(total_h, 400)
         self.setFixedSize(new_w, new_h)
 
-        if anchor_ratio_y is not None:
-            sa = self._get_scroll_area()
-            if sa:
-                new_scroll_y = int(round(anchor_ratio_y * new_h - anchor_vp_y))
-                sb_v = sa.verticalScrollBar()
-                sb_v.setValue(max(0, min(new_scroll_y, sb_v.maximum())))
-                if anchor_ratio_x is not None:
-                    new_scroll_x = int(round(anchor_ratio_x * new_w - anchor_vp_x))
-                    sb_h = sa.horizontalScrollBar()
-                    sb_h.setValue(max(0, min(new_scroll_x, sb_h.maximum())))
+        sa = self._get_scroll_area()
+        if sa:
+            vp = sa.viewport()
+            max_scroll_x = max(0, new_w - vp.width())
+            max_scroll_y = max(0, new_h - vp.height())
+            sb_h = sa.horizontalScrollBar()
+            sb_v = sa.verticalScrollBar()
+            if sb_h:
+                sb_h.setRange(0, max_scroll_x)
+            if sb_v:
+                sb_v.setRange(0, max_scroll_y)
+
+            if anchor is not None:
+                target_page, pdf_x, pdf_y, vp_x, vp_y = anchor
+                if 0 <= target_page < len(self._page_offsets):
+                    yo, pw, ph = self._page_offsets[target_page]
+                    new_canvas_x = pdf_x * self._zoom
+                    new_canvas_y = yo + pdf_y * self._zoom
+
+                    target_scroll_x = int(round(new_canvas_x - vp_x))
+                    target_scroll_y = int(round(new_canvas_y - vp_y))
+
+                    if sb_h:
+                        sb_h.setValue(max(0, min(target_scroll_x, max_scroll_x)))
+                    if sb_v:
+                        sb_v.setValue(max(0, min(target_scroll_y, max_scroll_y)))
 
         self.zoom_changed.emit(round(self._zoom_factor * 100))
         self.update()
@@ -598,7 +641,8 @@ class PdfEditCanvas(QWidget):
                 self._pending.add(i)
                 pool.start(_EditPageJob(self._path, i, self._zoom, dpr,
                                         gen, self._render_signals,
-                                        password=getattr(self, "_password", "")))
+                                        password=getattr(self, "_password", ""),
+                                        is_valid=lambda g=gen: g == self._gen))
 
     def _on_page_ready(self, gen: int, idx: int, pixmap):
         if gen != self._gen:

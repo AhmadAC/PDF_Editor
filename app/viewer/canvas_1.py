@@ -1,6 +1,6 @@
 # app/viewer/canvas_1.py
 
-"""PDF_Editor – _SelectCanvas: continuous-scroll visual PDF viewer canvas with smooth zooming, persistent zoom preference, and screen-fit layout."""
+"""PDF_Editor – _SelectCanvas: continuous-scroll visual PDF viewer canvas with smooth zooming, persistent zoom preference, cursor-anchored zoom, and screen-fit layout."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any
 
 import fitz
 from PySide6.QtCore import QPoint, QPointF, QRect, Qt, QThreadPool, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QCursor, QPixmap
 from PySide6.QtWidgets import QApplication, QSizePolicy, QWidget
 
 from app.constants import BG_INNER, _LN
@@ -343,28 +343,61 @@ class _SelectCanvas(QWidget):
         if abs(target_fit_w - self._base_avail) > 24 or self.width() < vp_w:
             self._layout_and_schedule()
 
+    def _calc_anchor(self, anchor_pos: Any = None) -> tuple[int, float, float, float, float] | None:
+        """Calculate invariant point under cursor in PDF coordinates: (page_idx, pdf_x, pdf_y, vp_x, vp_y)."""
+        sa = self._get_scroll_area()
+        if not sa or not self._entries or self.height() <= 0:
+            return None
+
+        vp = sa.viewport()
+        vp_w = float(vp.width())
+        vp_h = float(vp.height())
+        if vp_w <= 0 or vp_h <= 0:
+            return None
+
+        cursor_global = QCursor.pos()
+        cursor_vp = vp.mapFromGlobal(cursor_global)
+
+        if 0 <= cursor_vp.x() <= vp_w and 0 <= cursor_vp.y() <= vp_h:
+            vp_x = float(cursor_vp.x())
+            vp_y = float(cursor_vp.y())
+        elif isinstance(anchor_pos, (QPoint, QPointF)) and 0 <= anchor_pos.x() <= vp_w and 0 <= anchor_pos.y() <= vp_h:
+            vp_x = float(anchor_pos.x())
+            vp_y = float(anchor_pos.y())
+        elif isinstance(anchor_pos, (QPoint, QPointF)):
+            vp_x = float(anchor_pos.x() - sa.horizontalScrollBar().value())
+            vp_y = float(anchor_pos.y() - sa.verticalScrollBar().value())
+            vp_x = max(0.0, min(vp_w, vp_x))
+            vp_y = max(0.0, min(vp_h, vp_y))
+        else:
+            vp_x = vp_w / 2.0
+            vp_y = vp_h / 2.0
+
+        canvas_x = sa.horizontalScrollBar().value() + vp_x
+        canvas_y = sa.verticalScrollBar().value() + vp_y
+
+        target_page = 0
+        for i, entry in enumerate(self._entries):
+            if canvas_y < entry.y_off + entry.h + _PAGE_GAP:
+                target_page = i
+                break
+        else:
+            target_page = max(0, len(self._entries) - 1)
+
+        entry = self._entries[target_page]
+        x_off = self.page_x_offset(entry)
+
+        current_zoom = self._zoom if self._zoom > 0 else 1.0
+        pdf_x = (canvas_x - x_off) / current_zoom
+        pdf_y = (canvas_y - entry.y_off) / current_zoom
+
+        return (target_page, pdf_x, pdf_y, vp_x, vp_y)
+
     def _invalidate_and_relayout(self, anchor_pos: Any = None, preserve_pixmaps: bool = True):
         self._gen += 1
         self._pending.clear()
 
-        sa = self._get_scroll_area()
-        anchor_ratio_y = None
-        anchor_vp_y = 0.0
-        anchor_ratio_x = None
-        anchor_vp_x = 0.0
-        if sa and self.height() > 0:
-            sb_v = sa.verticalScrollBar()
-            vp_h = sa.viewport().height()
-            valid_anchor = isinstance(anchor_pos, (QPoint, QPointF))
-            anchor_vp_y = float(anchor_pos.y()) if valid_anchor else vp_h / 2.0
-            doc_y = sb_v.value() + anchor_vp_y
-            anchor_ratio_y = doc_y / max(1.0, float(self.height()))
-
-            sb_h = sa.horizontalScrollBar()
-            vp_w = sa.viewport().width()
-            anchor_vp_x = float(anchor_pos.x()) if valid_anchor else vp_w / 2.0
-            doc_x = sb_h.value() + anchor_vp_x
-            anchor_ratio_x = doc_x / max(1.0, float(self.width()))
+        anchor = self._calc_anchor(anchor_pos)
 
         old_pixmaps: dict[int, QPixmap] = {}
         if preserve_pixmaps:
@@ -375,19 +408,13 @@ class _SelectCanvas(QWidget):
 
         self._layout_and_schedule(
             old_pixmaps=old_pixmaps,
-            anchor_ratio_y=anchor_ratio_y,
-            anchor_vp_y=anchor_vp_y,
-            anchor_ratio_x=anchor_ratio_x,
-            anchor_vp_x=anchor_vp_x,
+            anchor=anchor,
         )
 
     def _layout_and_schedule(
         self,
         old_pixmaps: dict[int, QPixmap] | None = None,
-        anchor_ratio_y: float | None = None,
-        anchor_vp_y: float = 0.0,
-        anchor_ratio_x: float | None = None,
-        anchor_vp_x: float = 0.0,
+        anchor: tuple[int, float, float, float, float] | None = None,
     ):
         if not self._doc or self._doc.page_count <= 0:
             return
@@ -490,14 +517,33 @@ class _SelectCanvas(QWidget):
         self.setFixedSize(canvas_w, canvas_h)
 
         sa = self._get_scroll_area()
-        if anchor_ratio_y is not None and sa:
-            new_scroll_y = int(round(anchor_ratio_y * canvas_h - anchor_vp_y))
+        if sa:
+            vp = sa.viewport()
+            max_scroll_x = max(0, canvas_w - vp.width())
+            max_scroll_y = max(0, canvas_h - vp.height())
+            sb_h = sa.horizontalScrollBar()
             sb_v = sa.verticalScrollBar()
-            sb_v.setValue(max(0, min(new_scroll_y, sb_v.maximum())))
-            if anchor_ratio_x is not None:
-                new_scroll_x = int(round(anchor_ratio_x * canvas_w - anchor_vp_x))
-                sb_h = sa.horizontalScrollBar()
-                sb_h.setValue(max(0, min(new_scroll_x, sb_h.maximum())))
+            if sb_h:
+                sb_h.setRange(0, max_scroll_x)
+            if sb_v:
+                sb_v.setRange(0, max_scroll_y)
+
+            if anchor is not None:
+                target_page, pdf_x, pdf_y, vp_x, vp_y = anchor
+                if 0 <= target_page < len(self._entries):
+                    new_entry = self._entries[target_page]
+                    new_x_off = self.page_x_offset(new_entry)
+
+                    new_canvas_x = new_x_off + pdf_x * self._zoom
+                    new_canvas_y = new_entry.y_off + pdf_y * self._zoom
+
+                    target_scroll_x = int(round(new_canvas_x - vp_x))
+                    target_scroll_y = int(round(new_canvas_y - vp_y))
+
+                    if sb_h:
+                        sb_h.setValue(max(0, min(target_scroll_x, max_scroll_x)))
+                    if sb_v:
+                        sb_v.setValue(max(0, min(target_scroll_y, max_scroll_y)))
 
         self.zoom_changed.emit(round(self._zoom_factor * 100))
         self.update()
@@ -548,6 +594,7 @@ class _SelectCanvas(QWidget):
                     self._zoom, dpr, gen, self._render_signals,
                     night_mode=self._night_mode, rotation=rot,
                     crop=crop, pos=i,
+                    is_valid=lambda g=gen: g == self._gen,
                 )
                 pool.start(job)
 

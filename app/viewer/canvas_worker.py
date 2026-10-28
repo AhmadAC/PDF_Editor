@@ -4,12 +4,14 @@ from __future__ import annotations
 """PDF_Editor – Background worker and data structures for canvas page rendering and character-level text extraction."""
 
 import os
+from typing import Any
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 _PAGE_GAP       = 4    # px between pages
 _BUFFER_PGS     = 2    # extra pages to pre-render outside the visible area
 _MAX_THREADS    = max(2, min(4, os.cpu_count() or 2))   # simultaneous render workers
 _NOTE_ICON_SIZE = 22   # note icon size in pixels
+_MAX_RENDER_DIM = 3200 # px max dimension to prevent excessive heap allocation on extreme zooms
 
 
 class _RenderSignals(QObject):
@@ -107,7 +109,6 @@ def extract_page_lines(page, rx0: float = 0.0, ry0: float = 0.0) -> list[dict]:
             })
 
     if not lines_raw:
-        # Fallback to word extraction if rawdict returned no text blocks
         try:
             raw_words = page.get_text("words")
             if raw_words:
@@ -146,7 +147,6 @@ def extract_page_lines(page, rx0: float = 0.0, ry0: float = 0.0) -> list[dict]:
     if not lines_raw:
         return []
 
-    # Sort lines into natural reading order
     sorted_by_y = sorted(lines_raw, key=lambda l: (l["y0"], l["bbox"][0]))
     reading_lines: list[dict] = []
     line_groups: list[list[dict]] = []
@@ -222,13 +222,14 @@ def sort_words_in_reading_order(raw_words: list) -> list:
 
 
 class _PageJob(QRunnable):
-    """Renders a fitz page in a background thread with optional rotation and crop."""
+    """Renders a fitz page in a background thread with generation check and safe memory capping."""
 
     def __init__(self, path: str, password: str, idx: int,
                  zoom: float, dpr: float, gen: int, signals: _RenderSignals,
                  night_mode: bool = False, rotation: int = 0,
                  crop: tuple[float, float, float, float] | None = None,
-                 pos: int | None = None):
+                 pos: int | None = None,
+                 is_valid: Any = None):
         super().__init__()
         self._path       = path
         self._password   = password
@@ -241,32 +242,66 @@ class _PageJob(QRunnable):
         self._rotation   = rotation
         self._crop       = crop
         self.signals     = signals
+        self._is_valid   = is_valid
         self.setAutoDelete(True)
 
+    def is_cancelled(self) -> bool:
+        if callable(self._is_valid):
+            try:
+                return not self._is_valid()
+            except Exception:
+                return False
+        return False
+
     def run(self):
+        if self.is_cancelled():
+            return
         doc = None
         try:
             import fitz
             from PySide6.QtGui import QImage, QPixmap as QP
+
             doc = fitz.open(self._path)
             if self._password:
                 doc.authenticate(self._password)
+
+            if self.is_cancelled():
+                return
+
             page = doc[self._idx]
             if self._crop:
                 crop_rect = fitz.Rect(self._crop) & page.mediabox
                 if not crop_rect.is_empty and crop_rect.width >= 10 and crop_rect.height >= 10:
                     page.set_cropbox(crop_rect)
+
             rot = self._rotation % 360
             if rot:
                 page.set_rotation((page.rotation + rot) % 360)
 
             rz = self._zoom * self._dpr
             max_d = max(page.rect.width, page.rect.height)
-            if max_d * rz > 8192:
-                rz = 8192.0 / max_d
+            if max_d * rz > _MAX_RENDER_DIM:
+                rz = float(_MAX_RENDER_DIM) / max_d
 
-            mat = fitz.Matrix(rz, rz)
-            pix = page.get_pixmap(matrix=mat, alpha=False, annots=True)
+            if self.is_cancelled():
+                return
+
+            # Render with automatic downscale retry on MemoryError or allocator pressure
+            pix = None
+            for attempt in range(3):
+                try:
+                    mat = fitz.Matrix(rz, rz)
+                    pix = page.get_pixmap(matrix=mat, alpha=False, annots=True)
+                    break
+                except (MemoryError, Exception) as exc:
+                    if attempt < 2 and rz > 0.4:
+                        rz = rz * 0.55
+                    else:
+                        raise exc
+
+            if self.is_cancelled() or pix is None:
+                return
+
             if self._night_mode:
                 pix.invert_irect()
 
@@ -277,11 +312,29 @@ class _PageJob(QRunnable):
             if pix.n != 3:
                 pix = fitz.Pixmap(fitz.csRGB, pix)
 
-            qi = QImage(pix.samples, pix.width, pix.height,
-                        pix.stride, QImage.Format.Format_RGB888).copy()
+            if self.is_cancelled():
+                return
+
+            try:
+                qi = QImage(pix.samples, pix.width, pix.height,
+                            pix.stride, QImage.Format.Format_RGB888).copy()
+            except MemoryError:
+                # If memory is under pressure, downscale on-the-fly
+                down_mat = fitz.Matrix(0.5, 0.5)
+                pix2 = page.get_pixmap(matrix=down_mat, alpha=False, annots=True)
+                if pix2.n != 3:
+                    pix2 = fitz.Pixmap(fitz.csRGB, pix2)
+                qi = QImage(pix2.samples, pix2.width, pix2.height,
+                            pix2.stride, QImage.Format.Format_RGB888).copy()
+                pix2 = None
+
+            pix = None  # Free MuPDF pixmap buffer immediately
+
             qp = QP.fromImage(qi)
             qp.setDevicePixelRatio(self._dpr)
-            self.signals.page_ready.emit(self._gen, self._pos, qp, lines)
+
+            if not self.is_cancelled():
+                self.signals.page_ready.emit(self._gen, self._pos, qp, lines)
         except Exception:
             import logging, traceback
             logging.error("Page render failed:\n%s", traceback.format_exc())

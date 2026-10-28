@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 import fitz
 from PySide6.QtCore import Qt, Signal, QObject, QRunnable
 from PySide6.QtGui import QPixmap, QPainter, QCursor
@@ -14,6 +15,7 @@ _NOTE_ICON_SIZE = 22
 _PAGE_GAP = 4
 _BUFFER_PGS = 2
 _MAX_THREADS = max(2, min(4, os.cpu_count() or 2))
+_MAX_RENDER_DIM = 4096
 
 _ICON_CURSORS: dict = {}
 _OVERLAY_PIXMAP_CACHE: dict[tuple[str, float], QPixmap] = {}
@@ -77,10 +79,11 @@ class _EditRenderSignals(QObject):
 
 
 class _EditPageJob(QRunnable):
-    """Renders a single page in a background thread."""
+    """Renders a single page in a background thread with memory-safe dimensions."""
 
     def __init__(self, path: str, idx: int, zoom: float, dpr: float,
-                 gen: int, signals: _EditRenderSignals, password: str = ""):
+                 gen: int, signals: _EditRenderSignals, password: str = "",
+                 is_valid: Any = None):
         super().__init__()
         self._path = path
         self._idx = idx
@@ -89,29 +92,57 @@ class _EditPageJob(QRunnable):
         self._gen = gen
         self._password = password
         self.signals = signals
+        self._is_valid = is_valid
         self.setAutoDelete(True)
 
+    def is_cancelled(self) -> bool:
+        if callable(self._is_valid):
+            try:
+                return not self._is_valid()
+            except Exception:
+                return False
+        return False
+
     def run(self):
+        if self.is_cancelled():
+            return
         doc = None
         try:
             from PySide6.QtGui import QPixmap as QP, QImage
             doc = fitz.open(self._path)
             if doc.needs_pass and self._password:
                 doc.authenticate(self._password)
+            if self.is_cancelled():
+                return
             page = doc[self._idx]
             rz = self._zoom * self._dpr
             max_d = max(page.rect.width, page.rect.height)
-            if max_d * rz > 8192:
-                rz = 8192.0 / max_d
+            if max_d * rz > _MAX_RENDER_DIM:
+                rz = float(_MAX_RENDER_DIM) / max_d
 
-            pix = page.get_pixmap(matrix=fitz.Matrix(rz, rz), annots=False)
+            pix = None
+            for attempt in range(3):
+                try:
+                    pix = page.get_pixmap(matrix=fitz.Matrix(rz, rz), annots=False)
+                    break
+                except (MemoryError, Exception) as exc:
+                    if attempt < 2 and rz > 0.4:
+                        rz = rz * 0.55
+                    else:
+                        raise exc
+
+            if self.is_cancelled() or pix is None:
+                return
+
             if pix.n != 3:
                 pix = fitz.Pixmap(fitz.csRGB, pix)
             qi = QImage(pix.samples, pix.width, pix.height,
                         pix.stride, QImage.Format.Format_RGB888).copy()
+            pix = None
             qp = QP.fromImage(qi)
             qp.setDevicePixelRatio(self._dpr)
-            self.signals.page_ready.emit(self._gen, self._idx, qp)
+            if not self.is_cancelled():
+                self.signals.page_ready.emit(self._gen, self._idx, qp)
         except Exception:
             import traceback, logging
             logging.error("Edit page render failed (idx=%d):\n%s",
