@@ -1,11 +1,12 @@
 # app/viewer/presentation.py
-"""PDF_Editor – Presentation mode: fullscreen single-page viewer with page transitions and auto-advance."""
+"""PDF_Editor – Presentation mode: fullscreen single-page viewer with page transitions, auto-advance, synchronized position/zoom matching normal view, and verbose screen-pixel console debugging."""
 
 from __future__ import annotations
 
 import contextlib
 import logging
 import re
+import sys
 import time
 from typing import Any
 
@@ -33,11 +34,21 @@ _PALETTE_HOTKEYS = {
 }
 
 
+def _debug_print(section: str, data: dict[str, Any]) -> None:
+    """Print formatted, unbuffered diagnostics directly to the VS Code terminal."""
+    header = f"─── [PRESENTATION DEBUG] {section} "
+    bar = "─" * max(2, 74 - len(header))
+    sys.stdout.write(f"\n{header}{bar}\n")
+    for key, val in data.items():
+        sys.stdout.write(f"  • {key:<28}: {val}\n")
+    sys.stdout.write("─" * 74 + "\n\n")
+    sys.stdout.flush()
+
+
 class PresentationWidget(QWidget):
     """Fullscreen single-page PDF viewer with keyboard navigation, zoom controls,
     smooth page transitions, auto-advance (/Dur), and a PowerPoint/Edge-style annotation HUD.
-    Annotations are session-scoped — kept per page while the window lives,
-    discarded on close."""
+    Maintains the exact zoom and viewport position from normal view upon launch."""
 
     _viewer: Any
 
@@ -66,6 +77,8 @@ class PresentationWidget(QWidget):
         self._viewer: Any = viewer
 
         # Zoom and Pan state
+        self._zoom: float | None = None
+        self._base_fit_zoom: float = 1.0
         self._zoom_factor: float = 1.0
         self._pan_x: int = 0
         self._pan_y: int = 0
@@ -73,21 +86,37 @@ class PresentationWidget(QWidget):
         self._pan_start_pos = QPoint()
         self._pan_start_offset = QPoint()
 
-        # Document geometry & current view state from viewer
+        # Document geometry & synchronized viewport focal point from normal view
         self._page_rotations: dict[int, int] = {}
         self._page_crops: dict[int, tuple[float, float, float, float]] = {}
-        self._initial_scroll_pt_y: float | None = None
-        self._initial_scroll_pt_x: float | None = None
-        self._fit_width_mode: bool = True
+        self._initial_pan_x: int | None = None
+        self._initial_pan_y: int | None = None
+
+        debug_init_info: dict[str, Any] = {
+            "PDF Path": self._path,
+            "Initial Start Page": f"{self._current + 1} / {self._total}",
+        }
 
         if self._viewer is not None:
             canvas = getattr(self._viewer, "_canvas", None)
             sb_scroll = getattr(self._viewer, "_canvas_scroll", None)
             if canvas is not None:
+                active_idx = getattr(canvas, "_active_page_idx", None)
+                if active_idx is not None and 0 <= active_idx < self._total:
+                    self._current = active_idx
+
                 self._page_rotations = dict(getattr(canvas, "_page_rotations", {}))
                 self._page_crops = dict(getattr(canvas, "_page_crops", {}))
-                self._zoom_factor = getattr(canvas, "_zoom_factor", 1.0) or 1.0
 
+                # Maintain the exact render zoom from normal view
+                norm_zoom = getattr(canvas, "_zoom", None)
+                if norm_zoom and norm_zoom > 0:
+                    self._zoom = float(norm_zoom)
+                norm_zf = getattr(canvas, "_zoom_factor", 1.0)
+                if norm_zf and norm_zf > 0:
+                    self._zoom_factor = float(norm_zf)
+
+                # Capture visible top-left of normal view relative to the active page
                 entries = getattr(canvas, "_entries", [])
                 if sb_scroll is not None and 0 <= self._current < len(entries):
                     entry = entries[self._current]
@@ -95,18 +124,29 @@ class PresentationWidget(QWidget):
                     vp_w = float(vp.width()) if vp and vp.width() > 0 else 1.0
                     vp_h = float(vp.height()) if vp and vp.height() > 0 else 1.0
 
-                    self._fit_width_mode = (entry.h > vp_h) or (entry.w >= vp_w * 0.85)
-
                     sb_v = sb_scroll.verticalScrollBar()
-                    sb_val = sb_v.value() if sb_v else 0
-                    c_zoom = getattr(canvas, "_zoom", 1.0) or 1.0
-                    dy = max(0, sb_val - entry.y_off)
-                    self._initial_scroll_pt_y = dy / c_zoom
-
+                    scroll_y = float(sb_v.value()) if sb_v else 0.0
                     sb_h = sb_scroll.horizontalScrollBar()
-                    sb_h_val = sb_h.value() if sb_h else 0
-                    dx = max(0, sb_h_val - canvas.page_x_offset(entry))
-                    self._initial_scroll_pt_x = dx / c_zoom
+                    scroll_x = float(sb_h.value()) if sb_h else 0.0
+
+                    x_off = float(canvas.page_x_offset(entry))
+                    y_off = float(entry.y_off)
+
+                    # Exact top-left visible coordinates on the page
+                    self._initial_pan_x = -int(round(scroll_x - x_off))
+                    self._initial_pan_y = -int(round(scroll_y - y_off))
+
+                    debug_init_info.update({
+                        "Resolved Active Page": f"{self._current + 1} / {self._total}",
+                        "Normal Viewport Size": f"{vp_w:.0f} × {vp_h:.0f} px",
+                        "Normal Scrollbars": f"scroll_x={scroll_x:.0f}, scroll_y={scroll_y:.0f}",
+                        "Normal Page Canvas Position": f"x_off={x_off:.0f}, y_off={y_off:.0f}",
+                        "Normal Page Size on Canvas": f"{entry.w} × {entry.h} px",
+                        "Normal Zoom (pts to px)": f"{self._zoom:.4f} ({self._zoom_factor * 100:.0f}%)",
+                        "Initial Pan Target": f"pan_x={self._initial_pan_x}, pan_y={self._initial_pan_y}",
+                    })
+
+        _debug_print("INIT CAPTURE", debug_init_info)
 
         # Transitions state
         self._trans_style = None
@@ -166,7 +206,6 @@ class PresentationWidget(QWidget):
         self.setCursor(Qt.CursorShape.BlankCursor)
         self.setWindowState(Qt.WindowState.WindowFullScreen)
 
-        # Scoped presentation-only zoom shortcuts
         for seq, fn in [
             ("Ctrl++", self._zoom_in),
             ("Ctrl+=", self._zoom_in),
@@ -178,7 +217,9 @@ class PresentationWidget(QWidget):
             sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
         self._ready = True
-        QTimer.singleShot(0, lambda: self._render(transition=False))
+
+        # Render synchronously immediately to eliminate the black screen startup delay
+        self._render(transition=False)
 
     def update_theme(self, dark: bool) -> None:
         self._dark_mode = bool(dark)
@@ -187,27 +228,70 @@ class PresentationWidget(QWidget):
         if isValid(self._hud):
             self._hud.update_theme(self._dark_mode)
 
-    # ── Zoom & Pan & Scroll Controls ──────────────────────────────────────
+    # ── Zoom & Pan Controls ───────────────────────────────────────────────
 
-    def _zoom_in(self):
-        self._zoom_factor = min(5.0, round(self._zoom_factor * 1.25, 3))
-        self._render(transition=False)
+    def _zoom_in(self, anchor_pos: QPoint | None = None):
+        old_zoom = self._zoom if self._zoom and self._zoom > 0 else self._base_fit_zoom
+        new_zoom = min(self._base_fit_zoom * 8.0, old_zoom * 1.25)
+        self._apply_anchored_zoom(new_zoom, anchor_pos)
 
-    def _zoom_out(self):
-        self._zoom_factor = max(0.4, round(self._zoom_factor / 1.25, 3))
-        self._render(transition=False)
+    def _zoom_out(self, anchor_pos: QPoint | None = None):
+        old_zoom = self._zoom if self._zoom and self._zoom > 0 else self._base_fit_zoom
+        new_zoom = max(self._base_fit_zoom * 0.25, old_zoom / 1.25)
+        self._apply_anchored_zoom(new_zoom, anchor_pos)
 
     def _zoom_reset(self):
+        self._zoom = self._base_fit_zoom
         self._zoom_factor = 1.0
         self._pan_x = 0
         self._pan_y = 0
+        _debug_print("ZOOM RESET", {
+            "New Zoom": f"{self._zoom:.4f}",
+            "Pan X/Y": "0, 0",
+        })
+        self._render(transition=False)
+
+    def _apply_anchored_zoom(self, new_zoom: float, anchor_pos: QPoint | None = None):
+        if not self._pixmap:
+            self._zoom = new_zoom
+            self._render(transition=False)
+            return
+
+        sw = float(self.width())
+        sh = float(self.height())
+
+        old_zoom = self._zoom if self._zoom and self._zoom > 0 else self._base_fit_zoom
+        ratio = new_zoom / old_zoom
+
+        if anchor_pos is not None:
+            vp_x = float(anchor_pos.x())
+            vp_y = float(anchor_pos.y())
+        else:
+            vp_x = sw / 2.0
+            vp_y = sh / 2.0
+
+        page_x = vp_x - float(self._pan_x)
+        page_y = vp_y - float(self._pan_y)
+
+        new_pan_x = vp_x - page_x * ratio
+        new_pan_y = vp_y - page_y * ratio
+
+        _debug_print("ANCHORED ZOOM", {
+            "Old Zoom -> New Zoom": f"{old_zoom:.4f} -> {new_zoom:.4f} (ratio={ratio:.3f})",
+            "Anchor Screen Pos": f"x={vp_x:.1f}, y={vp_y:.1f}",
+            "Target Pan Position": f"x={new_pan_x:.1f}, y={new_pan_y:.1f}",
+        })
+
+        self._zoom = new_zoom
+        self._zoom_factor = new_zoom / max(1e-4, self._base_fit_zoom)
+        self._pan_x = int(round(new_pan_x))
+        self._pan_y = int(round(new_pan_y))
         self._render(transition=False)
 
     def _scroll_page(self, up: bool, amount: float = 80.0):
-        if not self._pixmap:
+        if not self._pixmap or not hasattr(self, "_rendered_ph"):
             return
-        dpr = self._pixmap.devicePixelRatio() or 1.0
-        ph = self._pixmap.height() / dpr
+        ph = getattr(self, "_rendered_ph", float(self.height()))
         sh = float(self.height())
 
         if ph <= sh:
@@ -243,10 +327,11 @@ class PresentationWidget(QWidget):
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            pos = e.position().toPoint()
             if e.angleDelta().y() > 0:
-                self._zoom_in()
+                self._zoom_in(anchor_pos=pos)
             else:
-                self._zoom_out()
+                self._zoom_out(anchor_pos=pos)
             e.accept()
             return
         else:
@@ -301,7 +386,8 @@ class PresentationWidget(QWidget):
             screen = self.screen() or QApplication.primaryScreen()
             geom = screen.geometry()
             dpr = screen.devicePixelRatio() or 1.0
-            sw, sh = float(geom.width()), float(geom.height())
+            sw = float(self.width()) if self.width() > 100 else float(geom.width())
+            sh = float(self.height()) if self.height() > 100 else float(geom.height())
 
             eff_w = page.rect.height if rot in (90, 270) else page.rect.width
             eff_h = page.rect.width if rot in (90, 270) else page.rect.height
@@ -310,13 +396,12 @@ class PresentationWidget(QWidget):
 
             fit_width_zoom = sw / eff_w
             fit_height_zoom = sh / eff_h
+            self._base_fit_zoom = min(fit_width_zoom, fit_height_zoom)
 
-            if getattr(self, "_fit_width_mode", True) or (eff_h >= eff_w) or (eff_h * fit_width_zoom > sh):
-                base_zoom = fit_width_zoom
-            else:
-                base_zoom = min(fit_width_zoom, fit_height_zoom)
+            if self._zoom is None or self._zoom <= 0:
+                self._zoom = self._base_fit_zoom * self._zoom_factor
 
-            zoom = base_zoom * self._zoom_factor
+            zoom = self._zoom
             rz = zoom * dpr
 
             max_d = max(eff_w, eff_h)
@@ -337,29 +422,56 @@ class PresentationWidget(QWidget):
             qp.setDevicePixelRatio(dpr)
             self._pixmap = qp
 
-            pw = qp.width() / dpr
-            ph = qp.height() / dpr
+            # Accurate logical dimensions in device-independent pixels
+            pw = float(qp.width())
+            ph = float(qp.height())
+            self._rendered_pw = pw
+            self._rendered_ph = ph
 
-            if not transition and self._initial_scroll_pt_y is not None:
-                init_dy = self._initial_scroll_pt_y * zoom
-                self._pan_y = -int(round(init_dy))
-                self._initial_scroll_pt_y = None
-                if self._initial_scroll_pt_x is not None:
-                    init_dx = self._initial_scroll_pt_x * zoom
-                    self._pan_x = -int(round(init_dx))
-                    self._initial_scroll_pt_x = None
+            focal_debug_info = "None (Page transition or manual pan)"
+
+            # Maintain position from normal view on initial launch
+            if not transition and getattr(self, "_initial_pan_x", None) is not None:
+                self._pan_x = self._initial_pan_x
+                self._pan_y = self._initial_pan_y
+                focal_debug_info = f"Synchronized normal view pan: x={self._pan_x}, y={self._pan_y}"
+                self._initial_pan_x = None
+                self._initial_pan_y = None
+
+            pre_clamp_x = self._pan_x
+            pre_clamp_y = self._pan_y
+
+            # Strictly clamp horizontal and vertical panning to keep view on-screen
+            if pw > sw:
+                min_pan_x = int(round(sw - pw))
+                max_pan_x = 0
+                self._pan_x = max(min_pan_x, min(max_pan_x, self._pan_x))
+            else:
+                self._pan_x = int(round((sw - pw) / 2.0))
 
             if ph > sh:
-                min_pan_y = sh - ph
-                max_pan_y = 0.0
+                min_pan_y = int(round(sh - ph))
+                max_pan_y = 0
                 if getattr(self, "_align_bottom_next_render", False):
                     self._align_bottom_next_render = False
-                    self._pan_y = int(round(min_pan_y))
+                    self._pan_y = min_pan_y
                 else:
-                    self._pan_y = int(round(max(min_pan_y, min(max_pan_y, float(self._pan_y)))))
+                    self._pan_y = max(min_pan_y, min(max_pan_y, self._pan_y))
             else:
-                self._pan_y = 0
+                self._pan_y = int(round((sh - ph) / 2.0))
                 self._align_bottom_next_render = False
+
+            _debug_print("RENDER PASS", {
+                "Target Page": f"{self._current + 1} / {self._total}",
+                "Display Screen Area (sw × sh)": f"{sw:.0f} × {sh:.0f} px (Window: {self.width()} × {self.height()})",
+                "Unzoomed Page Size": f"{eff_w:.1f} × {eff_h:.1f} pt (rot={rot}°)",
+                "Applied Zoom": f"{zoom:.4f} (Base fit={self._base_fit_zoom:.4f}, rz={rz:.2f})",
+                "Rendered Page Size (pw × ph)": f"{pw:.1f} × {ph:.1f} px",
+                "Position Matching Logic": focal_debug_info,
+                "Pre-clamp Pan (X, Y)": f"x={pre_clamp_x}, y={pre_clamp_y}",
+                "Final Clamped Pan (X, Y)": f"x={self._pan_x}, y={self._pan_y}",
+                "Coverage Status": f"W-Fit: {pw <= sw} (min_x={int(sw - pw) if pw > sw else 0}), H-Fit: {ph <= sh} (min_y={int(sh - ph) if ph > sh else 0})",
+            })
 
             # Check /Dur for auto-advance
             val_dur = self._doc.xref_get_key(page.xref, "Dur")
@@ -413,7 +525,8 @@ class PresentationWidget(QWidget):
         self.update()
 
     def _update_counter(self):
-        zoom_str = f"  ·  {int(round(self._zoom_factor * 100))}%" if self._zoom_factor != 1.0 else ""
+        disp_pct = round((self._zoom / max(1e-4, self._base_fit_zoom)) * 100) if self._zoom else 100
+        zoom_str = f"  ·  {disp_pct}%" if disp_pct != 100 else ""
         self._counter.setText(f"{self._current + 1} / {self._total}{zoom_str}")
         self._counter.adjustSize()
         lw = self._counter.width()
@@ -481,22 +594,19 @@ class PresentationWidget(QWidget):
 
         pixmap = self._pixmap
         if pixmap is not None and not pixmap.isNull():
-            dpr = pixmap.devicePixelRatio() or 1.0
-            pw = pixmap.width() / dpr
-            ph = pixmap.height() / dpr
-            x = (self.width() - pw) / 2.0 + self._pan_x
-            base_y = (self.height() - ph) / 2.0 if ph <= self.height() else 0.0
-            y = base_y + self._pan_y
+            pw = getattr(self, "_rendered_pw", float(self.width()))
+            ph = getattr(self, "_rendered_ph", float(self.height()))
+
+            x = float(self._pan_x) if pw > self.width() else (self.width() - pw) / 2.0
+            y = float(self._pan_y) if ph > self.height() else (self.height() - ph) / 2.0
 
             t = self._trans_progress
             prev_pixmap = self._prev_pixmap
             if prev_pixmap is not None and not prev_pixmap.isNull() and t < 1.0 and self._trans_style:
-                old_dpr = prev_pixmap.devicePixelRatio() or 1.0
-                old_w = prev_pixmap.width() / old_dpr
-                old_h = prev_pixmap.height() / old_dpr
+                old_w = float(prev_pixmap.width())
+                old_h = float(prev_pixmap.height())
                 old_x = (self.width() - old_w) / 2.0
-                old_base_y = (self.height() - old_h) / 2.0 if old_h <= self.height() else 0.0
-                old_y = old_base_y
+                old_y = (self.height() - old_h) / 2.0
 
                 style = self._trans_style
                 if style == "Push":
@@ -562,7 +672,14 @@ class PresentationWidget(QWidget):
                     p.drawPixmap(int(x), int(y), pixmap)
                     p.setOpacity(1.0)
             else:
-                p.drawPixmap(int(x), int(y), pixmap)
+                # Direct 1:1 hardware pixel output without bilinear scaling blur
+                p.drawPixmap(int(round(x)), int(round(y)), pixmap)
+
+            _debug_print("PAINT EVENT", {
+                "Drawn Screen Box": f"x={x:.1f}, y={y:.1f}, w={pw:.1f}, h={ph:.1f}",
+                "Monitor Screen Dimensions": f"{self.width()} × {self.height()} px",
+                "Visible Viewport Slice": f"x=[{max(0.0, x):.1f} .. {min(float(self.width()), x + pw):.1f}], y=[{max(0.0, y):.1f} .. {min(float(self.height()), y + ph):.1f}]",
+            })
         p.end()
 
     def keyPressEvent(self, e):
@@ -650,8 +767,7 @@ class PresentationWidget(QWidget):
             if self._current < self._total - 1:
                 self._go_to_page(self._current + 1, align_bottom=False)
         elif key in (Qt.Key.Key_Space, Qt.Key.Key_PageDown):
-            dpr = self._pixmap.devicePixelRatio() or 1.0 if self._pixmap else 1.0
-            ph = self._pixmap.height() / dpr if self._pixmap else 0.0
+            ph = getattr(self, "_rendered_ph", float(self.height()))
             sh = float(self.height())
             if ph > sh and self._pan_y > (sh - ph) + 10:
                 self._scroll_page(up=False, amount=sh * 0.8)
@@ -661,8 +777,7 @@ class PresentationWidget(QWidget):
             if self._current > 0:
                 self._go_to_page(self._current - 1, align_bottom=False)
         elif key in (Qt.Key.Key_Backspace, Qt.Key.Key_PageUp):
-            dpr = self._pixmap.devicePixelRatio() or 1.0 if self._pixmap else 1.0
-            ph = self._pixmap.height() / dpr if self._pixmap else 0.0
+            ph = getattr(self, "_rendered_ph", float(self.height()))
             sh = float(self.height())
             if ph > sh and self._pan_y < -10:
                 self._scroll_page(up=True, amount=sh * 0.8)
@@ -674,9 +789,13 @@ class PresentationWidget(QWidget):
             self._go_to_page(self._total - 1)
 
     def mousePressEvent(self, e):
+        pw = getattr(self, "_rendered_pw", float(self.width()))
+        ph = getattr(self, "_rendered_ph", float(self.height()))
+        can_pan = (pw > float(self.width()) or ph > float(self.height()))
+
         if (e.button() == Qt.MouseButton.MiddleButton or
                 (e.button() == Qt.MouseButton.LeftButton and
-                 self._overlay.tool() == int(ToolMode.POINTER) and (self._zoom_factor > 1.0 or (self._pixmap and self._pixmap.height() / (self._pixmap.devicePixelRatio() or 1.0) > self.height())))):
+                 self._overlay.tool() == int(ToolMode.POINTER) and can_pan)):
             self._is_panning = True
             self._pan_start_pos = e.position().toPoint()
             self._pan_start_offset = QPoint(int(self._pan_x), int(self._pan_y))
@@ -689,15 +808,32 @@ class PresentationWidget(QWidget):
         self._show_hud()
         if self._is_panning:
             delta = e.position().toPoint() - self._pan_start_pos
-            self._pan_x = int(self._pan_start_offset.x() + delta.x())
-            new_y = self._pan_start_offset.y() + delta.y()
-            if self._pixmap:
-                dpr = self._pixmap.devicePixelRatio() or 1.0
-                ph = self._pixmap.height() / dpr
-                sh = float(self.height())
-                if ph > sh:
-                    new_y = max(sh - ph, min(0.0, float(new_y)))
-            self._pan_y = int(new_y)
+            new_x = float(self._pan_start_offset.x() + delta.x())
+            new_y = float(self._pan_start_offset.y() + delta.y())
+
+            pw = getattr(self, "_rendered_pw", float(self.width()))
+            ph = getattr(self, "_rendered_ph", float(self.height()))
+            sw = float(self.width())
+            sh = float(self.height())
+
+            if pw > sw:
+                new_x = max(sw - pw, min(0.0, new_x))
+            else:
+                new_x = (sw - pw) / 2.0
+            if ph > sh:
+                new_y = max(sh - ph, min(0.0, new_y))
+            else:
+                new_y = (sh - ph) / 2.0
+
+            self._pan_x = int(round(new_x))
+            self._pan_y = int(round(new_y))
+
+            _debug_print("INTERACTIVE PANNING", {
+                "Mouse Drag Delta": f"dx={delta.x()}, dy={delta.y()}",
+                "New Pan Position": f"pan_x={self._pan_x}, pan_y={self._pan_y}",
+                "Screen Bounds Limit": f"min_x={int(sw - pw) if pw > sw else 0}, min_y={int(sh - ph) if ph > sh else 0}",
+            })
+
             self.update()
             e.accept()
             return
@@ -725,7 +861,11 @@ class PresentationWidget(QWidget):
         if isValid(self._hud):
             self._hud.reposition()
         self._update_counter()
-        QTimer.singleShot(0, lambda: self._render(transition=False))
+        _debug_print("RESIZE EVENT", {
+            "Widget Window Rect": f"{self.width()} × {self.height()} px",
+            "Screen Available Area": f"{self.screen().geometry().width()} × {self.screen().geometry().height()} px",
+        })
+        self._render(transition=False)
 
     def _burn_annotations_to_doc(self) -> bool:
         """Burn overlay strokes and text boxes into the PDF document."""
@@ -742,7 +882,8 @@ class PresentationWidget(QWidget):
         screen = self.screen() or QApplication.primaryScreen()
         geom = screen.geometry()
         dpr = screen.devicePixelRatio() or 1.0
-        sw, sh = float(geom.width()), float(geom.height())
+        sw = float(self.width()) if self.width() > 100 else float(geom.width())
+        sh = float(self.height()) if self.height() > 100 else float(geom.height())
 
         for page_idx in pages_with_annots:
             if page_idx < 0 or page_idx >= self._doc.page_count:
@@ -766,28 +907,21 @@ class PresentationWidget(QWidget):
             fit_width_zoom = sw / eff_w
             fit_height_zoom = sh / eff_h
 
-            if getattr(self, "_fit_width_mode", True) or (eff_h >= eff_w) or (eff_h * fit_width_zoom > sh):
-                base_zoom = fit_width_zoom
+            base_zoom = min(fit_width_zoom, fit_height_zoom)
+            zoom = self._zoom if self._zoom and self._zoom > 0 else (base_zoom * self._zoom_factor)
+
+            pw = eff_w * zoom
+            ph = eff_h * zoom
+
+            if pw <= self.width():
+                offset_x = (self.width() - pw) / 2.0
             else:
-                base_zoom = min(fit_width_zoom, fit_height_zoom)
+                offset_x = float(self._pan_x)
 
-            zoom = base_zoom * self._zoom_factor
-            rz = zoom * dpr
-
-            max_d = max(eff_w, eff_h)
-            if max_d * rz > 8192:
-                rz = 8192.0 / max_d
-
-            mat = fitz.Matrix(rz, rz)
-            if rot:
-                mat = mat.prerotate(rot)
-            ir = (page.rect * mat).round()
-            pw = max(1.0, ir.width / dpr)
-            ph = max(1.0, ir.height / dpr)
-
-            offset_x = (self.width() - pw) / 2.0 + self._pan_x
-            base_y = (self.height() - ph) / 2.0 if ph <= self.height() else 0.0
-            offset_y = base_y + self._pan_y
+            if ph <= self.height():
+                offset_y = (self.height() - ph) / 2.0
+            else:
+                offset_y = float(self._pan_y)
 
             scale_x = page.rect.width / pw
             scale_y = page.rect.height / ph
@@ -914,7 +1048,7 @@ class PresentationWidget(QWidget):
                     save_and_reload(doc_to_save, target_page=self._current)
             except Exception as e:
                 _log.exception("Failed to save presentation annotations to viewer: %s", e)
-            self._doc = None  # Handed off to viewer
+            self._doc = None
         else:
             if self._doc is not None:
                 with contextlib.suppress(Exception):

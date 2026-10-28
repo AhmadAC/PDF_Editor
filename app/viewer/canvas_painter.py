@@ -45,7 +45,7 @@ class CanvasPainter:
         p.drawLine(cx0, cy1, cx0 + k, cy1)
         p.drawLine(cx0, cy1, cx0, cy1 - k)
         p.drawLine(cx1, cy1, cx1 - k, cy1)
-        p.drawLine(cx1, cy1, cx1 - k, cy1)
+        p.drawLine(cx1, cy1, cx1, cy1 - k)
 
         z = zoom or 1.0
         pt_w = int(round((cx1 - cx0) / z))

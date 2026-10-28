@@ -11,7 +11,7 @@ _PAGE_GAP       = 4    # px between pages
 _BUFFER_PGS     = 2    # extra pages to pre-render outside the visible area
 _MAX_THREADS    = max(2, min(4, os.cpu_count() or 2))   # simultaneous render workers
 _NOTE_ICON_SIZE = 22   # note icon size in pixels
-_MAX_RENDER_DIM = 3200 # px max dimension to prevent excessive heap allocation on extreme zooms
+_MAX_RENDER_DIM = 6400 # px max dimension for high-DPI 400%+ crisp vector quality
 
 
 class _RenderSignals(QObject):
@@ -83,7 +83,6 @@ def extract_page_lines(page, rx0: float = 0.0, ry0: float = 0.0) -> list[dict]:
 
             chars.sort(key=lambda c: c[0])
 
-            # Insert synthesized word space if there is a gap between non-space characters
             merged_chars = [chars[0]]
             for i in range(1, len(chars)):
                 prev_c = merged_chars[-1]
@@ -222,7 +221,7 @@ def sort_words_in_reading_order(raw_words: list) -> list:
 
 
 class _PageJob(QRunnable):
-    """Renders a fitz page in a background thread with generation check and safe memory capping."""
+    """Renders a fitz page in a background thread with generation check and high-resolution vector sharpness."""
 
     def __init__(self, path: str, password: str, idx: int,
                  zoom: float, dpr: float, gen: int, signals: _RenderSignals,
@@ -286,7 +285,6 @@ class _PageJob(QRunnable):
             if self.is_cancelled():
                 return
 
-            # Render with automatic downscale retry on MemoryError or allocator pressure
             pix = None
             for attempt in range(3):
                 try:
@@ -319,7 +317,6 @@ class _PageJob(QRunnable):
                 qi = QImage(pix.samples, pix.width, pix.height,
                             pix.stride, QImage.Format.Format_RGB888).copy()
             except MemoryError:
-                # If memory is under pressure, downscale on-the-fly
                 down_mat = fitz.Matrix(0.5, 0.5)
                 pix2 = page.get_pixmap(matrix=down_mat, alpha=False, annots=True)
                 if pix2.n != 3:
@@ -328,7 +325,7 @@ class _PageJob(QRunnable):
                             pix2.stride, QImage.Format.Format_RGB888).copy()
                 pix2 = None
 
-            pix = None  # Free MuPDF pixmap buffer immediately
+            pix = None
 
             qp = QP.fromImage(qi)
             qp.setDevicePixelRatio(self._dpr)

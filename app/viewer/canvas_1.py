@@ -556,8 +556,9 @@ class _SelectCanvas(QWidget):
         n = len(self._entries)
         if not n:
             return (0, 0)
+        buf = 0 if self._zoom_factor >= 1.5 else _BUFFER_PGS
         if not isinstance(sa, _SA):
-            return (0, min(n - 1, _BUFFER_PGS * 2))
+            return (0, min(n - 1, buf * 2))
         y0 = sa.verticalScrollBar().value()
         vp_h = sa.viewport().height()
         y1 = y0 + (vp_h if vp_h > 0 else 600)
@@ -569,7 +570,7 @@ class _SelectCanvas(QWidget):
                 found = True
             if entry.y_off <= y1:
                 last = i
-        return (max(0, first - _BUFFER_PGS), min(n - 1, last + _BUFFER_PGS))
+        return (max(0, first - buf), min(n - 1, last + buf))
 
     def on_scroll(self):
         self._schedule_visible()
@@ -581,7 +582,8 @@ class _SelectCanvas(QWidget):
         dpr = self.devicePixelRatioF() or 1.0
         gen = self._gen
         pool = QThreadPool.globalInstance()
-        pool.setMaxThreadCount(_MAX_THREADS)
+        max_threads = 1 if (self._zoom_factor >= 2.0 or (self._zoom * dpr) > 3.0) else _MAX_THREADS
+        pool.setMaxThreadCount(max_threads)
         for i in range(first, last + 1):
             entry = self._entries[i]
             if entry.pixmap is None and i not in self._pending:
