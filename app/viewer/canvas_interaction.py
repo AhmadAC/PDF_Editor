@@ -1,5 +1,4 @@
-# app/viewer/canvas_interaction.py
-
+# app\viewer\canvas_interaction.py
 """PDF_Editor – Interaction handler for _SelectCanvas (Mouse, Keyboard, Context Menus, Signatures, Shortcuts)."""
 from __future__ import annotations
 
@@ -127,6 +126,8 @@ class CanvasInteractionHandler:
                 last_p = pi
                 last_l = len(lines) - 1
                 last_c = len(lines[-1]["chars"])
+                
+        print(f"[DEBUG] select_all: first_p={first_p}, last_p={last_p}, last_l={last_l}, last_c={last_c}")
 
         if first_p < 0:
             self.clear_selection()
@@ -232,6 +233,8 @@ class CanvasInteractionHandler:
             p_start, l_start, c_start = p1_page, l1, c1
             p_end, l_end, c_end = p2_page, l2, c2
 
+        print(f"[DEBUG] _select_char_range: p_start={p_start} (l={l_start}, c={c_start}) to p_end={p_end} (l={l_end}, c={c_end})")
+        
         rects: list[QRect] = []
         page_texts: list[str] = []
         z = c._zoom or 1.0
@@ -276,11 +279,20 @@ class CanvasInteractionHandler:
                 ry0 = entry.y_off + int(round(line["y0"] * z))
                 rx1 = x_off + int(round(selected_chars[-1][2] * z))
                 ry1 = entry.y_off + int(round(line["y1"] * z))
+
+                if rx0 > rx1:
+                    rx0, rx1 = rx1, rx0
+                if ry0 > ry1:
+                    ry0, ry1 = ry1, ry0
+
                 rects.append(QRect(rx0, ry0, max(1, rx1 - rx0), max(1, ry1 - ry0)))
 
             if line_strings:
                 page_texts.append("\n".join(line_strings))
 
+        print(f"[DEBUG] _select_char_range complete. Generated {len(rects)} rectangles.")
+        if rects:
+            print(f"[DEBUG] Sample rect 0: {rects[0]} (x={rects[0].x()}, y={rects[0].y()}, w={rects[0].width()}, h={rects[0].height()})")
         c._sel_rects = rects
         c._sel_text = "\n\n".join(page_texts)
 

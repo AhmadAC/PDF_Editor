@@ -1,4 +1,4 @@
-# app/tools/ocr.py
+# app\tools\ocr.py
 """PDF_Editor – TabOCR: OCR text recognition tool supporting RapidOCR (ONNX) and EasyOCR."""
 
 from __future__ import annotations
@@ -349,83 +349,68 @@ class TabOCR(BasePage):
                         raise WrongPasswordError(t("tool.err.wrong_password"))
 
                 try:
-                    if fmt == 1:
-                        # Text Output (.txt)
-                        texts = []
-                        for i in range(len(doc)):
-                            if _self.is_cancelled():
-                                return None
-                            page = doc[i]
-                            page_pct = 20 + int(((i + 1) / n_pages) * 75)
-                            _self.progress.emit(
-                                page_pct,
-                                t("progress.ocr.page", current=i + 1, total=n_pages),
-                            )
-                            pix = page.get_pixmap(dpi=150)
-                            img_bytes = pix.tobytes("png")
+                    texts = []
+                    for i in range(len(doc)):
+                        if _self.is_cancelled():
+                            return None
+                        page = doc[i]
+                        page_pct = 20 + int(((i + 1) / n_pages) * 75)
+                        _self.progress.emit(
+                            page_pct,
+                            t("progress.ocr.page", current=i + 1, total=n_pages),
+                        )
+                        pix = page.get_pixmap(dpi=150)
+                        img_bytes = pix.tobytes("png")
+                        scale_x = page.rect.width / max(1.0, float(pix.width))
+                        scale_y = page.rect.height / max(1.0, float(pix.height))
 
+                        parsed_entries = []
+                        if use_rapid and rapid_engine is not None:
+                            ocr_results, _ = rapid_engine(img_bytes)
+                            if ocr_results:
+                                for item in ocr_results:
+                                    parsed_entries.append((item[0], item[1], float(item[2])))
+                        elif reader is not None:
+                            raw_results: Any = reader.readtext(img_bytes)
+                            for entry in raw_results:
+                                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                                    bbox = entry[0]
+                                    t_clean = str(entry[1]).strip()
+                                    p_val = float(entry[2]) if len(entry) >= 3 else 1.0
+                                    parsed_entries.append((bbox, t_clean, p_val))
+
+                        # Group and sort entries visually top-to-bottom and left-to-right
+                        if parsed_entries:
+                            def _mid_y(entry):
+                                box = entry[0]
+                                ys = [pt[1] for pt in box]
+                                return (min(ys) + max(ys)) / 2.0
+                            parsed_entries.sort(key=lambda e: (_mid_y(e), min(pt[0] for pt in e[0])))
+
+                        if fmt == 1:
                             page_lines = []
-                            if use_rapid and rapid_engine is not None:
-                                ocr_results, _ = rapid_engine(img_bytes)
-                                if ocr_results:
-                                    for item in ocr_results:
-                                        t_line = str(item[1]).strip()
-                                        if t_line:
-                                            page_lines.append(t_line)
-                            elif reader is not None:
-                                raw_lines: Any = reader.readtext(img_bytes, detail=0)
-                                for line in raw_lines:
-                                    t_line = str(line).strip()
-                                    if t_line:
-                                        page_lines.append(t_line)
-
+                            cur_line = []
+                            cur_y_mid = -1.0
+                            for (bbox, text_clean, prob) in parsed_entries:
+                                text_clean = str(text_clean).strip()
+                                if not text_clean or prob < 0.2:
+                                    continue
+                                ys = [pt[1] for pt in bbox]
+                                y_mid = (min(ys) + max(ys)) / 2.0
+                                h = max(8.0, max(ys) - min(ys))
+                                if cur_y_mid < 0:
+                                    cur_y_mid = y_mid
+                                if abs(y_mid - cur_y_mid) > h * 0.6:
+                                    page_lines.append(" ".join(cur_line))
+                                    cur_line = []
+                                    cur_y_mid = y_mid
+                                cur_line.append(text_clean)
+                            if cur_line:
+                                page_lines.append(" ".join(cur_line))
                             texts.append("\n".join(page_lines))
-
-                        _self.progress.emit(98, "Writing extracted text...")
-                        self._check_not_same_path(out_path, [pdf_path])
-                        out_dir = os.path.dirname(out_path) or os.getcwd()
-                        _fd, _tmp = tempfile.mkstemp(suffix=".txt", dir=out_dir)
-                        try:
-                            with os.fdopen(_fd, "w", encoding="utf-8") as fh:
-                                fh.write("\f\n".join(texts))
-                            os.replace(_tmp, out_path)
-                        except Exception:
-                            if os.path.exists(_tmp):
-                                with contextlib.suppress(OSError):
-                                    os.unlink(_tmp)
-                            raise
-
-                    else:
-                        # Searchable PDF Output (.pdf)
-                        for i in range(len(doc)):
-                            if _self.is_cancelled():
-                                return None
-                            page = doc[i]
-                            page_pct = 20 + int(((i + 1) / n_pages) * 75)
-                            _self.progress.emit(
-                                page_pct,
-                                t("progress.ocr.page", current=i + 1, total=n_pages),
-                            )
-                            pix = page.get_pixmap(dpi=150)
-                            img_bytes = pix.tobytes("png")
-                            scale_x = page.rect.width / max(1.0, float(pix.width))
-                            scale_y = page.rect.height / max(1.0, float(pix.height))
-
-                            parsed_entries = []
-                            if use_rapid and rapid_engine is not None:
-                                ocr_results, _ = rapid_engine(img_bytes)
-                                if ocr_results:
-                                    for item in ocr_results:
-                                        parsed_entries.append((item[0], item[1], float(item[2])))
-                            elif reader is not None:
-                                raw_results: Any = reader.readtext(img_bytes)
-                                for entry in raw_results:
-                                    if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                                        bbox = entry[0]
-                                        t_clean = str(entry[1]).strip()
-                                        p_val = float(entry[2]) if len(entry) >= 3 else 1.0
-                                        parsed_entries.append((bbox, t_clean, p_val))
-
+                        else:
+                            derot = page.derotation_matrix
+                            page_rot = page.rotation
                             for (bbox, text_clean, prob) in parsed_entries:
                                 text_clean = str(text_clean).strip()
                                 if not text_clean or prob < 0.2:
@@ -442,26 +427,37 @@ class TabOCR(BasePage):
                                 if box_rect.is_empty or box_rect.width < 1 or box_rect.height < 1:
                                     continue
 
-                                h = max(6.0, box_rect.height)
-                                font_size = max(4.0, min(72.0, h * 0.85))
+                                h = max(4.0, box_rect.height)
+                                font_size = max(4.0, min(72.0, h * 0.8))
 
-                                # Insert invisible text overlay for native search and selection
-                                rc = page.insert_textbox(
-                                    box_rect,
+                                # Apply page.derotation_matrix so that insertion targets unrotated page coordinates accurately
+                                origin = fitz.Point(box_rect.x0, box_rect.y1 - (h * 0.15))
+                                pt_in_pdf = origin * derot
+
+                                page.insert_text(
+                                    pt_in_pdf,
                                     text_clean,
                                     fontsize=font_size,
                                     fontname="helv",
                                     render_mode=3,
+                                    rotate=page_rot,
                                 )
-                                if rc < 0:
-                                    page.insert_text(
-                                        fitz.Point(box_rect.x0, box_rect.y1 - h * 0.15),
-                                        text_clean,
-                                        fontsize=font_size,
-                                        fontname="helv",
-                                        render_mode=3,
-                                    )
 
+                    if fmt == 1:
+                        _self.progress.emit(98, "Writing extracted text...")
+                        self._check_not_same_path(out_path, [pdf_path])
+                        out_dir = os.path.dirname(out_path) or os.getcwd()
+                        _fd, _tmp = tempfile.mkstemp(suffix=".txt", dir=out_dir)
+                        try:
+                            with os.fdopen(_fd, "w", encoding="utf-8") as fh:
+                                fh.write("\f\n".join(texts))
+                            os.replace(_tmp, out_path)
+                        except Exception:
+                            if os.path.exists(_tmp):
+                                with contextlib.suppress(OSError):
+                                    os.unlink(_tmp)
+                            raise
+                    else:
                         _self.progress.emit(98, "Saving output PDF...")
                         win: Any = self.window()
                         viewer = getattr(win, "_viewer", None)

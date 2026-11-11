@@ -1,10 +1,11 @@
-# app/viewer/canvas_worker.py
+# app\viewer\canvas_worker.py
 from __future__ import annotations
 
 """PDF_Editor – Background worker and data structures for canvas page rendering and character-level text extraction."""
 
 import os
 from typing import Any
+import fitz
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 _PAGE_GAP       = 4    # px between pages
@@ -34,190 +35,101 @@ class _PageEntry:
 
 
 def extract_page_lines(page, rx0: float = 0.0, ry0: float = 0.0) -> list[dict]:
-    """Extract text organized by visual reading lines with character-level bounding boxes."""
+    """Extract text organized by visual reading lines with character-level bounding boxes.
+    Applies page.rotation_matrix to map unrotated PyMuPDF text into the visual screen space."""
+    rot = page.rotation
+    rot_mat = page.rotation_matrix
+    print(f"[DEBUG] extract_page_lines started for page {page.number} (rotation={rot}, rect={page.rect})")
     try:
-        raw = page.get_text("rawdict")
-    except Exception:
-        raw = {}
+        words = page.get_text("words")
+    except Exception as e:
+        print(f"[DEBUG] get_text failed: {e}")
+        words = []
 
-    lines_raw: list[dict] = []
-    blocks = raw.get("blocks", []) if isinstance(raw, dict) else []
+    if not words:
+        return []
 
-    for b in blocks:
-        if not isinstance(b, dict) or b.get("type", 0) != 0:
+    # 1. Transform each word bounding box to the visual rotated space of page.rect
+    visual_words = []
+    for w in words:
+        # w = (x0, y0, x1, y1, word_str, block_no, line_no, word_no)
+        word_str = w[4]
+        if not word_str:
             continue
-        for ln in b.get("lines", []):
-            if not isinstance(ln, dict):
-                continue
+        rect = (fitz.Rect(w[0], w[1], w[2], w[3]) * rot_mat).normalize()
+        vx0 = rect.x0 - rx0
+        vy0 = rect.y0 - ry0
+        vx1 = rect.x1 - rx0
+        vy1 = rect.y1 - ry0
+        visual_words.append((vx0, vy0, vx1, vy1, word_str))
 
-            chars: list[tuple[float, float, float, float, str]] = []
-            for s in ln.get("spans", []):
-                if not isinstance(s, dict):
-                    continue
-                s_chars = s.get("chars", [])
-                if s_chars:
-                    for ch_dict in s_chars:
-                        ch = ch_dict.get("c", "")
-                        if not ch:
-                            continue
-                        c_bb = ch_dict.get("bbox", (0, 0, 0, 0))
-                        cx0 = float(c_bb[0] - rx0)
-                        cy0 = float(c_bb[1] - ry0)
-                        cx1 = float(c_bb[2] - rx0)
-                        cy1 = float(c_bb[3] - ry0)
-                        chars.append((cx0, cy0, cx1, cy1, ch))
-                else:
-                    stxt = s.get("text", "")
-                    if stxt:
-                        s_bb = s.get("bbox", (0, 0, 0, 0))
-                        sx0 = float(s_bb[0] - rx0)
-                        sy0 = float(s_bb[1] - ry0)
-                        sx1 = float(s_bb[2] - rx0)
-                        sy1 = float(s_bb[3] - ry0)
-                        cw = (sx1 - sx0) / max(1, len(stxt))
-                        for ci, ch_char in enumerate(stxt):
-                            chars.append((sx0 + ci * cw, sy0, sx0 + (ci + 1) * cw, sy1, ch_char))
-
-            if not chars:
-                continue
-
-            chars.sort(key=lambda c: c[0])
-
-            merged_chars = [chars[0]]
-            for i in range(1, len(chars)):
-                prev_c = merged_chars[-1]
-                curr_c = chars[i]
-                if not prev_c[4].isspace() and not curr_c[4].isspace():
-                    gap = curr_c[0] - prev_c[2]
-                    char_h = max(6.0, prev_c[3] - prev_c[1])
-                    if gap >= max(1.8, char_h * 0.16):
-                        merged_chars.append((prev_c[2], prev_c[1], curr_c[0], prev_c[3], " "))
-                merged_chars.append(curr_c)
-
-            real_x0 = merged_chars[0][0]
-            real_x1 = merged_chars[-1][2]
-            real_y0 = min(c[1] for c in merged_chars)
-            real_y1 = max(c[3] for c in merged_chars)
-
-            lines_raw.append({
-                "bbox": (real_x0, real_y0, real_x1, real_y1),
-                "y0": real_y0,
-                "y1": real_y1,
-                "chars": merged_chars,
-                "text": "".join(c[4] for c in merged_chars),
-            })
-
-    if not lines_raw:
-        try:
-            raw_words = page.get_text("words")
-            if raw_words:
-                sorted_words = sort_words_in_reading_order(raw_words)
-                by_line: dict[int, list] = {}
-                for w in sorted_words:
-                    by_line.setdefault(w[6], []).append(w)
-                for line_idx in sorted(by_line.keys()):
-                    line_words = by_line[line_idx]
-                    chars = []
-                    for w_idx, w in enumerate(line_words):
-                        if w_idx > 0:
-                            prev_w = line_words[w_idx - 1]
-                            chars.append((prev_w[2] - rx0, prev_w[1] - ry0, w[0] - rx0, prev_w[3] - ry0, " "))
-                        txt = w[4]
-                        cw = ((w[2] - w[0]) / max(1, len(txt)))
-                        for ci, ch_char in enumerate(txt):
-                            chars.append((
-                                (w[0] - rx0) + ci * cw,
-                                w[1] - ry0,
-                                (w[0] - rx0) + (ci + 1) * cw,
-                                w[3] - ry0,
-                                ch_char,
-                            ))
-                    if chars:
-                        lines_raw.append({
-                            "bbox": (chars[0][0], min(c[1] for c in chars), chars[-1][2], max(c[3] for c in chars)),
-                            "y0": min(c[1] for c in chars),
-                            "y1": max(c[3] for c in chars),
-                            "chars": chars,
-                            "text": "".join(c[4] for c in chars),
-                        })
-        except Exception:
-            pass
-
-    if not lines_raw:
+    if not visual_words:
         return []
 
-    sorted_by_y = sorted(lines_raw, key=lambda l: (l["y0"], l["bbox"][0]))
-    reading_lines: list[dict] = []
-    line_groups: list[list[dict]] = []
+    # 2. Sort words by vertical center to cluster into horizontal lines
+    visual_words.sort(key=lambda w: ((w[1] + w[3]) / 2.0, w[0]))
 
-    for l in sorted_by_y:
-        placed = False
-        l_h = max(6.0, l["y1"] - l["y0"])
-        l_mid = (l["y0"] + l["y1"]) / 2.0
-        for grp in line_groups:
-            grp_y0 = min(item["y0"] for item in grp)
-            grp_y1 = max(item["y1"] for item in grp)
-            grp_mid = (grp_y0 + grp_y1) / 2.0
-            grp_h = max(6.0, grp_y1 - grp_y0)
-            overlap = min(l["y1"], grp_y1) - max(l["y0"], grp_y0)
-            if overlap > 0.45 * min(l_h, grp_h) or abs(l_mid - grp_mid) < min(l_h, grp_h) * 0.40:
-                grp.append(l)
-                placed = True
-                break
-        if not placed:
-            line_groups.append([l])
-
-    for grp in line_groups:
-        grp.sort(key=lambda item: item["bbox"][0])
-        reading_lines.extend(grp)
-
-    return reading_lines
-
-
-def sort_words_in_reading_order(raw_words: list) -> list:
-    """Sort words into visual natural reading order (top-to-bottom, left-to-right lines)."""
-    if not raw_words:
-        return []
-
-    lines: list[list] = []
-    sorted_by_y = sorted(raw_words, key=lambda w: (w[1], w[0]))
-
-    for w in sorted_by_y:
-        placed = False
+    lines: list[list[tuple[float, float, float, float, str]]] = []
+    for w in visual_words:
         w_h = max(6.0, w[3] - w[1])
         w_mid_y = (w[1] + w[3]) / 2.0
-
+        placed = False
         for line in lines:
-            line_y0 = min(lw[1] for lw in line)
-            line_y1 = max(lw[3] for lw in line)
-            line_mid_y = (line_y0 + line_y1) / 2.0
-            line_h = max(6.0, line_y1 - line_y0)
-
-            overlap = min(w[3], line_y1) - max(w[1], line_y0)
-            if overlap > 0.40 * min(w_h, line_h) or abs(w_mid_y - line_mid_y) < min(w_h, line_h) * 0.40:
+            line_mid_y = sum((lw[1] + lw[3]) / 2.0 for lw in line) / len(line)
+            line_h = max(6.0, max(lw[3] for lw in line) - min(lw[1] for lw in line))
+            if abs(w_mid_y - line_mid_y) < min(w_h, line_h) * 0.55:
                 line.append(w)
                 placed = True
                 break
-
         if not placed:
             lines.append([w])
 
+    # 3. Sort words in each line left-to-right, and sort lines top-to-bottom
     for line in lines:
         line.sort(key=lambda w: w[0])
+    lines.sort(key=lambda line: sum((lw[1] + lw[3]) / 2.0 for lw in line) / len(line))
 
-    lines.sort(key=lambda line: sum((w[1] + w[3]) / 2.0 for w in line) / len(line))
+    # 4. Construct character-level bounding boxes for accurate text selection
+    lines_raw = []
+    for line_words in lines:
+        chars: list[tuple[float, float, float, float, str]] = []
+        for w_idx, w in enumerate(line_words):
+            if w_idx > 0:
+                prev_w = line_words[w_idx - 1]
+                gap = max(1.5, w[0] - prev_w[2])
+                chars.append((prev_w[2], prev_w[1], prev_w[2] + gap, prev_w[3], " "))
 
-    result = []
-    for line_idx, line in enumerate(lines):
-        for word_idx, w in enumerate(line):
-            result.append((
-                w[0], w[1], w[2], w[3],
-                w[4],
-                w[5] if len(w) > 5 else 0,
-                line_idx,
-                word_idx,
-            ))
-    return result
+            word_str = w[4]
+            word_w = max(1.0, w[2] - w[0])
+            cw = word_w / len(word_str)
+            for ci, ch in enumerate(word_str):
+                cx0 = w[0] + ci * cw
+                cy0 = w[1]
+                cx1 = w[0] + (ci + 1) * cw
+                cy1 = w[3]
+                chars.append((cx0, cy0, cx1, cy1, ch))
+
+        if not chars:
+            continue
+
+        real_x0 = min(c[0] for c in chars)
+        real_x1 = max(c[2] for c in chars)
+        real_y0 = min(c[1] for c in chars)
+        real_y1 = max(c[3] for c in chars)
+
+        lines_raw.append({
+            "bbox": (real_x0, real_y0, real_x1, real_y1),
+            "y0": real_y0,
+            "y1": real_y1,
+            "chars": chars,
+            "text": "".join(c[4] for c in chars),
+        })
+
+    print(f"[DEBUG] extract_page_lines produced {len(lines_raw)} lines for page {page.number}")
+    if lines_raw:
+        sample = lines_raw[0]
+        print(f"[DEBUG] Sample line 0: bbox={sample['bbox']} (w={sample['bbox'][2]-sample['bbox'][0]:.1f}, h={sample['bbox'][3]-sample['bbox'][1]:.1f}) text={sample['text'][:30]!r}")
+    return lines_raw
 
 
 class _PageJob(QRunnable):
