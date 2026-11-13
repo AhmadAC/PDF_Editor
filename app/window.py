@@ -476,6 +476,8 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         QShortcut(QKeySequence("Ctrl+1"), self, self._start_presentation)
         QShortcut(QKeySequence("F11"), self, self._toggle_fullscreen)
         QShortcut(QKeySequence("Ctrl+O"), self, self._open_pdf)
+        sc_hist = QShortcut(QKeySequence("Ctrl+H"), self, self._show_recent_files_menu)
+        sc_hist.setContext(Qt.ShortcutContext.WindowShortcut)
         QShortcut(QKeySequence("Ctrl+P"), self, lambda: self._viewer._print_pdf() if self._viewer else None)
 
         sc_zi1 = QShortcut(QKeySequence("Ctrl++"), self, self._zoom_in_current)

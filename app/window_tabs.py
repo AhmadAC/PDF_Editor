@@ -9,8 +9,9 @@ import shutil
 import sys
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QPoint, QSize, Qt, Signal
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtCore import QByteArray, QPoint, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QIcon, QMouseEvent, QPainter, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication,
     QMenu,
@@ -40,6 +41,26 @@ else:
 
 __all__ = ["_ViewerTabBar", "WindowTabsMixin"]
 
+_TAB_CLOSE_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18">
+<path d="M5.75 5.75l6.5 6.5M12.25 5.75l-6.5 6.5" fill="none" stroke="{color}" stroke-width="1.5" stroke-linecap="round"/>
+</svg>"""
+
+
+def _render_close_svg_pixmap(color: str, size: int = 18, dpr: float = 1.0) -> QPixmap:
+    svg_bytes = _TAB_CLOSE_SVG.format(color=color).encode("utf-8")
+    renderer = QSvgRenderer(QByteArray(svg_bytes))
+    px = max(1, int(round(size * dpr)))
+    pix = QPixmap(px, px)
+    pix.fill(Qt.GlobalColor.transparent)
+    pix.setDevicePixelRatio(dpr)
+    if renderer.isValid():
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        renderer.render(painter, QRectF(0.0, 0.0, float(size), float(size)))
+        painter.end()
+    return pix
+
 
 class _ViewerTabBar(QTabBar):
     """Custom tab bar supporting middle-click to close, left-click on active tab to toggle thumbnails, and double-click to open."""
@@ -50,8 +71,8 @@ class _ViewerTabBar(QTabBar):
         super().tabInserted(index)
         btn = QPushButton(self)
         btn.setObjectName("tab_close_btn")
-        btn.setFixedSize(16, 16)
-        btn.setIconSize(QSize(9, 9))
+        btn.setFixedSize(18, 18)
+        btn.setIconSize(QSize(18, 18))
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn.setToolTip(t("btn.close") if t("btn.close") != "btn.close" else "Close Tab")
@@ -63,8 +84,16 @@ class _ViewerTabBar(QTabBar):
         if dark is None:
             win = self.window()
             dark = getattr(win, "_dark_mode", True) if win else True
-        icon_color = "#D1D5DB" if dark else "#4B5563"
-        btn.setIcon(qta.icon("fa5s.times", color=icon_color, color_active="#FFFFFF"))
+        dpr = self.devicePixelRatioF() if hasattr(self, "devicePixelRatioF") else 1.0
+        if dpr <= 0:
+            dpr = 1.0
+        normal_color = "#9CA3AF" if dark else "#6B7280"
+        active_color = "#FFFFFF" if dark else "#1F2937"
+        ico = QIcon()
+        ico.addPixmap(_render_close_svg_pixmap(normal_color, 18, dpr), QIcon.Mode.Normal)
+        ico.addPixmap(_render_close_svg_pixmap(active_color, 18, dpr), QIcon.Mode.Active)
+        ico.addPixmap(_render_close_svg_pixmap(active_color, 18, dpr), QIcon.Mode.Selected)
+        btn.setIcon(ico)
 
     def _on_close_btn_clicked(self, btn: QPushButton) -> None:
         for i in range(self.count()):

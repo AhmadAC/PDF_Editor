@@ -307,15 +307,19 @@ QSplitter::handle {{ background: {BORDER}; width: 1px; }}
 QPushButton#tab_close_btn {{
     border: none;
     background: transparent;
-    border-radius: 3px;
-    margin-left: 4px;
+    border-radius: 9px;
+    min-width: 18px;
+    max-width: 18px;
+    min-height: 18px;
+    max-height: 18px;
+    margin: 0px;
     padding: 0px;
 }}
 QPushButton#tab_close_btn:hover {{
-    background: rgba(239, 68, 68, 0.85);
+    background: rgba(255, 255, 255, 0.16);
 }}
 QPushButton#tab_close_btn:pressed {{
-    background: #DC2626;
+    background: rgba(255, 255, 255, 0.25);
 }}
 """
 
@@ -577,14 +581,18 @@ QSplitter::handle {{ background: {_LO}; width: 1px; }}
 QPushButton#tab_close_btn {{
     border: none;
     background: transparent;
-    border-radius: 3px;
-    margin-left: 4px;
+    border-radius: 9px;
+    min-width: 18px;
+    max-width: 18px;
+    min-height: 18px;
+    max-height: 18px;
+    margin: 0px;
     padding: 0px;
 }}
 QPushButton#tab_close_btn:hover {{
-    background: rgba(239, 68, 68, 0.85);
+    background: rgba(0, 0, 0, 0.09);
 }}
 QPushButton#tab_close_btn:pressed {{
-    background: #DC2626;
+    background: rgba(0, 0, 0, 0.16);
 }}
 """
