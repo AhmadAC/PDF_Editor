@@ -1,5 +1,5 @@
 # app/viewer/presentation.py
-"""PDF_Editor – Presentation mode: fullscreen single-page viewer with page transitions, auto-advance, and synchronized position/zoom matching normal view."""
+"""PDF_Editor – Presentation mode: fullscreen single-page viewer with page transitions, auto-advance, and synchronized position/zoom/annotations across Normal View and Edit Mode."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ _PALETTE_HOTKEYS = {
 class PresentationWidget(QWidget):
     """Fullscreen single-page PDF viewer with keyboard navigation, zoom controls,
     smooth page transitions, auto-advance (/Dur), and a PowerPoint/Edge-style annotation HUD.
-    Maintains the exact zoom and viewport position from normal view upon launch."""
+    Synchronizes zoom, viewport position, and annotations with both Normal View and Edit Mode."""
 
     _viewer: Any
 
@@ -63,6 +63,7 @@ class PresentationWidget(QWidget):
         self._dark_mode = bool(dark_mode)
         self._hud_last_shown_ms = 0.0
         self._viewer: Any = viewer
+        self._edit_tab: Any = None
 
         # Zoom and Pan state
         self._zoom: float | None = None
@@ -74,17 +75,70 @@ class PresentationWidget(QWidget):
         self._pan_start_pos = QPoint()
         self._pan_start_offset = QPoint()
 
-        # Document geometry & synchronized viewport focal point from normal view
+        # Per-page render geometry cache for exact annotation coordinate mapping
+        self._page_render_info: dict[int, dict[str, float]] = {}
+
+        # Document geometry & synchronized viewport focal point from normal view / edit mode
         self._page_rotations: dict[int, int] = {}
         self._page_crops: dict[int, tuple[float, float, float, float]] = {}
         self._initial_top_left_pdf_x: float | None = None
         self._initial_top_left_pdf_y: float | None = None
 
-        if self._viewer is not None:
+        # Detect if Presentation Mode was launched while Edit Mode (TabEditar) is active
+        win = self._viewer.window() if self._viewer is not None else None
+        if win is not None and hasattr(win, "_edit_tool_idx") and hasattr(win, "stack"):
+            edit_idx = win._edit_tool_idx()
+            if getattr(win, "_current_tool", -1) == edit_idx and edit_idx >= 0:
+                candidate = win.stack.widget(edit_idx)
+                if (
+                    candidate is not None
+                    and not getattr(candidate, "_is_lazy_placeholder", False)
+                    and getattr(candidate, "_doc_path", None)
+                ):
+                    self._edit_tab = candidate
+
+        if self._edit_tab is not None:
+            edit_canvas = getattr(self._edit_tab, "_canvas", None)
+            sb_scroll = getattr(self._edit_tab, "_canvas_scroll", None)
+            self._path = self._edit_tab._doc_path
+            self._password = getattr(self._edit_tab, "_pdf_password", "") or self._password
+
+            if edit_canvas is not None:
+                inline_edit = getattr(edit_canvas, "_inline_edit", None)
+                if inline_edit is not None and inline_edit.isVisible():
+                    commit_fn = getattr(edit_canvas, "_commit_inline", None)
+                    if callable(commit_fn):
+                        commit_fn()
+
+                cnt = edit_canvas.page_count()
+                if cnt > 0:
+                    self._total = cnt
+
+                sb_v = sb_scroll.verticalScrollBar() if sb_scroll else None
+                sb_h = sb_scroll.horizontalScrollBar() if sb_scroll else None
+                if sb_v is not None and self._total > 0:
+                    self._current = edit_canvas.page_at_y(sb_v.value())
+
+                norm_zoom = getattr(edit_canvas, "_zoom", None)
+                if norm_zoom and norm_zoom > 0:
+                    self._zoom = float(norm_zoom)
+                norm_zf = getattr(edit_canvas, "_zoom_factor", 1.0)
+                if norm_zf and norm_zf > 0:
+                    self._zoom_factor = float(norm_zf)
+
+                offsets = getattr(edit_canvas, "_page_offsets", [])
+                if sb_scroll is not None and 0 <= self._current < len(offsets):
+                    y_off, _pw, _ph = offsets[self._current]
+                    scroll_y = float(sb_v.value()) if sb_v else 0.0
+                    scroll_x = float(sb_h.value()) if sb_h else 0.0
+                    c_zoom = float(edit_canvas._zoom or 1.0)
+                    self._initial_top_left_pdf_x = max(0.0, scroll_x) / c_zoom
+                    self._initial_top_left_pdf_y = max(0.0, scroll_y - float(y_off)) / c_zoom
+
+        elif self._viewer is not None:
             canvas = getattr(self._viewer, "_canvas", None)
             sb_scroll = getattr(self._viewer, "_canvas_scroll", None)
             if canvas is not None:
-                # Use the active page currently visible on screen in normal view
                 active_idx = getattr(canvas, "_active_page_idx", None)
                 if active_idx is not None and 0 <= active_idx < self._total:
                     self._current = active_idx
@@ -92,17 +146,13 @@ class PresentationWidget(QWidget):
                 self._page_rotations = dict(getattr(canvas, "_page_rotations", {}))
                 self._page_crops = dict(getattr(canvas, "_page_crops", {}))
 
-                # Maintain the exact render zoom from normal view
                 norm_zoom = getattr(canvas, "_zoom", None)
                 if norm_zoom and norm_zoom > 0:
                     self._zoom = float(norm_zoom)
-                    print(f"[Presentation DEBUG] Inherited absolute zoom from normal view: {self._zoom:.4f}")
                 norm_zf = getattr(canvas, "_zoom_factor", 1.0)
                 if norm_zf and norm_zf > 0:
                     self._zoom_factor = float(norm_zf)
-                    print(f"[Presentation DEBUG] Inherited zoom_factor from normal view: {self._zoom_factor:.4f}")
 
-                # Capture top-left of visible normal view relative to this page
                 entries = getattr(canvas, "_entries", [])
                 if sb_scroll is not None and 0 <= self._current < len(entries):
                     entry = entries[self._current]
@@ -114,7 +164,6 @@ class PresentationWidget(QWidget):
                     x_off = float(canvas.page_x_offset(entry))
                     y_off = float(entry.y_off)
 
-                    # Calculate top-left visible point on the page in normal view
                     view_left_x = max(0.0, scroll_x - x_off)
                     view_top_y = max(0.0, scroll_y - y_off)
 
@@ -138,8 +187,18 @@ class PresentationWidget(QWidget):
 
         import fitz
         self._doc = fitz.open(self._path)
-        if self._password:
+        if self._password and self._doc.needs_pass:
             self._doc.authenticate(self._password)
+
+        # Apply unsaved pending edits from TabEditar in-memory so they display in fullscreen
+        if self._edit_tab is not None:
+            user_pending = getattr(self._edit_tab, "_user_pending", [])
+            if user_pending:
+                try:
+                    from app.editor.apply_edits import apply_pending_edits
+                    apply_pending_edits(self._doc, [dict(e) for e in user_pending])
+                except Exception as exc:
+                    _log.warning("Failed to apply pending Edit Mode overlays to presentation: %s", exc)
 
         self._counter = QLabel(self)
         self._counter.setStyleSheet(
@@ -191,8 +250,6 @@ class PresentationWidget(QWidget):
             sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
         self._ready = True
-
-        # Render synchronously immediately to eliminate the black screen startup delay
         self._render(transition=False)
 
     def update_theme(self, dark: bool) -> None:
@@ -201,6 +258,27 @@ class PresentationWidget(QWidget):
             self._overlay.update_theme(self._dark_mode)
         if isValid(self._hud):
             self._hud.update_theme(self._dark_mode)
+
+    def _record_current_render_info(self, pw: float, ph: float, eff_w: float, eff_h: float) -> None:
+        offset_x = float(self._pan_x) if pw > self.width() else (self.width() - pw) / 2.0
+        offset_y = float(self._pan_y) if ph > self.height() else (self.height() - ph) / 2.0
+        self._page_render_info[self._current] = {
+            "pw": float(pw),
+            "ph": float(ph),
+            "offset_x": float(offset_x),
+            "offset_y": float(offset_y),
+            "eff_w": float(eff_w),
+            "eff_h": float(eff_h),
+        }
+
+    def _update_current_render_offsets(self) -> None:
+        info = self._page_render_info.get(self._current)
+        if not info:
+            return
+        pw = info["pw"]
+        ph = info["ph"]
+        info["offset_x"] = float(self._pan_x) if pw > self.width() else (self.width() - pw) / 2.0
+        info["offset_y"] = float(self._pan_y) if ph > self.height() else (self.height() - ph) / 2.0
 
     # ── Zoom & Pan Controls ───────────────────────────────────────────────
 
@@ -217,17 +295,15 @@ class PresentationWidget(QWidget):
     def _zoom_reset(self):
         if not self._pixmap:
             return
-        # In presentation mode, reset should fit the whole page on screen
         sw = float(self.width())
         sh = float(self.height())
         eff_w = getattr(self, "_rendered_pw", sw) / (self._zoom or 1.0)
         eff_h = getattr(self, "_rendered_ph", sh) / (self._zoom or 1.0)
         fit_screen_zoom = min(sw / max(1.0, eff_w), sh / max(1.0, eff_h))
-        
+
         self._zoom = fit_screen_zoom
         self._pan_x = 0
         self._pan_y = 0
-        print("[Presentation DEBUG] Resetting zoom to fit screen.")
         self._render(transition=False)
 
     def _apply_anchored_zoom(self, new_zoom: float, anchor_pos: QPoint | None = None):
@@ -240,25 +316,19 @@ class PresentationWidget(QWidget):
         sh = float(self.height())
 
         old_zoom = self._zoom if self._zoom and self._zoom > 0 else self._base_fit_zoom
-        
-        # Enforce boundary clamping securely
+
         min_z = self._base_fit_zoom * 0.25
         max_z = self._base_fit_zoom * 8.0
         new_zoom = max(min_z, min(max_z, new_zoom))
-        
+
         ratio = new_zoom / old_zoom
 
-        print(f"[Presentation DEBUG] Apply Zoom | old_zoom={old_zoom:.4f}, new_zoom={new_zoom:.4f} | anchor_pos={anchor_pos}")
-
-        # Retrieve the logical page dimensions prior to this zoom operation
         old_pw = getattr(self, "_rendered_pw", sw)
         old_ph = getattr(self, "_rendered_ph", sh)
 
-        # Calculate exact screen coordinates of the old layout
         old_x = (sw - old_pw) / 2.0 if old_pw <= sw else float(self._pan_x)
         old_y = (sh - old_ph) / 2.0 if old_ph <= sh else float(self._pan_y)
 
-        # Determine anchor point on screen
         if anchor_pos is not None:
             vp_x = float(anchor_pos.x())
             vp_y = float(anchor_pos.y())
@@ -266,15 +336,11 @@ class PresentationWidget(QWidget):
             vp_x = sw / 2.0
             vp_y = sh / 2.0
 
-        # Anchor offset relative to the logical page
         page_x = vp_x - old_x
         page_y = vp_y - old_y
 
-        # Scale the offset to the new zoom level
         new_pan_x = vp_x - page_x * ratio
         new_pan_y = vp_y - page_y * ratio
-
-        print(f"[Presentation DEBUG] Apply Zoom | new_pan_x={new_pan_x:.4f} -> {int(round(new_pan_x))}, new_pan_y={new_pan_y:.4f} -> {int(round(new_pan_y))}")
 
         self._zoom = new_zoom
         self._zoom_factor = new_zoom / max(1e-4, self._base_fit_zoom)
@@ -287,7 +353,6 @@ class PresentationWidget(QWidget):
             return
         ph = getattr(self, "_rendered_ph", float(self.height()))
         sh = float(self.height())
-        print(f"[Presentation DEBUG] Scroll Page | up={up}, amount={amount:.1f} | pan_y before={self._pan_y}")
 
         if ph <= sh:
             if up:
@@ -304,9 +369,11 @@ class PresentationWidget(QWidget):
                         self._go_to_page(self._current - 1, align_bottom=True)
                     else:
                         self._pan_y = int(round(max_pan_y))
+                        self._update_current_render_offsets()
                         self.update()
                 else:
                     self._pan_y = int(round(new_pan_y))
+                    self._update_current_render_offsets()
                     self.update()
             else:
                 new_pan_y = self._pan_y - amount
@@ -315,15 +382,16 @@ class PresentationWidget(QWidget):
                         self._go_to_page(self._current + 1, align_bottom=False)
                     else:
                         self._pan_y = int(round(min_pan_y))
+                        self._update_current_render_offsets()
                         self.update()
                 else:
                     self._pan_y = int(round(new_pan_y))
+                    self._update_current_render_offsets()
                     self.update()
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
             pos = e.position().toPoint()
-            print(f"[Presentation DEBUG] Wheel Zoom | delta={e.angleDelta().y()} | anchor_pos={pos}")
             if e.angleDelta().y() > 0:
                 self._zoom_in(anchor_pos=pos)
             else:
@@ -332,7 +400,6 @@ class PresentationWidget(QWidget):
             return
         else:
             delta = e.angleDelta().y()
-            print(f"[Presentation DEBUG] Wheel Scroll | delta={delta}")
             if delta > 0:
                 self._scroll_page(up=True, amount=abs(delta) * 0.6)
             elif delta < 0:
@@ -396,7 +463,13 @@ class PresentationWidget(QWidget):
             eff_w = max(1.0, eff_w)
             eff_h = max(1.0, eff_h)
 
-            if self._viewer is not None and hasattr(self._viewer, "_canvas"):
+            if self._edit_tab is not None and hasattr(self._edit_tab, "_canvas"):
+                base_avail = float(getattr(self._edit_tab._canvas, "_base_avail", 0) or 0)
+                if base_avail > 100:
+                    self._base_fit_zoom = base_avail / eff_w
+                else:
+                    self._base_fit_zoom = sw / eff_w
+            elif self._viewer is not None and hasattr(self._viewer, "_canvas"):
                 normal_canvas = self._viewer._canvas
                 vp_w = normal_canvas.get_viewport_width()
                 target_fit_w = max(400, vp_w - 36)
@@ -406,22 +479,17 @@ class PresentationWidget(QWidget):
 
             if self._zoom is None or self._zoom <= 0:
                 self._zoom = self._base_fit_zoom * self._zoom_factor
-                
-            # Enforce 800% max and 25% min relative to presentation base fit zoom
+
             min_z = self._base_fit_zoom * 0.25
             max_z = self._base_fit_zoom * 8.0
 
             if self._zoom > max_z:
-                print(f"[Presentation DEBUG] Clamping absolute zoom {self._zoom:.4f} down to max {max_z:.4f} (800%)")
                 self._zoom = max_z
             elif self._zoom < min_z:
-                print(f"[Presentation DEBUG] Clamping absolute zoom {self._zoom:.4f} up to min {min_z:.4f} (25%)")
                 self._zoom = min_z
 
             self._zoom_factor = self._zoom / self._base_fit_zoom
             zoom = self._zoom
-            
-            print(f"[Presentation DEBUG] Render | current_page={self._current} | sw={sw}, sh={sh} | base_fit={self._base_fit_zoom:.4f} | zoom={zoom:.4f} (factor={self._zoom_factor:.4f}) | pan_x={self._pan_x}, pan_y={self._pan_y}")
 
             rz = zoom * dpr
 
@@ -443,18 +511,15 @@ class PresentationWidget(QWidget):
             qp.setDevicePixelRatio(dpr)
             self._pixmap = qp
 
-            # Accurate logical dimensions decoupled from resolution capping
             pw = eff_w * zoom
             ph = eff_h * zoom
             self._rendered_pw = pw
             self._rendered_ph = ph
 
-            # Maintain position from normal view on initial launch
             if not transition and getattr(self, "_initial_top_left_pdf_x", None) is not None:
-                top_left_pdf_x = self._initial_top_left_pdf_x
-                top_left_pdf_y = self._initial_top_left_pdf_y
+                top_left_pdf_x = self._initial_top_left_pdf_x or 0.0
+                top_left_pdf_y = self._initial_top_left_pdf_y or 0.0
 
-                # Direct top-left alignment matching normal view
                 self._pan_x = -int(round(top_left_pdf_x * zoom))
                 self._pan_y = -int(round(top_left_pdf_y * zoom))
 
@@ -462,7 +527,6 @@ class PresentationWidget(QWidget):
                     self._initial_top_left_pdf_x = None
                     self._initial_top_left_pdf_y = None
 
-            # Strictly clamp horizontal and vertical panning to keep view on-screen
             if pw > sw:
                 min_pan_x = int(round(sw - pw))
                 max_pan_x = 0
@@ -482,7 +546,8 @@ class PresentationWidget(QWidget):
                 self._pan_y = 0
                 self._align_bottom_next_render = False
 
-            # Check /Dur for auto-advance
+            self._record_current_render_info(pw, ph, eff_w, eff_h)
+
             val_dur = self._doc.xref_get_key(page.xref, "Dur")
             if val_dur and val_dur[0] != "null":
                 try:
@@ -492,7 +557,6 @@ class PresentationWidget(QWidget):
                 except ValueError:
                     pass
 
-            # Check /Trans for transition animation
             if transition and self._prev_pixmap is not None:
                 trans_val = self._doc.xref_get_key(page.xref, "Trans")
                 trans_style = None
@@ -600,7 +664,7 @@ class PresentationWidget(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor("#000000"))
-        
+
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
         pixmap = self._pixmap
@@ -610,7 +674,7 @@ class PresentationWidget(QWidget):
 
             x = float(self._pan_x) if pw > self.width() else (self.width() - pw) / 2.0
             y = float(self._pan_y) if ph > self.height() else (self.height() - ph) / 2.0
-            
+
             rect_new = QRect(int(round(x)), int(round(y)), int(round(pw)), int(round(ph)))
 
             t = self._trans_progress
@@ -624,25 +688,25 @@ class PresentationWidget(QWidget):
 
                 old_x = float(old_pan_x) if old_w > self.width() else (self.width() - old_w) / 2.0
                 old_y = float(old_pan_y) if old_h > self.height() else (self.height() - old_h) / 2.0
-                
+
                 rect_old = QRect(int(round(old_x)), int(round(old_y)), int(round(old_w)), int(round(old_h)))
 
                 style = self._trans_style
                 if style == "Push":
                     di = self._trans_direction
-                    if di == 90:    # bottom to top
+                    if di == 90:
                         dy = int(self.height() * t)
                         p.drawPixmap(rect_old.translated(0, -dy), prev_pixmap)
                         p.drawPixmap(rect_new.translated(0, self.height() - dy), pixmap)
-                    elif di == 180: # right to left
+                    elif di == 180:
                         dx = int(self.width() * t)
                         p.drawPixmap(rect_old.translated(dx, 0), prev_pixmap)
                         p.drawPixmap(rect_new.translated(-self.width() + dx, 0), pixmap)
-                    elif di == 270: # top to bottom
+                    elif di == 270:
                         dy = int(self.height() * t)
                         p.drawPixmap(rect_old.translated(0, dy), prev_pixmap)
                         p.drawPixmap(rect_new.translated(0, -self.height() + dy), pixmap)
-                    else:           # left to right (0)
+                    else:
                         dx = int(self.width() * t)
                         p.drawPixmap(rect_old.translated(-dx, 0), prev_pixmap)
                         p.drawPixmap(rect_new.translated(self.width() - dx, 0), pixmap)
@@ -691,7 +755,6 @@ class PresentationWidget(QWidget):
                     p.drawPixmap(rect_new, pixmap)
                     p.setOpacity(1.0)
             else:
-                # Direct output with correct layout sizing
                 p.drawPixmap(rect_new, pixmap)
 
         p.end()
@@ -839,9 +902,9 @@ class PresentationWidget(QWidget):
             else:
                 new_y = 0.0
 
-            print(f"[Presentation DEBUG] Panning | delta=({delta.x()}, {delta.y()}) | new_pan_x={new_x:.1f}, new_pan_y={new_y:.1f}")
             self._pan_x = int(round(new_x))
             self._pan_y = int(round(new_y))
+            self._update_current_render_offsets()
 
             self.update()
             e.accept()
@@ -872,23 +935,169 @@ class PresentationWidget(QWidget):
         self._update_counter()
         QTimer.singleShot(0, lambda: self._render(transition=False))
 
+    def _get_page_geometry(self, page_idx: int) -> tuple[float, float, float, float, float, float]:
+        """Return (pw, ph, offset_x, offset_y, eff_w, eff_h) for the given page."""
+        info = self._page_render_info.get(page_idx)
+        if info is not None:
+            return (
+                info["pw"],
+                info["ph"],
+                info["offset_x"],
+                info["offset_y"],
+                info["eff_w"],
+                info["eff_h"],
+            )
+
+        screen = self.screen() or QApplication.primaryScreen()
+        geom = screen.geometry()
+        sw = float(self.width()) if self.width() > 100 else float(geom.width())
+        sh = float(self.height()) if self.height() > 100 else float(geom.height())
+
+        if self._doc is not None and 0 <= page_idx < self._doc.page_count:
+            page = self._doc[page_idx]
+            rot = self._page_rotations.get(page_idx, 0) % 360
+            eff_w = page.rect.height if rot in (90, 270) else page.rect.width
+            eff_h = page.rect.width if rot in (90, 270) else page.rect.height
+        else:
+            eff_w = 595.0
+            eff_h = 842.0
+        eff_w = max(1.0, eff_w)
+        eff_h = max(1.0, eff_h)
+
+        base_zoom = self._base_fit_zoom if self._base_fit_zoom > 0 else min(sw / eff_w, sh / eff_h)
+        zoom = self._zoom if self._zoom and self._zoom > 0 else (base_zoom * self._zoom_factor)
+        pw = eff_w * zoom
+        ph = eff_h * zoom
+        offset_x = float(self._pan_x) if pw > self.width() else (self.width() - pw) / 2.0
+        offset_y = float(self._pan_y) if ph > self.height() else (self.height() - ph) / 2.0
+        return pw, ph, offset_x, offset_y, eff_w, eff_h
+
+    def _export_annotations_to_edit_tab(self) -> bool:
+        """Convert fullscreen strokes and text boxes into native TabEditar pending edits."""
+        edit_tab = self._edit_tab
+        if edit_tab is None or not isValid(edit_tab):
+            return False
+
+        import fitz
+
+        pages_with_annots = sorted(
+            set(self._overlay._strokes.keys()) | set(self._overlay._text_boxes.keys())
+        )
+        if not pages_with_annots:
+            return False
+
+        dpi_y = float(self.logicalDpiY()) if hasattr(self, "logicalDpiY") and self.logicalDpiY() > 0 else 96.0
+        dpi_ratio = dpi_y / 72.0
+        added_any = False
+
+        for page_idx in pages_with_annots:
+            pw, ph, offset_x, offset_y, eff_w, eff_h = self._get_page_geometry(page_idx)
+            scale_x = eff_w / max(1.0, pw)
+            scale_y = eff_h / max(1.0, ph)
+
+            for stroke in self._overlay._strokes.get(page_idx, []):
+                if not stroke.points:
+                    continue
+                clean_pts: list[tuple[float, float]] = []
+                for pt in stroke.points:
+                    px = max(0.0, min(eff_w, (pt.x() - offset_x) * scale_x))
+                    py = max(0.0, min(eff_h, (pt.y() - offset_y) * scale_y))
+                    if (
+                        not clean_pts
+                        or abs(px - clean_pts[-1][0]) > 0.05
+                        or abs(py - clean_pts[-1][1]) > 0.05
+                    ):
+                        clean_pts.append((round(px, 2), round(py, 2)))
+                if len(clean_pts) == 1:
+                    clean_pts.append((round(clean_pts[0][0] + 0.5, 2), clean_pts[0][1]))
+                if len(clean_pts) >= 2:
+                    col = (
+                        float(stroke.color.redF()),
+                        float(stroke.color.greenF()),
+                        float(stroke.color.blueF()),
+                    )
+                    w_pdf = max(1, int(round(stroke.width * scale_x)))
+                    if stroke.kind == ToolMode.HIGHLIGHTER:
+                        xs = [p[0] for p in clean_pts]
+                        ys = [p[1] for p in clean_pts]
+                        half_w = max(4.0, (stroke.width * scale_x) / 2.0)
+                        if (max(ys) - min(ys)) <= half_w * 3.0:
+                            r_hi = fitz.Rect(
+                                max(0.0, min(xs) - half_w * 0.5),
+                                max(0.0, min(ys) - half_w),
+                                min(eff_w, max(xs) + half_w * 0.5),
+                                min(eff_h, max(ys) + half_w),
+                            )
+                            edit_tab._add({
+                                "type": "highlight",
+                                "page": page_idx,
+                                "rect": r_hi,
+                                "color": col,
+                            })
+                            added_any = True
+                            continue
+                    edit_tab._add({
+                        "type": "draw",
+                        "page": page_idx,
+                        "points": clean_pts,
+                        "color": col,
+                        "width": w_pdf,
+                    })
+                    added_any = True
+
+            for box in self._overlay._text_boxes.get(page_idx, []):
+                if not box.text.strip():
+                    continue
+                x0 = (box.rect.left() - offset_x) * scale_x
+                y0 = (box.rect.top() - offset_y) * scale_y
+                x1 = (box.rect.right() - offset_x) * scale_x
+                pdf_font_size = max(4.0, float(box.font_size * dpi_ratio * scale_y))
+                col = (
+                    float(box.color.redF()),
+                    float(box.color.greenF()),
+                    float(box.color.blueF()),
+                )
+                lines = box.text.splitlines() or [box.text]
+                line_step = pdf_font_size * 1.25
+                inner_x0 = max(0.0, x0 + 7.0 * scale_x)
+                inner_y0 = max(0.0, y0 + 5.0 * scale_y)
+                for li, line_txt in enumerate(lines):
+                    if not line_txt.strip():
+                        continue
+                    ly_top = inner_y0 + li * line_step
+                    baseline_y = ly_top + pdf_font_size * 0.88
+                    est_w = max(20.0, x1 - inner_x0, len(line_txt) * pdf_font_size * 0.55)
+                    edit_tab._add({
+                        "type": "text",
+                        "page": page_idx,
+                        "point": fitz.Point(inner_x0, baseline_y),
+                        "rect": fitz.Rect(inner_x0, ly_top, inner_x0 + est_w, ly_top + line_step),
+                        "text": line_txt,
+                        "size": pdf_font_size,
+                        "color": col,
+                        "font": "Helvetica",
+                        "flags": 0,
+                    })
+                    added_any = True
+
+        return added_any
+
     def _burn_annotations_to_doc(self) -> bool:
         """Burn overlay strokes and text boxes into the PDF document."""
         if not self._doc:
             return False
 
-        any_modified = False
         import fitz
 
-        pages_with_annots = set(self._overlay._strokes.keys()) | set(self._overlay._text_boxes.keys())
+        pages_with_annots = sorted(
+            set(self._overlay._strokes.keys()) | set(self._overlay._text_boxes.keys())
+        )
         if not pages_with_annots:
             return False
 
-        screen = self.screen() or QApplication.primaryScreen()
-        geom = screen.geometry()
-        dpr = screen.devicePixelRatio() or 1.0
-        sw = float(self.width()) if self.width() > 100 else float(geom.width())
-        sh = float(self.height()) if self.height() > 100 else float(geom.height())
+        any_modified = False
+        dpi_y = float(self.logicalDpiY()) if hasattr(self, "logicalDpiY") and self.logicalDpiY() > 0 else 96.0
+        dpi_ratio = dpi_y / 72.0
 
         for page_idx in pages_with_annots:
             if page_idx < 0 or page_idx >= self._doc.page_count:
@@ -903,119 +1112,145 @@ class PresentationWidget(QWidget):
                     page.set_cropbox(crop_rect)
 
             rot = self._page_rotations.get(page_idx, 0) % 360
+            pw, ph, offset_x, offset_y, eff_w, eff_h = self._get_page_geometry(page_idx)
 
-            eff_w = page.rect.height if rot in (90, 270) else page.rect.width
-            eff_h = page.rect.width if rot in (90, 270) else page.rect.height
-            eff_w = max(1.0, eff_w)
-            eff_h = max(1.0, eff_h)
+            scale_x = eff_w / max(1.0, pw)
+            scale_y = eff_h / max(1.0, ph)
 
-            fit_width_zoom = sw / eff_w
-            fit_height_zoom = sh / eff_h
+            derot = page.derotation_matrix
+            page_rot = page.rotation
 
-            base_zoom = min(fit_width_zoom, fit_height_zoom)
-            zoom = self._zoom if self._zoom and self._zoom > 0 else (base_zoom * self._zoom_factor)
+            def to_visual_pdf(pt) -> fitz.Point:
+                vx = (pt.x() - offset_x) * scale_x
+                vy = (pt.y() - offset_y) * scale_y
+                if rot == 90:
+                    ux, uy = vy, eff_w - vx
+                elif rot == 180:
+                    ux, uy = eff_w - vx, eff_h - vy
+                elif rot == 270:
+                    ux, uy = eff_h - vy, vx
+                else:
+                    ux, uy = vx, vy
+                return fitz.Point(ux + page.rect.x0, uy + page.rect.y0)
 
-            pw = eff_w * zoom
-            ph = eff_h * zoom
-
-            if pw <= self.width():
-                offset_x = (self.width() - pw) / 2.0
-            else:
-                offset_x = float(self._pan_x)
-
-            if ph <= self.height():
-                offset_y = (self.height() - ph) / 2.0
-            else:
-                offset_y = float(self._pan_y)
-
-            scale_x = page.rect.width / pw
-            scale_y = page.rect.height / ph
-
-            def to_pdf_coord(pt) -> tuple[float, float]:
-                x_pdf = float((pt.x() - offset_x) * scale_x + page.rect.x0)
-                y_pdf = float((pt.y() - offset_y) * scale_y + page.rect.y0)
-                return (x_pdf, y_pdf)
+            def to_unrotated_pdf(pt) -> fitz.Point:
+                return to_visual_pdf(pt) * derot
 
             strokes = self._overlay._strokes.get(page_idx, [])
             for stroke in strokes:
                 if not stroke.points:
                     continue
-                raw_pts = [to_pdf_coord(p) for p in stroke.points]
-                clean_pts: list[tuple[float, float]] = []
+                raw_pts = [to_unrotated_pdf(p) for p in stroke.points]
+                clean_pts: list[fitz.Point] = []
                 for pt in raw_pts:
-                    if not clean_pts or abs(pt[0] - clean_pts[-1][0]) > 1e-4 or abs(pt[1] - clean_pts[-1][1]) > 1e-4:
+                    if not clean_pts or abs(pt.x - clean_pts[-1].x) > 1e-3 or abs(pt.y - clean_pts[-1].y) > 1e-3:
                         clean_pts.append(pt)
                 if len(clean_pts) == 1:
-                    clean_pts.append((clean_pts[0][0] + 0.1, clean_pts[0][1]))
+                    clean_pts.append(fitz.Point(clean_pts[0].x + 0.5, clean_pts[0].y))
                 if len(clean_pts) >= 2:
+                    col = (
+                        float(stroke.color.redF()),
+                        float(stroke.color.greenF()),
+                        float(stroke.color.blueF()),
+                    )
+                    stroke_w = max(0.75, float(stroke.width) * scale_x)
                     try:
-                        annot = page.add_ink_annot([clean_pts])
-                        annot.set_colors(stroke=(
-                            float(stroke.color.redF()),
-                            float(stroke.color.greenF()),
-                            float(stroke.color.blueF()),
-                        ))
-                        border_w = max(1, int(round(stroke.width * scale_x)))
-                        annot.set_border(width=border_w)
+                        shape = page.new_shape()
+                        shape.draw_polyline(clean_pts)
                         if stroke.kind == ToolMode.HIGHLIGHTER:
-                            annot.set_opacity(0.4)
-                            with contextlib.suppress(Exception):
-                                annot.set_blendmode(fitz.PDF_BM_Multiply)
-                        annot.update()
+                            shape.finish(
+                                color=col,
+                                width=stroke_w,
+                                stroke_opacity=0.35,
+                                lineCap=1,
+                                lineJoin=1,
+                            )
+                        else:
+                            shape.finish(
+                                color=col,
+                                width=stroke_w,
+                                lineCap=1,
+                                lineJoin=1,
+                            )
+                        shape.commit()
                         any_modified = True
-                    except Exception as e:
-                        _log.warning("Failed to burn stroke: %s", e)
+                    except Exception:
+                        try:
+                            vis_pts = [(p.x, p.y) for p in clean_pts]
+                            annot = page.add_ink_annot([vis_pts])
+                            annot.set_colors(stroke=col)
+                            annot.set_border(width=max(1, int(round(stroke_w))))
+                            if stroke.kind == ToolMode.HIGHLIGHTER:
+                                annot.set_opacity(0.4)
+                                with contextlib.suppress(Exception):
+                                    annot.set_blendmode(fitz.PDF_BM_Multiply)
+                            annot.update()
+                            any_modified = True
+                        except Exception as e:
+                            _log.warning("Failed to burn stroke: %s", e)
 
             text_boxes = self._overlay._text_boxes.get(page_idx, [])
             for box in text_boxes:
                 if not box.text.strip():
                     continue
                 try:
-                    p1_x, p1_y = to_pdf_coord(box.rect.topLeft())
-                    p2_x, p2_y = to_pdf_coord(box.rect.bottomRight())
-                    pdf_rect = fitz.Rect(p1_x, p1_y, p2_x, p2_y)
+                    tl = to_visual_pdf(box.rect.topLeft())
+                    br = to_visual_pdf(box.rect.bottomRight())
+                    pdf_rect = fitz.Rect(tl, br).normalize()
 
-                    pdf_font_size = max(4.0, float(box.font_size * scale_y))
+                    pdf_font_size = max(4.0, float(box.font_size * dpi_ratio * scale_y))
 
                     if box.has_cloud:
-                        bg_annot = page.add_rect_annot(pdf_rect)
-                        bg_annot.set_colors(fill=(1, 1, 1))
-                        bg_annot.set_opacity(102 / 255.0)
-                        bg_annot.update()
+                        try:
+                            unrot_rect = pdf_rect * derot
+                            shape = page.new_shape()
+                            shape.draw_rect(unrot_rect)
+                            shape.finish(color=None, fill=(1.0, 1.0, 1.0), fill_opacity=0.4)
+                            shape.commit()
+                        except Exception:
+                            bg_annot = page.add_rect_annot(pdf_rect)
+                            bg_annot.set_colors(fill=(1, 1, 1))
+                            bg_annot.set_opacity(102 / 255.0)
+                            bg_annot.update()
 
                     text_color = (
                         float(box.color.redF()),
                         float(box.color.greenF()),
                         float(box.color.blueF()),
                     )
-                    inner_rect = pdf_rect + fitz.Rect(7 * scale_x, 5 * scale_y, -7 * scale_x, -5 * scale_y)
+                    pad_x = 7.0 * scale_x
+                    pad_y = 5.0 * scale_y
+                    inner_x0 = pdf_rect.x0 + pad_x
+                    inner_y0 = pdf_rect.y0 + pad_y
 
-                    if box.has_stroke:
-                        offsets = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)]
-                        for dx, dy in offsets:
-                            out_rect = inner_rect + fitz.Rect(dx * scale_x, dy * scale_y, dx * scale_x, dy * scale_y)
-                            page.insert_textbox(
-                                out_rect,
-                                box.text,
-                                fontsize=pdf_font_size,
-                                color=(0, 0, 0),
-                                fontname="helv",
-                            )
+                    lines = box.text.splitlines() or [box.text]
+                    line_step = pdf_font_size * 1.25
 
-                    rc = page.insert_textbox(
-                        inner_rect,
-                        box.text,
-                        fontsize=pdf_font_size,
-                        color=text_color,
-                        fontname="helv",
-                    )
-                    if rc < 0:
+                    for li, line_txt in enumerate(lines):
+                        if not line_txt:
+                            continue
+                        baseline_vis = fitz.Point(inner_x0, inner_y0 + li * line_step + pdf_font_size * 0.88)
+                        if box.has_stroke:
+                            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)]:
+                                out_vis = fitz.Point(
+                                    baseline_vis.x + dx * scale_x,
+                                    baseline_vis.y + dy * scale_y,
+                                )
+                                page.insert_text(
+                                    out_vis * derot,
+                                    line_txt,
+                                    fontsize=pdf_font_size,
+                                    color=(0.0, 0.0, 0.0),
+                                    fontname="helv",
+                                    rotate=(page_rot + rot) % 360,
+                                )
                         page.insert_text(
-                            fitz.Point(inner_rect.x0, inner_rect.y0 + pdf_font_size),
-                            box.text,
+                            baseline_vis * derot,
+                            line_txt,
                             fontsize=pdf_font_size,
                             color=text_color,
                             fontname="helv",
+                            rotate=(page_rot + rot) % 360,
                         )
                     any_modified = True
                 except Exception as e:
@@ -1026,7 +1261,10 @@ class PresentationWidget(QWidget):
     def closeEvent(self, event):
         any_modified = False
         try:
-            any_modified = self._burn_annotations_to_doc()
+            if self._edit_tab is not None:
+                any_modified = self._export_annotations_to_edit_tab()
+            else:
+                any_modified = self._burn_annotations_to_doc()
         except Exception as e:
             _log.exception("Error burning presentation annotations: %s", e)
 
@@ -1041,13 +1279,31 @@ class PresentationWidget(QWidget):
             if tmr is not None and isValid(tmr):
                 tmr.stop()
 
+        if self._edit_tab is not None:
+            if self._doc is not None:
+                with contextlib.suppress(Exception):
+                    self._doc.close()
+                self._doc = None
+            if isValid(self._edit_tab):
+                if any_modified and hasattr(self._edit_tab, "_scroll_to"):
+                    with contextlib.suppress(Exception):
+                        self._edit_tab._scroll_to(self._current)
+                edit_canvas = getattr(self._edit_tab, "_canvas", None)
+                if edit_canvas is not None and isValid(edit_canvas):
+                    edit_canvas.update()
+                win = self._edit_tab.window()
+                if win and hasattr(win, "_update_undo_redo_buttons"):
+                    with contextlib.suppress(Exception):
+                        win._update_undo_redo_buttons()
+            super().closeEvent(event)
+            return
+
         doc_to_save = None
         if any_modified and self._doc is not None:
             doc_to_save = self._doc
 
         viewer: Any = getattr(self, "_viewer", None)
-        
-        # Save zoom pref if supported before load
+
         if viewer is not None:
             canvas = getattr(viewer, "_canvas", None)
             if canvas is not None:
@@ -1072,7 +1328,6 @@ class PresentationWidget(QWidget):
                     self._doc.close()
                 self._doc = None
 
-        # Apply zoom factor back to normal view
         if viewer is not None:
             canvas = getattr(viewer, "_canvas", None)
             if canvas is not None:

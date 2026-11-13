@@ -1,5 +1,3 @@
-
-
 # app/window_actions.py
 """PDF_Editor – Navigation, themes, UI interactions, and page control mixin."""
 from __future__ import annotations
@@ -8,6 +6,7 @@ import contextlib
 import logging
 import os
 import sys
+import tempfile
 from typing import TYPE_CHECKING, Any, cast
 
 from PySide6.QtCore import Qt, QTimer, QProcess, QProcessEnvironment
@@ -1049,25 +1048,87 @@ class WindowActionsMixin(_Base):
             self.showMaximized()
 
     def _start_presentation(self):
+        edit_idx = self._edit_tool_idx()
+        in_edit_mode = (self._current_tool == edit_idx)
+        edit_w: Any = self._get_or_create_tool(edit_idx) if in_edit_mode else None
+
         viewer = self._viewer
-        if not viewer or not viewer._current_path:
-            return
-        canvas = getattr(viewer, "_canvas", None)
-        if canvas is None:
-            return
-        sb_scroll = getattr(viewer, "_canvas_scroll", None)
-        sb = sb_scroll.verticalScrollBar() if sb_scroll else None
-        start_page = canvas.page_at_y(sb.value()) if canvas.page_count() > 0 and sb else 0
+        pres_path = ""
+        pres_password = ""
+        start_page = 0
+        total_pages = 0
+        temp_pres_path = ""
+
+        if in_edit_mode and edit_w is not None and getattr(edit_w, "_doc_path", None):
+            edit_canvas = getattr(edit_w, "_canvas", None)
+            if edit_canvas is not None:
+                if hasattr(edit_canvas, "_inline_edit") and edit_canvas._inline_edit.isVisible():
+                    edit_canvas._commit_inline()
+
+                pres_path = edit_w._doc_path
+                pres_password = getattr(edit_w, "_pdf_password", "")
+                total_pages = self._get_canvas_page_count(edit_canvas)
+                sb_scroll = getattr(edit_w, "_canvas_scroll", None)
+                sb = sb_scroll.verticalScrollBar() if sb_scroll else None
+                start_page = edit_canvas.page_at_y(sb.value()) if total_pages > 0 and sb else 0
+
+                user_pending = getattr(edit_w, "_user_pending", [])
+                if user_pending and os.path.isfile(pres_path):
+                    import fitz
+                    from app.editor.apply_edits import apply_pending_edits
+
+                    doc = None
+                    try:
+                        doc = fitz.open(pres_path)
+                        if pres_password and doc.needs_pass:
+                            doc.authenticate(pres_password)
+                        pending_copy = [dict(e) for e in user_pending]
+                        apply_pending_edits(doc, pending_copy)
+                        fd, temp_pres_path = tempfile.mkstemp(prefix="PDF_Editor_pres_", suffix=".pdf")
+                        os.close(fd)
+                        doc.save(temp_pres_path, garbage=4, deflate=True)
+                        pres_path = temp_pres_path
+                        pres_password = ""
+                    except Exception:
+                        if temp_pres_path and os.path.isfile(temp_pres_path):
+                            with contextlib.suppress(Exception):
+                                os.unlink(temp_pres_path)
+                        temp_pres_path = ""
+                        pres_path = edit_w._doc_path
+                    finally:
+                        if doc is not None:
+                            with contextlib.suppress(Exception):
+                                doc.close()
+
+        if not pres_path:
+            if not viewer or not viewer._current_path:
+                return
+            canvas = getattr(viewer, "_canvas", None)
+            if canvas is None:
+                return
+            sb_scroll = getattr(viewer, "_canvas_scroll", None)
+            sb = sb_scroll.verticalScrollBar() if sb_scroll else None
+            start_page = canvas.page_at_y(sb.value()) if canvas.page_count() > 0 and sb else 0
+            total_pages = canvas.page_count()
+            pres_path = viewer._current_path
+            pres_password = getattr(viewer, "_pdf_password", "")
+            edit_w = None
+
         try:
             pres = PresentationWidget(
-                viewer._current_path,
-                getattr(viewer, "_pdf_password", ""),
+                pres_path,
+                pres_password,
                 start_page,
-                canvas.page_count(),
+                total_pages,
                 dark_mode=self._dark_mode,
                 viewer=viewer,
+                edit_tab=edit_w,
+                temp_source_path=temp_pres_path,
             )
         except Exception as e:
+            if temp_pres_path and os.path.isfile(temp_pres_path):
+                with contextlib.suppress(Exception):
+                    os.unlink(temp_pres_path)
             show_error(self, e)
             return
         pres.destroyed.connect(lambda _=None, w=pres: setattr(self, "_presentation", None) if getattr(self, "_presentation", None) is w else None)
@@ -1149,7 +1210,7 @@ class WindowActionsMixin(_Base):
         self._qapp.setPalette(_make_palette(self._dark_mode))
         self._qapp.setStyleSheet(style)
         self._workspace_bar.update_theme(self._dark_mode, self._sidebar_collapsed)
-        if hasattr(self, "_tab_bar") and hasattr(self._tab_bar, "update_theme"):
+        if hasattr(self, "_tab_bar") and hasattr(self, "_tab_bar") and hasattr(self._tab_bar, "update_theme"):
             self._tab_bar.update_theme(self._dark_mode)
         for r in range(self.nav.count()):
             it = self.nav.item(r)
