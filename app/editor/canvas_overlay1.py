@@ -1,3 +1,4 @@
+
 # app/editor/canvas_overlay1.py
 
 """Overlay management: selection, resizing handles, hit-testing, duplication and deletion."""
@@ -265,7 +266,9 @@ class CanvasOverlayManager:
         for ov in c._overlays:
             if ov.get("page") == page_idx and ov.get("_orig_rect") == bb and not ov.get("_deleted"):
                 return ov
-        visual_size = max(float(span.get("size") or 0), float(bb[3] - bb[1]))
+        span_size = float(span.get("size") or 0)
+        if span_size <= 0:
+            span_size = max(6.0, float(bb[3] - bb[1]) * 0.75)
         font_name = span.get("font", "Helvetica")
         entry = {
             "type": "text_edit",
@@ -273,8 +276,8 @@ class CanvasOverlayManager:
             "bbox": bb,
             "old_text": span.get("text", ""),
             "new_text": span.get("text", ""),
-            "size": visual_size,
-            "font_size": float(span.get("size") or visual_size),
+            "size": span_size,
+            "font_size": span_size,
             "color": span.get("color", 0),
             "font": font_name,
             "flags": int(span.get("flags", 0) or 0),
@@ -334,3 +337,4 @@ class CanvasOverlayManager:
                         })
                         return len(c._overlays) - 1, txt.strip()
         return -1, None
+

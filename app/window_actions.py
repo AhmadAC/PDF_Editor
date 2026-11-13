@@ -1,3 +1,5 @@
+
+
 # app/window_actions.py
 """PDF_Editor – Navigation, themes, UI interactions, and page control mixin."""
 from __future__ import annotations
@@ -1121,8 +1123,15 @@ class WindowActionsMixin(_Base):
     def _relayout_viewer(self):
         for v in self._viewers:
             canvas = getattr(v, "_canvas", None)
-            if canvas and getattr(canvas, "_doc", None) and getattr(canvas, "_zoom_factor", 0.0) == 1.0:
-                canvas._layout_and_schedule()
+            if canvas and getattr(canvas, "_doc", None):
+                anchor = canvas._calc_anchor()
+                canvas._layout_and_schedule(anchor=anchor)
+
+        edit_idx = self._edit_tool_idx() if hasattr(self, "_edit_tool_idx") else -1
+        if self._current_tool == edit_idx:
+            edit_w: Any = self._get_or_create_tool(edit_idx)
+            if edit_w and hasattr(edit_w, "_relayout_canvas"):
+                edit_w._relayout_canvas()
 
     def _toggle_theme(self):
         self._dark_mode = not self._dark_mode

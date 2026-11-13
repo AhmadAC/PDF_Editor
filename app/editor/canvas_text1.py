@@ -6,10 +6,29 @@ from __future__ import annotations
 
 import fitz
 from PySide6.QtCore import Qt, QEvent
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import QLineEdit
 
 from app.constants import ACCENT
+
+
+def _resolve_font_family(fname: str) -> str:
+    fn = (fname or "Helvetica").lower()
+    if "times" in fn or "serif" in fn or "roman" in fn:
+        return "Times New Roman"
+    if "mono" in fn or "courier" in fn or "consol" in fn:
+        return "Courier New"
+    if "segoe" in fn:
+        return "Segoe UI"
+    if "georgia" in fn:
+        return "Georgia"
+    if "calibri" in fn:
+        return "Calibri"
+    if "verdana" in fn:
+        return "Verdana"
+    if "trebuchet" in fn:
+        return "Trebuchet MS"
+    return "Arial"
 
 
 class CanvasInlineTextManager:
@@ -31,6 +50,10 @@ class CanvasInlineTextManager:
         self.insert_font: str = "Helvetica"
         self.insert_flags: int = 0
 
+    @staticmethod
+    def _resolve_font_family(fname: str) -> str:
+        return _resolve_font_family(fname)
+
     def begin_edit(self, span: dict, page_idx: int):
         if self.edit.isVisible():
             self.commit()
@@ -41,7 +64,9 @@ class CanvasInlineTextManager:
         self.edit.setText(self.original_text)
 
         bb = span["bbox"]
-        visual_size = max(float(span.get("size") or 0), float(bb[3] - bb[1]))
+        visual_size = float(span.get("size") or span.get("font_size") or 0)
+        if visual_size <= 0:
+            visual_size = max(6.0, float(bb[3] - bb[1]) * 0.75)
         font_name = span.get("font", "Helvetica")
         flags = int(span.get("flags", 0) or 0)
         c = span.get("color", 0)
@@ -102,6 +127,7 @@ class CanvasInlineTextManager:
         if self.mode == "edit" and self.span is not None:
             self.span["font"] = font
             self.span["size"] = size
+            self.span["font_size"] = size
             self.span["color"] = color
             self.span["flags"] = flags
             self._style_inline_edit(self.span)
@@ -135,31 +161,47 @@ class CanvasInlineTextManager:
                 c.update()
 
     def _style_inline_insert(self):
-        family = self._resolve_font_family(self.insert_font)
+        family = _resolve_font_family(self.insert_font)
         fnt = QFont(family)
-        fnt.setPointSizeF(max(4.0, self.insert_size * self.canvas._zoom * 0.75))
-        if self.insert_flags & 16:
+        z = self.canvas._zoom or 1.0
+        px_size = max(6, int(round(self.insert_size * z)))
+        fnt.setPixelSize(px_size)
+        bold = bool(self.insert_flags & 16)
+        italic = bool(self.insert_flags & 2)
+        if bold:
             fnt.setBold(True)
-        if self.insert_flags & 2:
+        if italic:
             fnt.setItalic(True)
         self.edit.setFont(fnt)
+
         c = self.insert_color
         r, g, b = int(c[0]*255), int(c[1]*255), int(c[2]*255)
+        weight_str = "bold" if bold else "normal"
+        style_str = "italic" if italic else "normal"
         self.edit.setStyleSheet(
             f"QLineEdit {{ background: #FFFFFF; color: #{r:02x}{g:02x}{b:02x};"
-            f" border: 1.5px solid {ACCENT}; border-radius: 2px; padding: 1px 3px; }}")
+            f" font-family: '{family}'; font-size: {px_size}px;"
+            f" font-weight: {weight_str}; font-style: {style_str};"
+            f" border: 1.5px solid {ACCENT}; border-radius: 2px; padding: 0px 2px; }}"
+        )
 
     def _style_inline_edit(self, span: dict):
         bb = span["bbox"]
-        visual_size = max(float(span.get("size") or 0), float(bb[3] - bb[1]))
-        family = self._resolve_font_family(span.get("font", ""))
+        sz = float(span.get("font_size") or span.get("size") or 0)
+        if sz <= 0:
+            sz = max(6.0, float(bb[3] - bb[1]) * 0.75)
+        family = _resolve_font_family(span.get("font", ""))
         fnt = QFont(family)
-        fnt.setPointSizeF(max(4.0, visual_size * self.canvas._zoom * 0.75))
+        z = self.canvas._zoom or 1.0
+        px_size = max(6, int(round(sz * z)))
+        fnt.setPixelSize(px_size)
         flags = int(span.get("flags", 0) or 0)
         fname = span.get("font", "").lower()
-        if (flags & 16) or "bold" in fname:
+        bold = bool((flags & 16) or "bold" in fname)
+        italic = bool((flags & 2) or "italic" in fname or "oblique" in fname)
+        if bold:
             fnt.setBold(True)
-        if (flags & 2) or "italic" in fname or "oblique" in fname:
+        if italic:
             fnt.setItalic(True)
         self.edit.setFont(fnt)
 
@@ -170,48 +212,54 @@ class CanvasInlineTextManager:
             r, g, b = int(c[0]*255), int(c[1]*255), int(c[2]*255)
         else:
             r, g, b = 0, 0, 0
+        weight_str = "bold" if bold else "normal"
+        style_str = "italic" if italic else "normal"
         self.edit.setStyleSheet(
             f"QLineEdit {{ background: #FFFFFF; color: #{r:02x}{g:02x}{b:02x};"
-            f" border: 1.5px solid {ACCENT}; border-radius: 2px; padding: 1px 3px; }}")
-
-    @staticmethod
-    def _resolve_font_family(fname: str) -> str:
-        fn = (fname or "Helvetica").lower()
-        if "times" in fn or "serif" in fn or "roman" in fn:
-            return "Times New Roman"
-        if "mono" in fn or "courier" in fn or "consol" in fn:
-            return "Courier New"
-        if "segoe" in fn:
-            return "Segoe UI"
-        if "georgia" in fn:
-            return "Georgia"
-        if "calibri" in fn:
-            return "Calibri"
-        return "Arial"
+            f" font-family: '{family}'; font-size: {px_size}px;"
+            f" font-weight: {weight_str}; font-style: {style_str};"
+            f" border: 1.5px solid {ACCENT}; border-radius: 2px; padding: 0px 2px; }}"
+        )
 
     def reposition(self):
         c = self.canvas
         if self.mode is None or self.page_idx < 0 or self.page_idx >= len(c._page_offsets):
             return
-        z = c._zoom
+        z = c._zoom or 1.0
         yo = c._page_offsets[self.page_idx][0]
         if self.mode == "edit" and self.span is not None:
+            self._style_inline_edit(self.span)
             bb = self.span["bbox"]
-            x = int(bb[0] * z) - 3
-            y = yo + int(bb[1] * z) - 3
-            w = max(60, int((bb[2] - bb[0]) * z) + 30)
-            h = max(24, int((bb[3] - bb[1]) * z) + 6)
-            self.edit.setGeometry(x, y, w, h)
-        elif self.mode == "insert" and self.insert_point is not None:
-            px, py = self.insert_point
-            size = self.insert_size
-            x = int(px * z) - 2
-            y = yo + int(py * z) - 2
+            sz = float(self.span.get("font_size") or self.span.get("size") or 12.0)
+            px_size = max(6, int(round(sz * z)))
+            origin = self.span.get("origin")
             fm = self.edit.fontMetrics()
             txt = self.edit.text()
             txt_w = fm.horizontalAdvance(txt) if txt else 0
-            w = max(140, int(txt_w + 30))
-            h = max(26, int(size * z * 1.3) + 4)
+            w = max(int((bb[2] - bb[0]) * z) + 12, int(txt_w + px_size * 2), 60)
+            h = max(int((bb[3] - bb[1]) * z) + 4, int(px_size * 1.35) + 4, 22)
+            if origin:
+                baseline_y = yo + int(round(origin[1] * z))
+                ascent = fm.ascent()
+                top_y = baseline_y - ascent - (h - fm.height()) // 2
+                x = int(round(origin[0] * z)) - 3
+                y = top_y
+            else:
+                x = int(round(bb[0] * z)) - 3
+                y = yo + int(round(bb[1] * z)) - 2
+            self.edit.setGeometry(x, y, w, h)
+        elif self.mode == "insert" and self.insert_point is not None:
+            self._style_inline_insert()
+            px, py = self.insert_point
+            size = self.insert_size
+            px_size = max(6, int(round(size * z)))
+            fm = self.edit.fontMetrics()
+            txt = self.edit.text()
+            txt_w = fm.horizontalAdvance(txt) if txt else 0
+            w = max(100, int(txt_w + px_size * 2))
+            h = max(int(px_size * 1.35) + 4, 22)
+            x = int(round(px * z)) - 3
+            y = yo + int(round(py * z)) - 2
             self.edit.setGeometry(x, y, w, h)
 
     def commit(self):
@@ -239,7 +287,9 @@ class CanvasInlineTextManager:
             if new_text == original:
                 return
             bb = span["bbox"]
-            visual_size = max(float(span.get("size") or 0), float(bb[3] - bb[1]))
+            span_size = float(span.get("font_size") or span.get("size") or 0)
+            if span_size <= 0:
+                span_size = max(6.0, float(bb[3] - bb[1]) * 0.75)
             font_name = span.get("font", "Helvetica")
             edit = {
                 "type": "text_edit",
@@ -247,8 +297,8 @@ class CanvasInlineTextManager:
                 "bbox": list(bb),
                 "old_text": span.get("text", ""),
                 "new_text": new_text,
-                "size": visual_size,
-                "font_size": float(span.get("size") or visual_size),
+                "size": span_size,
+                "font_size": span_size,
                 "color": span.get("color", 0),
                 "font": font_name,
                 "flags": int(span.get("flags", 0) or 0),
@@ -261,14 +311,23 @@ class CanvasInlineTextManager:
         elif mode == "insert" and ipoint is not None:
             if not new_text.strip():
                 return
-            baseline_y = ipoint[1] + isize * 0.82
+            z = self.canvas._zoom or 1.0
+            yo = self.canvas._page_offsets[page_idx][0] if page_idx < len(self.canvas._page_offsets) else 0
+            fm = self.edit.fontMetrics()
+            screen_x = self.edit.x() + 3
+            screen_y = self.edit.y() + (self.edit.height() - fm.height()) // 2 + fm.ascent()
+            pdf_baseline_x = screen_x / z
+            pdf_baseline_y = (screen_y - yo) / z
+
             char_w = isize * 0.55
             est_w = max(20.0, len(new_text) * char_w)
-            rect = fitz.Rect(ipoint[0], ipoint[1], ipoint[0] + est_w, ipoint[1] + isize * 1.1)
+            pdf_top_y = (self.edit.y() + (self.edit.height() - fm.height()) // 2 - yo) / z
+            pdf_bottom_y = pdf_top_y + fm.height() / z
+            rect = fitz.Rect(pdf_baseline_x, pdf_top_y, pdf_baseline_x + est_w, pdf_bottom_y)
             edit = {
                 "type": "text",
                 "page": page_idx,
-                "point": fitz.Point(ipoint[0], baseline_y),
+                "point": fitz.Point(pdf_baseline_x, pdf_baseline_y),
                 "rect": rect,
                 "text": new_text,
                 "size": isize,

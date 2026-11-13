@@ -1,4 +1,3 @@
-
 # app/editor/tab_ui.py
 """PDF_Editor – tab_ui: UI builder and styling manager for TabEditar with Fill & Sign check/cross tools."""
 
@@ -177,11 +176,12 @@ def setup_editor_ui(tab) -> None:
     body_h.setContentsMargins(0, 0, 0, 0)
     body_h.setSpacing(0)
 
-    # Canvas Scroll Area (Center window - full height)
+    # Canvas Scroll Area (Center window - full height, centered to eliminate blank space)
     tab._canvas = PdfEditCanvas()
     canvas_scroll = QScrollArea()
     canvas_scroll.setFrameShape(QFrame.Shape.NoFrame)
     canvas_scroll.setWidgetResizable(False)
+    canvas_scroll.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
     canvas_scroll.setStyleSheet(f"QScrollArea {{ background: {BG_INNER}; }}")
     canvas_scroll.setWidget(tab._canvas)
     canvas_scroll.setMinimumWidth(150)
@@ -383,6 +383,14 @@ def setup_editor_ui(tab) -> None:
     tab._drop_out = DropFileEdit("output_edited.pdf", save=True, default_name="output_edited.pdf")
     gs.addWidget(tab._drop_out)
     cv.addWidget(tab._grp_save)
+
+    # 7. In-Panel Apply & Save Button (Placed directly inside the edit sidebar window)
+    tab.action_btn = QPushButton(t("btn.apply_save"))
+    tab.action_btn.setObjectName("btn_primary")
+    tab.action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    tab.action_btn.setFixedHeight(38)
+    tab.action_btn.clicked.connect(tab._run)
+    cv.addWidget(tab.action_btn)
     cv.addStretch()
 
     # Sidebar Scroll Container
@@ -398,8 +406,10 @@ def setup_editor_ui(tab) -> None:
     tab._ctrl_scroll = ctrl_scroll
 
     root.addWidget(body, 1)
+
+    # Hidden action bar instance retained for theme/progress compatibility without full-width banner
     tab._action_bar, _ = ActionBar(t("btn.apply_save"), tab._run)
-    root.addWidget(tab._action_bar)
+    tab._action_bar.setVisible(False)
 
 
 def _build_mode_options(tab) -> None:

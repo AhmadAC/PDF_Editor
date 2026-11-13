@@ -1,5 +1,3 @@
-
-
 # app/editor/tab_history.py
 """PDF_Editor – tab_history: history, undo/redo, and pending edits management."""
 
@@ -19,8 +17,50 @@ class TabHistoryManager:
 
     def __init__(self, tab):
         self.tab = tab
-        self.pending = tab._pending
-        self.redo_stack = tab._redo_stack
+
+    @property
+    def pending(self) -> list:
+        return self.tab._pending
+
+    @pending.setter
+    def pending(self, val: list) -> None:
+        self.tab._pending = val
+
+    @property
+    def redo_stack(self) -> list:
+        return self.tab._redo_stack
+
+    @redo_stack.setter
+    def redo_stack(self, val: list) -> None:
+        self.tab._redo_stack = val
+
+    def rebuild_pending_list(self) -> None:
+        """Reconstruct the pending edit list widget items when restoring cached document edits."""
+        self.tab._pending_list.clear()
+        for edit in self.pending:
+            if edit.get("_existing") and not edit.get("_deleted") and edit.get("type") not in ("delete_annot", "text_edit", "image", "signature", "check", "cross"):
+                continue
+            suffix = t("edit.label.page_suffix", n=edit.get("page", 0) + 1)
+            labels = {
+                "redact":    lambda e: t("edit.label.redact") + suffix,
+                "text":      lambda e: t("edit.label.text", txt=(e.get("text") or "")[:18]) + suffix,
+                "image":     lambda e: t("edit.label.image", name=os.path.basename(e.get("path", ""))) + suffix,
+                "highlight": lambda e: t("edit.label.highlight") + suffix,
+                "note":      lambda e: t("edit.label.note") + suffix,
+                "text_edit": lambda e: (
+                    (t("edit.label.edit", old=(e.get("old_text") or "")[:12], new=(e.get("new_text") or "")[:12]) + suffix)
+                    if e.get("new_text") else (f"🗑 Text {suffix}")
+                ),
+                "signature":    lambda e: t("edit.mode.signature") + suffix,
+                "check":        lambda e: "✔ " + t("tool.stamp.check", default="Checkmark") + suffix,
+                "cross":        lambda e: "✖ " + t("tool.stamp.cross", default="Crossmark") + suffix,
+                "draw":         lambda e: t("edit.mode.draw") + suffix,
+                "delete_annot": lambda e: t("edit.label.note_delete") + suffix,
+            }
+            builder = labels.get(edit.get("type"), lambda e: str(e.get("type", "")) + suffix)
+            lbl = builder(edit)
+            self.tab._pending_list.addItem(lbl)
+        self.tab._canvas.set_overlays(self.pending)
 
     def add(self, edit: dict, *, _from_redo: bool = False) -> None:
         if not _from_redo:
@@ -178,4 +218,3 @@ class TabHistoryManager:
             self.tab._canvas.set_overlays(self.pending)
         except Exception as ex:
             self.tab._status(t("edit.status.annot_error", ex=ex))
-

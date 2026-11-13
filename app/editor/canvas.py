@@ -1,3 +1,4 @@
+
 # app/editor/canvas.py
 """PDF_Editor – PdfEditCanvas facade: visual PDF edit canvas with Foxit-style media object selection, vector check/cross stamps & text editing."""
 
@@ -249,7 +250,7 @@ class PdfEditCanvas(QWidget):
         if "bbox" in ov:
             ov["bbox"] = [new_r.x0, new_r.y0, new_r.x1, new_r.y1]
         if "point" in ov:
-            ov["point"] = fitz.Point(new_r.x0, new_r.y0 + ov.get("size", 12) * 0.82)
+            ov["point"] = fitz.Point(new_r.x0, new_r.y0 + ov.get("size", 12) * 0.85)
         if "font_size" in ov:
             ov["font_size"] = max(4.0, float(ov["font_size"]) * factor)
         if "size" in ov and ov.get("type") in ("text", "text_edit"):
@@ -298,8 +299,8 @@ class PdfEditCanvas(QWidget):
     def begin_inline_text_edit(self, span: dict, page_idx: int):
         self._inline_mgr.begin_edit(span, page_idx)
 
-    def begin_inline_text_insert(self, page_idx: int, pdf_point, size: float, color: tuple, font: str = ""):
-        self._inline_mgr.begin_insert(page_idx, pdf_point, size, color, font)
+    def begin_inline_text_insert(self, page_idx: int, pdf_point, size: float, color: tuple, font: str = "", bold: bool = False, italic: bool = False):
+        self._inline_mgr.begin_insert(page_idx, pdf_point, size, color, font, bold, italic)
 
     def update_active_text_format(self, font: str, size: float, color: tuple, bold: bool, italic: bool):
         self._inline_mgr.update_format(font, size, color, bold, italic)
@@ -326,7 +327,7 @@ class PdfEditCanvas(QWidget):
         sa = vp.parent() if vp else None
         return sa if isinstance(sa, _SA) else None
 
-    def load(self, path: str, password: str = ""):
+    def load(self, path: str, password: str = "", initial_zoom_factor: float | None = None, initial_page: int = 0):
         if self._doc:
             self._doc.close()
         self._doc = None
@@ -336,8 +337,8 @@ class PdfEditCanvas(QWidget):
         self._doc = doc
         self._path = path
         self._password = password
-        self._page_idx = 0
-        self._zoom_factor = 1.0
+        self._page_idx = max(0, initial_page)
+        self._zoom_factor = initial_zoom_factor if initial_zoom_factor is not None else 1.0
         self._gen += 1
         self._pending.clear()
         self.cancel_signature_placement()
@@ -519,6 +520,13 @@ class PdfEditCanvas(QWidget):
 
         return (target_page, pdf_x, pdf_y, vp_x, vp_y)
 
+    def relayout_to_viewport(self):
+        """Recalculate layout based on the current viewport width and preserve scroll anchor."""
+        if not self._doc:
+            return
+        anchor = self._calc_anchor()
+        self._layout_and_schedule(anchor=anchor)
+
     def _invalidate_and_relayout(self, anchor_pos: QPoint | None = None):
         self._gen += 1
         self._pending.clear()
@@ -542,17 +550,17 @@ class PdfEditCanvas(QWidget):
         old_pixmaps: list | None = None,
         anchor: tuple[int, float, float, float, float] | None = None,
     ):
-        if not self._doc:
+        if not self._doc or self._doc.page_count <= 0:
             return
 
-        if self._zoom_factor == 1.0:
-            from PySide6.QtWidgets import QScrollArea as _SA
-            vp = self.parent()
-            sa = vp.parent() if vp else None
-            avail = sa.viewport().width() - 4 if isinstance(sa, _SA) else self.width()
-            self._base_avail = max(avail, 300)
+        sa = self._get_scroll_area()
+        if sa and sa.viewport() and sa.viewport().width() > 100:
+            avail = sa.viewport().width() - 8
+        else:
+            avail = self.width() - 8
+        self._base_avail = max(avail, 300)
 
-        ref_w = self._doc[0].rect.width
+        ref_w = max(1.0, self._doc[0].rect.width)
         self._zoom = (self._base_avail / ref_w) * self._zoom_factor
 
         self._page_pixmaps.clear()
@@ -576,7 +584,6 @@ class PdfEditCanvas(QWidget):
         new_h = max(total_h, 400)
         self.setFixedSize(new_w, new_h)
 
-        sa = self._get_scroll_area()
         if sa:
             vp = sa.viewport()
             max_scroll_x = max(0, new_w - vp.width())
@@ -699,3 +706,5 @@ class PdfEditCanvas(QWidget):
 
     def contextMenuEvent(self, e):
         self._event_handler.handle_context_menu(e)
+
+

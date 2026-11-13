@@ -1,3 +1,5 @@
+
+
 # app/editor/tab.py
 """PDF_Editor – TabEditar: visual PDF editor tool tab with Fill & Sign checkmarks/crossmarks, media object manipulation & typography styling."""
 
@@ -86,6 +88,7 @@ class TabEditar(QWidget):
     _grp_save: QGroupBox
     _drop_out: DropFileEdit
     _action_bar: QWidget
+    action_btn: QPushButton
 
     # Sidebar thumbnail & TOC widgets
     _thumbnails: ThumbnailPanel
@@ -171,6 +174,9 @@ class TabEditar(QWidget):
         self._last_selected_rect: fitz.Rect | None = None
         self._last_selected_original_text: str = ""
 
+        # Multi-tab persistent document states map
+        self._doc_states: dict[str, dict] = {}
+
         self._history = TabHistoryManager(self)
         setup_editor_ui(self)
 
@@ -226,12 +232,16 @@ class TabEditar(QWidget):
         })
 
     def toggle_controls(self) -> bool:
-        """Toggle the right-hand controls sidebar within the editor."""
+        """Toggle the right-hand controls sidebar within the editor and adapt canvas to full width."""
         is_vis = self._ctrl_scroll.isVisible()
         self._ctrl_scroll.setVisible(not is_vis)
-        if hasattr(self, "_canvas") and self._canvas._doc and self._canvas._zoom_factor == 1.0:
-            QTimer.singleShot(50, self._canvas._layout_and_schedule)
+        self._relayout_canvas()
         return not is_vis
+
+    def _relayout_canvas(self) -> None:
+        if hasattr(self, "_canvas") and self._canvas._doc:
+            QTimer.singleShot(10, self._canvas.relayout_to_viewport)
+            QTimer.singleShot(60, self._canvas.relayout_to_viewport)
 
     def toggle_pages_sidebar(self) -> bool:
         """Toggle the left-hand pages/thumbnail sidebar within the editor."""
@@ -273,8 +283,7 @@ class TabEditar(QWidget):
         except Exception:
             pass
 
-        if hasattr(self, "_canvas") and self._canvas._doc and self._canvas._zoom_factor == 1.0:
-            QTimer.singleShot(50, self._canvas._layout_and_schedule)
+        self._relayout_canvas()
         return not self._pages_sidebar_collapsed
 
     def _set_sidebar_width(self, target_w: int) -> None:
@@ -305,6 +314,7 @@ class TabEditar(QWidget):
                 PdfViewerPanel._saved_sidebar_width_pref = pos
             except Exception:
                 pass
+            self._relayout_canvas()
 
     def paintEvent(self, event):
         _paint_bg(self)
@@ -316,13 +326,13 @@ class TabEditar(QWidget):
                     self._thumbnails.fit_window_to_thumbnails()
                     return True
         if hasattr(self, "_canvas_scroll") and obj is self._canvas_scroll.viewport() and event.type() == QEvent.Type.Resize:
-            if hasattr(self, "_canvas") and self._canvas._doc and self._canvas._zoom_factor == 1.0:
-                QTimer.singleShot(0, self._canvas._layout_and_schedule)
+            if hasattr(self, "_canvas") and self._canvas._doc:
+                QTimer.singleShot(0, self._canvas.relayout_to_viewport)
         return super().eventFilter(obj, event)
 
     def set_compact_mode(self, active: bool, path: str = "") -> None:
         if active and path:
-            self._load_pdf(path)
+            self.auto_load(path)
         self._grp_file.setVisible(not active)
         self._grp_save.setVisible(not active)
 
@@ -633,6 +643,38 @@ class TabEditar(QWidget):
         if p:
             self._load_pdf(p)
 
+    def _save_current_doc_state(self):
+        """Save the current document's pending edits, scroll, zoom, and active page before switching away."""
+        if not self._doc_path:
+            return
+        key = os.path.abspath(self._doc_path)
+        sb_v = self._canvas_scroll.verticalScrollBar()
+        sb_h = self._canvas_scroll.horizontalScrollBar()
+        self._doc_states[key] = {
+            "pending": list(self._pending),
+            "redo_stack": list(self._redo_stack),
+            "page_idx": self._page_idx,
+            "zoom_factor": getattr(self._canvas, "_zoom_factor", 1.0),
+            "scroll_v": sb_v.value() if sb_v else 0,
+            "scroll_h": sb_h.value() if sb_h else 0,
+            "mode_idx": self._mode_idx,
+            "text_submode": self._text_submode,
+            "signature_path": self._signature_path,
+            "drop_out": self._drop_out.path() if hasattr(self, "_drop_out") else "",
+            "last_selected_page": self._last_selected_page,
+            "last_selected_rect": self._last_selected_rect,
+            "last_selected_original_text": self._last_selected_original_text,
+        }
+
+    def _restore_scroll(self, val_v: int, val_h: int) -> None:
+        if hasattr(self, "_canvas_scroll"):
+            sb_v = self._canvas_scroll.verticalScrollBar()
+            if sb_v:
+                sb_v.setValue(min(val_v, sb_v.maximum()))
+            sb_h = self._canvas_scroll.horizontalScrollBar()
+            if sb_h:
+                sb_h.setValue(min(val_h, sb_h.maximum()))
+
     def _load_pdf(self, p: str):
         if not p:
             return
@@ -641,6 +683,10 @@ class TabEditar(QWidget):
                 p = p + ".pdf"
             else:
                 return
+
+        key = os.path.abspath(p)
+        saved = self._doc_states.get(key)
+
         try:
             probe = fitz.open(p)
             needs_pass = bool(probe.needs_pass)
@@ -658,42 +704,75 @@ class TabEditar(QWidget):
             self._pdf_password = pwd
         elif not needs_pass:
             self._pdf_password = ""
+
         self._doc_path = p
         self._drop_in.blockSignals(True)
         self._drop_in.set_path(p)
         self._drop_in.blockSignals(False)
-        if not self._drop_out.path():
-            self._drop_out.set_path(os.path.splitext(p)[0] + "_edited.pdf")
-        self._pending.clear()
-        self._pending_list.clear()
+
+        if saved:
+            self._drop_out.set_path(saved.get("drop_out") or (os.path.splitext(p)[0] + "_edited.pdf"))
+            self._pending = list(saved.get("pending", []))
+            self._redo_stack = list(saved.get("redo_stack", []))
+            self._page_idx = saved.get("page_idx", 0)
+            self._last_selected_page = saved.get("last_selected_page", -1)
+            self._last_selected_rect = saved.get("last_selected_rect")
+            self._last_selected_original_text = saved.get("last_selected_original_text", "")
+            self._signature_path = saved.get("signature_path")
+            self._history.rebuild_pending_list()
+            target_zoom_factor = saved.get("zoom_factor", 1.0)
+        else:
+            if not self._drop_out.path():
+                self._drop_out.set_path(os.path.splitext(p)[0] + "_edited.pdf")
+            self._pending.clear()
+            self._pending_list.clear()
+            self._page_idx = 0
+            target_zoom_factor = 1.0
+
         try:
-            self._canvas.load(p, password=self._pdf_password)
+            self._canvas.load(p, password=self._pdf_password, initial_zoom_factor=target_zoom_factor, initial_page=self._page_idx)
+            self._canvas.set_overlays(self._pending)
         except ModuleNotFoundError as ex:
             QMessageBox.critical(self, t("msg.missing_dep"), t("msg.dep_pymupdf", ex=ex))
             return
         except Exception as ex:
             QMessageBox.critical(self, t("msg.error"), t("msg.pdf_open_error", ex=ex))
             return
-        self._page_idx = 0
+
         n = self._canvas.page_count()
         self._lbl_info.setText(t("edit.status.pages", n=n))
         self._update_nav()
+
         if hasattr(self, "_thumbnails"):
             self._thumbnails.set_document(p, n, password=self._pdf_password)
-            self._thumbnails.set_current_page(0)
+            self._thumbnails.set_current_page(self._page_idx)
         if hasattr(self, "_populate_toc"):
             self._populate_toc(self._canvas._doc)
-        QTimer.singleShot(100, lambda: self._load_existing_annotations() if isValid(self) else None)
+
+        if saved:
+            v_val = saved.get("scroll_v", 0)
+            h_val = saved.get("scroll_h", 0)
+            QTimer.singleShot(60, lambda v=v_val, h=h_val: self._restore_scroll(v, h))
+        else:
+            QTimer.singleShot(100, lambda: self._load_existing_annotations() if isValid(self) else None)
+
         QTimer.singleShot(200, lambda: self._load_form_fields(p) if isValid(self) else None)
 
     def _load_existing_annotations(self):
         self._history.load_existing_annotations()
 
     def auto_load(self, path: str):
-        if path and (self._doc_path != path or not self._drop_in.path()):
-            self._load_pdf(path)
+        if not path:
+            return
+        norm_p = os.path.abspath(path)
+        if self._doc_path and os.path.abspath(self._doc_path) == norm_p:
+            return
+        self._save_current_doc_state()
+        self._load_pdf(path)
 
     def _close_pdf(self):
+        if self._doc_path:
+            self._doc_states.pop(os.path.abspath(self._doc_path), None)
         self._doc_path = None
         self._canvas.close_doc()
         self._canvas.set_overlays([])
@@ -984,7 +1063,7 @@ class TabEditar(QWidget):
             font = self._text_font.currentText()
             bold = self._btn_bold.isChecked()
             italic = self._btn_italic.isChecked()
-            self._canvas.begin_inline_text_insert(page_idx, insert_pt, size, color, font)
+            self._canvas.begin_inline_text_insert(page_idx, insert_pt, size, color, font, bold, italic)
             self._canvas.update_active_text_format(font, size, color, bold, italic)
             return
 
@@ -1107,7 +1186,7 @@ class TabEditar(QWidget):
             font = self._text_font.currentText()
             bold = self._btn_bold.isChecked()
             italic = self._btn_italic.isChecked()
-            self._canvas.begin_inline_text_insert(page_idx, pdf_pt, size, color, font)
+            self._canvas.begin_inline_text_insert(page_idx, pdf_pt, size, color, font, bold, italic)
             self._canvas.update_active_text_format(font, size, color, bold, italic)
         elif mode == _MODE_NOTE:
             dlg = _NoteDialog(self)

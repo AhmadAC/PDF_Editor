@@ -347,7 +347,8 @@ class _SelectCanvas(QWidget):
         vp_w = self.get_viewport_width()
         target_fit_w = max(400, vp_w - 36)
         if abs(target_fit_w - self._base_avail) > 24 or self.width() < vp_w:
-            self._layout_and_schedule()
+            anchor = self._calc_anchor()
+            self._layout_and_schedule(anchor=anchor)
 
     def _calc_anchor(self, anchor_pos: Any = None) -> tuple[int, float, float, float, float] | None:
         """Calculate invariant point under cursor in PDF coordinates: (page_idx, pdf_x, pdf_y, vp_x, vp_y)."""

@@ -1,3 +1,4 @@
+
 # app/window_tabs.py
 """PDF_Editor – Tab management and multi-viewer window mixin."""
 
@@ -174,6 +175,7 @@ class WindowTabsMixin(_Base):
         def _save_pipeline(self) -> None: ...
         def _cleanup_pipeline(self, viewer_id: int) -> None: ...
         def _crop_tool_idx(self) -> int: ...
+        def _edit_tool_idx(self) -> int: ...
         def _setup_zoom_bar(self, active: bool, canvas: Any = ...) -> None: ...
         def _toggle_pages_sidebar(self) -> None: ...
 
@@ -253,6 +255,19 @@ class WindowTabsMixin(_Base):
             if ans == QMessageBox.StandardButton.Save:
                 self._save_pipeline()
 
+        closed_path = viewer.current_path()
+        orig_path = getattr(viewer, "_original_doc_path", "")
+
+        # Clean up cached edit state for this document
+        edit_idx = self._edit_tool_idx() if hasattr(self, "_edit_tool_idx") else -1
+        if edit_idx >= 0 and edit_idx < self.stack.count():
+            edit_w = self.stack.widget(edit_idx)
+            doc_states = getattr(edit_w, "_doc_states", None)
+            if isinstance(doc_states, dict):
+                for p_check in (closed_path, orig_path):
+                    if p_check:
+                        doc_states.pop(os.path.abspath(p_check), None)
+
         if hasattr(self, "_cleanup_pipeline"):
             self._cleanup_pipeline(id(viewer))
 
@@ -297,6 +312,8 @@ class WindowTabsMixin(_Base):
                     self.setWindowTitle(f"{t('app.name')} - {doc_name}")
                 else:
                     self.setWindowTitle(t("app.name"))
+
+            # When in Edit PDF tool or another tool, seamlessly synchronize the tool with the active tab's document
             if getattr(self, "_current_tool", -1) >= 0:
                 tool_w = self.stack.widget(self._current_tool)
                 cur_path = viewer.current_path()
@@ -432,6 +449,11 @@ class WindowTabsMixin(_Base):
                     self._update_page_nav()
                 if hasattr(self, "_update_breadcrumb"):
                     self._update_breadcrumb()
+                if getattr(self, "_current_tool", -1) >= 0:
+                    tool_w = self.stack.widget(self._current_tool)
+                    fn = getattr(tool_w, "auto_load", None)
+                    if callable(fn):
+                        fn(curr_p or orig_p)
                 return v
 
         # 2. Check if file is PDF or requires automatic conversion
