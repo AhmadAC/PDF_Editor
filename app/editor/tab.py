@@ -1,5 +1,5 @@
 # app/editor/tab.py
-"""PDF_Editor – TabEditar facade: visual PDF editor tab with Fill & Sign, media manipulation, and typography styling."""
+"""PDF_Editor – TabEditar facade: visual PDF editor tab with Fill & Sign, Foxit-style object editing, and typography styling."""
 
 from __future__ import annotations
 
@@ -152,9 +152,10 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
     def _user_pending(self) -> list:
         return [
             e for e in self._pending
-            if not e.get("_existing") or e.get("_deleted") or e.get("type") in (
-                "delete_annot", "text_edit", "image", "signature", "check", "cross"
-            )
+            if not e.get("_existing")
+            or e.get("_dirty")
+            or e.get("_deleted")
+            or e.get("type") == "delete_annot"
         ]
 
     def __init__(self, status_fn: Callable[[str], None]):
@@ -187,6 +188,9 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
         self._canvas.signature_added.connect(self._on_signature_added)
         self._canvas.stamp_added.connect(self._on_stamp_added)
         self._canvas.overlay_changed.connect(self.update)
+        self._canvas.overlay_committed.connect(self._on_overlay_committed)
+        self._canvas.overlay_transformed.connect(self._on_overlay_transformed)
+        self._canvas.overlay_duplicated.connect(self._on_overlay_duplicated)
         self._canvas.overlay_deleted.connect(self._on_overlay_deleted)
         self._canvas.zoom_changed.connect(lambda _: self._update_page_nav_and_thumbnails())
         if hasattr(self._canvas, "delete_selection_requested"):
@@ -247,6 +251,9 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
         if hasattr(self, "_canvas") and hasattr(self._canvas, "_inline_edit"):
             if self._canvas._inline_edit.isVisible():
                 self._canvas._commit_inline()
+
+        if hasattr(self, "_canvas") and hasattr(self._canvas, "_overlay_mgr"):
+            self._canvas._overlay_mgr.discard_untouched_existing()
 
         out = self._drop_out.path() if hasattr(self, "_drop_out") else ""
         if not out:

@@ -1,5 +1,5 @@
 # app/editor/canvas.py
-"""PDF_Editor – PdfEditCanvas facade: visual PDF edit canvas with media selection, stamps, drawing, and highlights."""
+"""PDF_Editor – PdfEditCanvas facade: visual PDF edit canvas with Foxit-style object manipulation, stamps, drawing, and highlights."""
 
 from __future__ import annotations
 
@@ -18,7 +18,11 @@ try:
         _EditRenderSignals, _EditPageJob,
         _get_icon_cursor, clear_overlay_pixmap_cache,
     )
-    from app.editor.canvas_overlay1 import CanvasOverlayManager
+    from app.editor.canvas_overlay1 import (
+        CanvasOverlayManager,
+        overlay_pdf_rect,
+        snapshot_overlay,
+    )
     from app.editor.canvas_text1 import CanvasInlineTextManager
     from app.editor.canvas_painter1 import CanvasPainter
     from app.editor.canvas_events1 import CanvasEventHandler
@@ -28,7 +32,11 @@ except ImportError:
         _EditRenderSignals, _EditPageJob,
         _get_icon_cursor, clear_overlay_pixmap_cache,
     )
-    from .canvas_overlay1 import CanvasOverlayManager  # type: ignore
+    from .canvas_overlay1 import (  # type: ignore
+        CanvasOverlayManager,
+        overlay_pdf_rect,
+        snapshot_overlay,
+    )
     from .canvas_text1 import CanvasInlineTextManager  # type: ignore
     from .canvas_painter1 import CanvasPainter  # type: ignore
     from .canvas_events1 import CanvasEventHandler  # type: ignore
@@ -46,6 +54,9 @@ class PdfEditCanvas(QWidget):
     signature_added               = Signal(int, object, str)   # (page_idx, fitz.Rect, sig_path)
     stamp_added                   = Signal(int, object, str)   # (page_idx, fitz.Rect, stamp_type)
     overlay_changed               = Signal()
+    overlay_committed             = Signal(dict)               # (overlay_dict)
+    overlay_transformed           = Signal(dict, dict)         # (overlay_dict, before_snapshot)
+    overlay_duplicated            = Signal(dict)               # (new_overlay_dict)
     overlay_deleted               = Signal(int, dict)          # (index, overlay_dict)
     delete_selection_requested    = Signal()
     edit_selection_requested      = Signal()
@@ -81,6 +92,8 @@ class PdfEditCanvas(QWidget):
         self._select_mode = False
         self._draw_mode   = False
         self._text_mode   = False
+        self._redact_mode = False
+        self._note_mode   = False
         self._highlight_mode = False
         self._highlight_color = (1.0, 1.0, 0.0)
         self._draw_color  = (1.0, 0.0, 0.0)
@@ -105,6 +118,7 @@ class PdfEditCanvas(QWidget):
         self._drag_handle: int = self.HANDLE_NONE
         self._drag_start_pos: QPoint = QPoint()
         self._drag_start_rect: fitz.Rect | None = None
+        self._drag_before_snapshot: dict | None = None
         self._moving_overlay: bool = False
 
         self._placing_stamp: bool = False
@@ -140,6 +154,20 @@ class PdfEditCanvas(QWidget):
         else:
             self.clear_active_selection()
 
+    def set_redact_mode(self, active: bool):
+        self._redact_mode = active
+        if active:
+            self._selected_overlay_idx = -1
+            self._overlay_mgr.discard_untouched_existing()
+            self.update()
+
+    def set_note_mode(self, active: bool):
+        self._note_mode = active
+        if active:
+            self._selected_overlay_idx = -1
+            self._overlay_mgr.discard_untouched_existing()
+            self.update()
+
     def set_highlight_mode(self, active: bool, color: tuple = (1.0, 1.0, 0.0), cursor_shape: Qt.CursorShape = Qt.CursorShape.CrossCursor):
         self._highlight_mode = active
         self._highlight_color = color
@@ -147,6 +175,8 @@ class PdfEditCanvas(QWidget):
             self._draw_mode = False
             self._text_mode = False
             self._select_mode = False
+            self._selected_overlay_idx = -1
+            self._overlay_mgr.discard_untouched_existing()
             self.setCursor(cursor_shape)
         elif not self._draw_mode and not self._text_mode and not self._placing_signature and not getattr(self, "_placing_stamp", False) and not self._select_mode:
             self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -172,6 +202,8 @@ class PdfEditCanvas(QWidget):
             self._highlight_mode = False
             self._text_mode = False
             self._select_mode = False
+            self._selected_overlay_idx = -1
+            self._overlay_mgr.discard_untouched_existing()
             self.setCursor(_get_icon_cursor("fa5s.pen", 4, 4, size=28, rotate=90))
         else:
             self._current_stroke = None
@@ -190,6 +222,7 @@ class PdfEditCanvas(QWidget):
     def begin_stamp_placement(self, stamp_type: str, color=(0.0, 0.0, 0.0), size=20.0):
         self.cancel_signature_placement()
         self.clear_active_selection()
+        self._overlay_mgr.discard_untouched_existing()
         self._selected_overlay_idx = -1
         self._placing_stamp = True
         self._placing_stamp_type = stamp_type
@@ -227,12 +260,12 @@ class PdfEditCanvas(QWidget):
         if ov.get("_deleted"):
             return False
 
-        if "rect" in ov:
-            r = fitz.Rect(ov["rect"])
-        elif "bbox" in ov:
-            r = fitz.Rect(ov["bbox"])
-        else:
+        r = overlay_pdf_rect(ov, zoom=self._zoom or 1.0)
+        if r is None:
             return False
+
+        before_snap = snapshot_overlay(ov)
+        was_untouched = bool(ov.get("_existing") and not ov.get("_dirty"))
 
         min_s = 8.0
         old_w = max(min_s, r.width)
@@ -244,20 +277,46 @@ class PdfEditCanvas(QWidget):
         cy = (r.y0 + r.y1) / 2.0
         new_r = fitz.Rect(cx - new_w / 2.0, cy - new_h / 2.0, cx + new_w / 2.0, cy + new_h / 2.0)
 
+        if ov.get("type") == "draw" and "points" in ov:
+            ov["points"] = [
+                (cx + (float(px) - cx) * factor, cy + (float(py) - cy) * factor)
+                for px, py in ov["points"]
+            ]
+        elif ov.get("type") == "highlight" and ov.get("rects"):
+            ov["rects"] = [
+                fitz.Rect(
+                    cx + (hr.x0 - cx) * factor,
+                    cy + (hr.y0 - cy) * factor,
+                    cx + (hr.x1 - cx) * factor,
+                    cy + (hr.y1 - cy) * factor,
+                )
+                for hr in ov["rects"]
+            ]
         if "rect" in ov:
             ov["rect"] = new_r
         if "bbox" in ov:
             ov["bbox"] = [new_r.x0, new_r.y0, new_r.x1, new_r.y1]
+        if "origin" in ov:
+            new_sz = max(4.0, float(ov.get("font_size", ov.get("size", 12))) * factor)
+            ov["origin"] = [new_r.x0, new_r.y0 + new_sz * 0.85]
         if "point" in ov:
-            ov["point"] = fitz.Point(new_r.x0, new_r.y0 + ov.get("size", 12) * 0.85)
+            new_sz = max(4.0, float(ov.get("size", 12)) * factor)
+            ov["point"] = fitz.Point(new_r.x0, new_r.y0 + new_sz * 0.85)
         if "font_size" in ov:
             ov["font_size"] = max(4.0, float(ov["font_size"]) * factor)
         if "size" in ov and ov.get("type") in ("text", "text_edit"):
             ov["size"] = max(4.0, float(ov["size"]) * factor)
         if ov.get("type") in ("check", "cross"):
             ov["width"] = max(1.5, float(ov.get("width", 2.2)) * factor)
+        if ov.get("type") == "drawing":
+            ov["width"] = max(0.5, float(ov.get("width", 1.0)) * factor)
 
-        self._drag_start_rect = fitz.Rect(new_r)
+        self._drag_start_rect = overlay_pdf_rect(ov, zoom=self._zoom or 1.0)
+        if was_untouched:
+            ov["_dirty"] = True
+            self.overlay_committed.emit(ov)
+        else:
+            self.overlay_transformed.emit(ov, before_snap)
         self.overlay_changed.emit()
         self.update()
         return True
@@ -293,8 +352,8 @@ class PdfEditCanvas(QWidget):
     def _annot_note_at(self, pos: QPoint):
         return self._overlay_mgr.annot_note_at(pos)
 
-    def begin_inline_text_edit(self, span: dict, page_idx: int):
-        self._inline_mgr.begin_edit(span, page_idx)
+    def begin_inline_text_edit(self, span: dict, page_idx: int, target_overlay: dict | None = None):
+        self._inline_mgr.begin_edit(span, page_idx, target_overlay=target_overlay)
 
     def begin_inline_text_insert(self, page_idx: int, pdf_point, size: float, color: tuple, font: str = "", bold: bool = False, italic: bool = False):
         self._inline_mgr.begin_insert(page_idx, pdf_point, size, color, font, bold, italic)
@@ -340,6 +399,7 @@ class PdfEditCanvas(QWidget):
         self.cancel_stamp_placement()
         self.clear_active_selection()
         self._selected_overlay_idx = -1
+        self._drag_before_snapshot = None
         self._page_prev_pixmaps.clear()
         QTimer.singleShot(0, self._layout_and_schedule)
 
@@ -405,6 +465,8 @@ class PdfEditCanvas(QWidget):
                 continue
             for line in block.get("lines", []):
                 for span in line.get("spans", []):
+                    if not span.get("text", "").strip():
+                        continue
                     bbox = fitz.Rect(span["bbox"])
                     if bbox.contains(click) or (bbox + fitz.Rect(-3, -3, 3, 3)).contains(click):
                         return span
@@ -427,6 +489,7 @@ class PdfEditCanvas(QWidget):
         self.cancel_stamp_placement()
         self.clear_active_selection()
         self._selected_overlay_idx = -1
+        self._drag_before_snapshot = None
         self._gen += 1
         self._pending.clear()
         self.release_doc()
@@ -695,4 +758,3 @@ class PdfEditCanvas(QWidget):
 
     def contextMenuEvent(self, e):
         self._event_handler.handle_context_menu(e)
-

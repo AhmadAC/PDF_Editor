@@ -164,9 +164,9 @@ def _build_embed_archive(fitz, doc, page, edit, new_txt):
 
 
 def _text_edit_redaction_rect(fitz, edit, size):
-    """Vertically tight redaction rectangle for removing original span."""
-    bbox = fitz.Rect(edit["bbox"])
-    origin = edit.get("origin") or (bbox.x0, bbox.y1)
+    """Vertically tight redaction rectangle for removing original span at its original location."""
+    bbox = fitz.Rect(edit.get("_orig_rect") or edit["bbox"])
+    origin = edit.get("_orig_origin") or edit.get("origin") or (bbox.x0, bbox.y1)
     asc = float(edit.get("ascender") or 0)
     desc = float(edit.get("descender") or 0)
     span = asc - desc
@@ -179,7 +179,7 @@ def _text_edit_redaction_rect(fitz, edit, size):
 
 
 def _text_edit_layout_rect(fitz, page, edit, size):
-    """Layout rectangle for insert_htmlbox."""
+    """Layout rectangle for insert_htmlbox at the target position."""
     bbox = fitz.Rect(edit["bbox"])
     origin = edit.get("origin") or (bbox.x0, bbox.y1)
     asc = float(edit.get("ascender") or 0) or 0.9
@@ -211,23 +211,31 @@ def _warn_if_downscaled(htmlbox_result, edit, warn_fn):
                 _log.exception("text-fit warn_fn raised")
 
 
-def _reinsert_edited_text(fitz, doc, page, edit, warn_fn=None):
-    """Redact original span and reinsert replacement text with custom typography support."""
+def _reinsert_edited_text(fitz, doc, page, edit, warn_fn=None, *, redact: bool = True, prebuilt_archive=None):
+    """Redact original span (if redact=True) and reinsert replacement text with custom typography support."""
     bbox = fitz.Rect(edit["bbox"])
     new_txt = (edit.get("new_text") or "").strip()
     size = _text_edit_size(edit)
 
-    arch = ref = None
-    if new_txt:
-        arch, ref = _build_embed_archive(fitz, doc, page, edit, new_txt)
+    if prebuilt_archive is not None:
+        arch, ref = prebuilt_archive
+    else:
+        arch = ref = None
+        if new_txt:
+            arch, ref = _build_embed_archive(fitz, doc, page, edit, new_txt)
 
-    redact_rect = _text_edit_redaction_rect(fitz, edit, size)
-    try:
-        page.add_redact_annot(redact_rect, fill=False, cross_out=False)
-        page.apply_redactions()
-    except Exception:
-        page.add_redact_annot(redact_rect, fill=(1, 1, 1))
-        page.apply_redactions()
+    if redact:
+        redact_rect = _text_edit_redaction_rect(fitz, edit, size)
+        try:
+            page.add_redact_annot(redact_rect, fill=False, cross_out=False)
+            page.apply_redactions(
+                images=getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0),
+                graphics=getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0),
+                text=getattr(fitz, "PDF_REDACT_TEXT_REMOVE", 0),
+            )
+        except Exception:
+            page.add_redact_annot(redact_rect, fill=(1, 1, 1))
+            page.apply_redactions()
 
     if not new_txt:
         return False

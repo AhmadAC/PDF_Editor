@@ -1,6 +1,7 @@
+
 # app/editor/canvas_painter1.py
 
-"""Canvas painter: renders pages, overlays, vector check/cross stamps, text modifications, notes, and smoothed freehand drawings."""
+"""Canvas painter: renders pages, overlays, vector drawings, check/cross stamps, text modifications, notes, and smoothed freehand drawings."""
 
 from __future__ import annotations
 
@@ -11,7 +12,34 @@ from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPixmap, QPainterPath
 
 from app.constants import ACCENT, TEXT_SEC
 from app.i18n import t
+from app.editor.canvas_overlay1 import overlay_pdf_rect, rects_close
 from app.editor.canvas_render1 import _NOTE_ICON_SIZE, _load_overlay_pixmap
+
+
+def _draw_selection_box(p: QPainter, qr: QRect, handle_size: int = 8, draw_handles: bool = True) -> None:
+    p.setPen(QPen(QColor(ACCENT), 1.5, Qt.PenStyle.DashLine))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRect(qr)
+    if not draw_handles:
+        return
+    hs = handle_size
+    p.setBrush(QColor("#FFFFFF"))
+    p.setPen(QPen(QColor(ACCENT), 1.5))
+    for hpt in (
+        QPoint(qr.left(), qr.top()),
+        QPoint(qr.right(), qr.top()),
+        QPoint(qr.left(), qr.bottom()),
+        QPoint(qr.right(), qr.bottom()),
+    ):
+        p.drawRect(QRect(hpt.x() - hs // 2, hpt.y() - hs // 2, hs, hs))
+
+
+def _map_pt(x: float, y: float, orig_r: fitz.Rect, new_r: fitz.Rect, z: float, yo: int) -> QPointF:
+    sx = (new_r.width / orig_r.width) if orig_r.width > 1e-3 else 1.0
+    sy = (new_r.height / orig_r.height) if orig_r.height > 1e-3 else 1.0
+    nx = new_r.x0 + (x - orig_r.x0) * sx
+    ny = new_r.y0 + (y - orig_r.y0) * sy
+    return QPointF(nx * z, yo + ny * z)
 
 
 class CanvasPainter:
@@ -52,9 +80,55 @@ class CanvasPainter:
             p.setPen(QColor("#E0E0E0"))
             p.drawRect(QRect(0, yo, pw - 1, ph - 1))
 
-        # 2. Render overlays
+        # 2a. Mask original regions of existing elements that were deleted, edited, or moved
         z = canvas._zoom
+        for e in canvas._overlays:
+            pg = e.get("page", 0)
+            if pg >= len(canvas._page_offsets):
+                continue
+            yo = canvas._page_offsets[pg][0]
+            etype = e.get("type")
+
+            if etype == "delete_annot" and e.get("bbox"):
+                ob = fitz.Rect(e["bbox"])
+                qr = QRect(
+                    int(ob.x0 * z) - 2, yo + int(ob.y0 * z) - 2,
+                    max(2, int(ob.width * z)) + 4, max(2, int(ob.height * z)) + 4,
+                )
+                p.fillRect(qr, QColor("#FFFFFF"))
+                continue
+
+            if not e.get("_existing"):
+                continue
+
+            orig_raw = e.get("_orig_rect") or e.get("_annot_bbox")
+            if not orig_raw:
+                continue
+            orig_r = fitz.Rect(orig_raw)
+            cur_r = overlay_pdf_rect(e, zoom=z)
+            should_mask = bool(
+                e.get("_deleted")
+                or etype == "text_edit"
+                or (cur_r is not None and not rects_close(cur_r, orig_r, tol=0.25))
+            )
+            if not should_mask:
+                continue
+
+            bg_rgb = e.get("_bg_color", (255, 255, 255))
+            bg_qcol = QColor(int(bg_rgb[0]), int(bg_rgb[1]), int(bg_rgb[2]))
+            extra_pad = int(round(max(1.0, float(e.get("width", 1.0)) * 0.75 * z))) + 2 if etype == "drawing" else 1
+            qr = QRect(
+                int(orig_r.x0 * z) - extra_pad,
+                yo + int(orig_r.y0 * z) - extra_pad,
+                max(2, int(orig_r.width * z)) + extra_pad * 2,
+                max(2, int(orig_r.height * z)) + extra_pad * 2,
+            )
+            p.fillRect(qr, bg_qcol)
+
+        # 2b. Render active overlays
         for ov_idx, e in enumerate(canvas._overlays):
+            if e.get("_deleted"):
+                continue
             pg = e.get("page", 0)
             if pg >= len(canvas._page_offsets):
                 continue
@@ -62,26 +136,14 @@ class CanvasPainter:
             etype = e["type"]
             is_selected = (ov_idx == canvas._selected_overlay_idx)
 
-            if e.get("_deleted"):
-                orig_r = e.get("_orig_rect") or e.get("bbox") or e.get("rect")
-                if orig_r:
-                    if isinstance(orig_r, (list, tuple)):
-                        qr = QRect(int(orig_r[0] * z) - 1, yo + int(orig_r[1] * z) - 1,
-                                   max(1, int((orig_r[2] - orig_r[0]) * z)) + 2,
-                                   max(1, int((orig_r[3] - orig_r[1]) * z)) + 2)
-                    else:
-                        qr = QRect(int(orig_r.x0 * z) - 1, yo + int(orig_r.y0 * z) - 1,
-                                   max(1, int(orig_r.width * z)) + 2,
-                                   max(1, int(orig_r.height * z)) + 2)
-                    p.fillRect(qr, QColor("#FFFFFF"))
-                continue
-
             if etype == "redact":
                 r = e["rect"]; fill = e["fill"]
                 qr = QRect(int(r.x0*z), yo+int(r.y0*z), max(1,int(r.width*z)), max(1,int(r.height*z)))
                 p.fillRect(qr, QColor(int(fill[0]*255), int(fill[1]*255), int(fill[2]*255), 210))
                 p.setPen(QPen(QColor("#EF4444"), 1)); p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRect(qr)
+                if is_selected:
+                    _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
 
             elif etype == "check":
                 r = e["rect"]
@@ -91,7 +153,7 @@ class CanvasPainter:
                 sh = max(4, int(r.height * z))
                 c = e.get("color", (0, 0, 0))
                 col = QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255))
-                stroke_w = max(1.5, float(e.get("width", min(sw, sh) * 0.12)))
+                stroke_w = max(1.5, float(e.get("width", min(sw, sh) * 0.12)) * z)
                 pen = QPen(col, stroke_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
                 p.setPen(pen)
                 p.setBrush(Qt.BrushStyle.NoBrush)
@@ -105,18 +167,7 @@ class CanvasPainter:
                 p.drawPath(check_path)
 
                 if is_selected:
-                    p.setPen(QPen(QColor(ACCENT), 1.5, Qt.PenStyle.DashLine))
-                    p.drawRect(QRect(sx0 - 2, sy0 - 2, sw + 4, sh + 4))
-                    hs = 8
-                    p.setBrush(QColor("#FFFFFF"))
-                    p.setPen(QPen(QColor(ACCENT), 1.5))
-                    for hpt in [
-                        QPoint(sx0 - 2, sy0 - 2),
-                        QPoint(sx0 + sw + 2, sy0 - 2),
-                        QPoint(sx0 - 2, sy0 + sh + 2),
-                        QPoint(sx0 + sw + 2, sy0 + sh + 2),
-                    ]:
-                        p.drawRect(QRect(hpt.x() - hs//2, hpt.y() - hs//2, hs, hs))
+                    _draw_selection_box(p, QRect(sx0 - 2, sy0 - 2, sw + 4, sh + 4), handle_size=8, draw_handles=True)
 
             elif etype == "cross":
                 r = e["rect"]
@@ -126,7 +177,7 @@ class CanvasPainter:
                 sh = max(4, int(r.height * z))
                 c = e.get("color", (0, 0, 0))
                 col = QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255))
-                stroke_w = max(1.5, float(e.get("width", min(sw, sh) * 0.12)))
+                stroke_w = max(1.5, float(e.get("width", min(sw, sh) * 0.12)) * z)
                 pen = QPen(col, stroke_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
                 p.setPen(pen)
                 p.setBrush(Qt.BrushStyle.NoBrush)
@@ -134,18 +185,85 @@ class CanvasPainter:
                 p.drawLine(QPointF(sx0 + 0.80 * sw, sy0 + 0.20 * sh), QPointF(sx0 + 0.20 * sw, sy0 + 0.80 * sh))
 
                 if is_selected:
-                    p.setPen(QPen(QColor(ACCENT), 1.5, Qt.PenStyle.DashLine))
-                    p.drawRect(QRect(sx0 - 2, sy0 - 2, sw + 4, sh + 4))
-                    hs = 8
-                    p.setBrush(QColor("#FFFFFF"))
-                    p.setPen(QPen(QColor(ACCENT), 1.5))
-                    for hpt in [
-                        QPoint(sx0 - 2, sy0 - 2),
-                        QPoint(sx0 + sw + 2, sy0 - 2),
-                        QPoint(sx0 - 2, sy0 + sh + 2),
-                        QPoint(sx0 + sw + 2, sy0 + sh + 2),
-                    ]:
-                        p.drawRect(QRect(hpt.x() - hs//2, hpt.y() - hs//2, hs, hs))
+                    _draw_selection_box(p, QRect(sx0 - 2, sy0 - 2, sw + 4, sh + 4), handle_size=8, draw_handles=True)
+
+            elif etype == "drawing":
+                new_r = fitz.Rect(e["rect"])
+                orig_raw = e.get("_orig_rect")
+                orig_r = fitz.Rect(orig_raw) if orig_raw else fitz.Rect(new_r)
+
+                # Skip re-drawing untouched existing vector if it's still sitting at orig_rect
+                is_moved_or_resized = not (e.get("_existing") and rects_close(new_r, orig_r, tol=0.25))
+                if is_moved_or_resized:
+                    qpath = QPainterPath()
+                    if e.get("even_odd"):
+                        qpath.setFillRule(Qt.FillRule.OddEvenFill)
+                    else:
+                        qpath.setFillRule(Qt.FillRule.WindingFill)
+
+                    for item in e.get("items", []):
+                        op = item[0]
+                        if op == "l":
+                            p1 = _map_pt(item[1][0], item[1][1], orig_r, new_r, z, yo)
+                            p2 = _map_pt(item[2][0], item[2][1], orig_r, new_r, z, yo)
+                            qpath.moveTo(p1)
+                            qpath.lineTo(p2)
+                        elif op == "re":
+                            rx0, ry0, rx1, ry1 = item[1]
+                            tl = _map_pt(rx0, ry0, orig_r, new_r, z, yo)
+                            br = _map_pt(rx1, ry1, orig_r, new_r, z, yo)
+                            qpath.addRect(tl.x(), tl.y(), max(0.5, br.x() - tl.x()), max(0.5, br.y() - tl.y()))
+                        elif op == "qu":
+                            pts = [_map_pt(pt[0], pt[1], orig_r, new_r, z, yo) for pt in item[1]]
+                            qpath.moveTo(pts[0])
+                            for pt in pts[1:]:
+                                qpath.lineTo(pt)
+                            qpath.closeSubpath()
+                        elif op == "c":
+                            p1 = _map_pt(item[1][0], item[1][1], orig_r, new_r, z, yo)
+                            p2 = _map_pt(item[2][0], item[2][1], orig_r, new_r, z, yo)
+                            p3 = _map_pt(item[3][0], item[3][1], orig_r, new_r, z, yo)
+                            p4 = _map_pt(item[4][0], item[4][1], orig_r, new_r, z, yo)
+                            qpath.moveTo(p1)
+                            qpath.cubicTo(p2, p3, p4)
+
+                    if e.get("closePath"):
+                        qpath.closeSubpath()
+
+                    fill_col = e.get("fill")
+                    if fill_col:
+                        fa = e.get("fill_opacity")
+                        alpha = int(round(max(0.0, min(1.0, float(fa if fa is not None else 1.0))) * 255))
+                        p.setBrush(QColor(int(fill_col[0] * 255), int(fill_col[1] * 255), int(fill_col[2] * 255), alpha))
+                    else:
+                        p.setBrush(Qt.BrushStyle.NoBrush)
+
+                    stroke_col = e.get("color")
+                    if stroke_col:
+                        sa = e.get("stroke_opacity")
+                        alpha = int(round(max(0.0, min(1.0, float(sa if sa is not None else 1.0))) * 255))
+                        sx_s = (new_r.width / orig_r.width) if orig_r.width > 1e-3 else 1.0
+                        sy_s = (new_r.height / orig_r.height) if orig_r.height > 1e-3 else 1.0
+                        w_val = max(0.75, float(e.get("width", 1.0)) * ((sx_s + sy_s) * 0.5) * z)
+                        pen = QPen(
+                            QColor(int(stroke_col[0] * 255), int(stroke_col[1] * 255), int(stroke_col[2] * 255), alpha),
+                            w_val,
+                        )
+                        p.setPen(pen)
+                    else:
+                        p.setPen(Qt.PenStyle.NoPen)
+
+                    p.drawPath(qpath)
+
+                if is_selected:
+                    pad = 4 if (new_r.width < 4 or new_r.height < 4) else 0
+                    qr = QRect(
+                        int(new_r.x0 * z) - pad,
+                        yo + int(new_r.y0 * z) - pad,
+                        max(1, int(new_r.width * z)) + pad * 2,
+                        max(1, int(new_r.height * z)) + pad * 2,
+                    )
+                    _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
 
             elif etype == "highlight":
                 c = e.get("color", (1, 1, 0))
@@ -155,10 +273,17 @@ class CanvasPainter:
                     for r_item in rects:
                         qr = QRect(int(r_item.x0*z), yo+int(r_item.y0*z), max(1,int(r_item.width*z)), max(1,int(r_item.height*z)))
                         p.fillRect(qr, col)
+                    if is_selected:
+                        ur = overlay_pdf_rect(e, zoom=z)
+                        if ur:
+                            uqr = QRect(int(ur.x0*z), yo+int(ur.y0*z), max(1,int(ur.width*z)), max(1,int(ur.height*z)))
+                            _draw_selection_box(p, uqr, handle_size=8, draw_handles=False)
                 elif "rect" in e:
                     r = e["rect"]
                     qr = QRect(int(r.x0*z), yo+int(r.y0*z), max(1,int(r.width*z)), max(1,int(r.height*z)))
                     p.fillRect(qr, col)
+                    if is_selected:
+                        _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
 
             elif etype == "text":
                 pt = e["point"]; c = e["color"]
@@ -175,63 +300,35 @@ class CanvasPainter:
                 p.drawText(int(pt.x*z), yo+int(pt.y*z), e["text"])
 
                 if is_selected:
-                    r = e.get("rect")
-                    if not r:
-                        sz = float(e.get("size", 12))
-                        tw = max(16.0, len(e.get("text", "")) * sz * 0.65)
-                        r = fitz.Rect(pt.x, pt.y - sz * 0.85, pt.x + tw, pt.y + sz * 0.25)
-                        e["rect"] = r
-                    qr = QRect(int(r.x0*z) - 2, yo+int(r.y0*z) - 2, max(1,int(r.width*z)) + 4, max(1,int(r.height*z)) + 4)
-                    p.setPen(QPen(QColor(ACCENT), 1.5, Qt.PenStyle.DashLine))
-                    p.setBrush(Qt.BrushStyle.NoBrush)
-                    p.drawRect(qr)
-
-                    hs = 8
-                    p.setBrush(QColor("#FFFFFF"))
-                    p.setPen(QPen(QColor(ACCENT), 1.5))
-                    for hpt in [
-                        QPoint(qr.left(), qr.top()),
-                        QPoint(qr.right(), qr.top()),
-                        QPoint(qr.left(), qr.bottom()),
-                        QPoint(qr.right(), qr.bottom()),
-                    ]:
-                        p.drawRect(QRect(hpt.x() - hs//2, hpt.y() - hs//2, hs, hs))
+                    r = overlay_pdf_rect(e, zoom=z)
+                    if r:
+                        qr = QRect(int(r.x0*z) - 2, yo+int(r.y0*z) - 2, max(1,int(r.width*z)) + 4, max(1,int(r.height*z)) + 4)
+                        _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
 
             elif etype in ("image", "signature"):
                 r = e["rect"]
                 qr = QRect(int(r.x0*z), yo+int(r.y0*z), max(1,int(r.width*z)), max(1,int(r.height*z)))
-                path = e["path"]
-                try:
-                    mtime = os.path.getmtime(path)
-                    img_px = _load_overlay_pixmap(path, mtime)
-                except OSError:
-                    img_px = QPixmap(path)
-                if not img_px.isNull():
-                    p.drawPixmap(qr, img_px)
+                orig_raw = e.get("_orig_rect") or e.get("_annot_bbox")
+                is_untouched_existing = bool(e.get("_existing") and orig_raw and rects_close(r, orig_raw, tol=0.25))
+
+                if not is_untouched_existing:
+                    path = e["path"]
+                    try:
+                        mtime = os.path.getmtime(path)
+                        img_px = _load_overlay_pixmap(path, mtime)
+                    except OSError:
+                        img_px = QPixmap(path)
+                    if not img_px.isNull():
+                        p.drawPixmap(qr, img_px)
 
                 if is_selected:
-                    border_col = ACCENT
-                    p.setPen(QPen(QColor(border_col), 2, Qt.PenStyle.DashLine))
-                    p.setBrush(Qt.BrushStyle.NoBrush)
-                    p.drawRect(qr)
-
-                    hs = 10
-                    p.setBrush(QColor("#FFFFFF"))
-                    p.setPen(QPen(QColor(border_col), 2))
-                    for hpt in [
-                        QPoint(qr.left(), qr.top()),
-                        QPoint(qr.right(), qr.top()),
-                        QPoint(qr.left(), qr.bottom()),
-                        QPoint(qr.right(), qr.bottom()),
-                    ]:
-                        p.drawRect(QRect(hpt.x() - hs//2, hpt.y() - hs//2, hs, hs))
+                    _draw_selection_box(p, qr, handle_size=10, draw_handles=True)
 
             elif etype == "text_edit":
                 r = e["bbox"]
                 qr = QRect(int(r[0]*z) - 1, yo+int(r[1]*z) - 1,
                            max(1, int((r[2]-r[0])*z)) + 2, max(1, int((r[3]-r[1])*z)) + 2)
 
-                p.fillRect(qr, QColor("#FFFFFF"))
                 new_txt = e.get("new_text", "")
                 if new_txt:
                     c = e.get("color", 0)
@@ -260,20 +357,7 @@ class CanvasPainter:
                     p.drawText(baseline_x, baseline_y, new_txt)
 
                 if is_selected:
-                    p.setPen(QPen(QColor(ACCENT), 1.5, Qt.PenStyle.DashLine))
-                    p.setBrush(Qt.BrushStyle.NoBrush)
-                    p.drawRect(qr)
-
-                    hs = 8
-                    p.setBrush(QColor("#FFFFFF"))
-                    p.setPen(QPen(QColor(ACCENT), 1.5))
-                    for hpt in [
-                        QPoint(qr.left(), qr.top()),
-                        QPoint(qr.right(), qr.top()),
-                        QPoint(qr.left(), qr.bottom()),
-                        QPoint(qr.right(), qr.bottom()),
-                    ]:
-                        p.drawRect(QRect(hpt.x() - hs//2, hpt.y() - hs//2, hs, hs))
+                    _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
 
             elif etype == "note":
                 pt = e["point"]
@@ -284,6 +368,8 @@ class CanvasPainter:
                 p.drawRoundedRect(icon_r, 4, 4)
                 fi = QFont(); fi.setPointSize(10); fi.setBold(True); p.setFont(fi)
                 p.setPen(QColor("#1C1917")); p.drawText(icon_r, Qt.AlignmentFlag.AlignCenter, "N")
+                if is_selected:
+                    _draw_selection_box(p, icon_r.adjusted(-2, -2, 2, 2), handle_size=6, draw_handles=False)
                 if canvas._open_note == note_idx:
                     bx = px + _NOTE_ICON_SIZE + 6
                     by = py - _NOTE_ICON_SIZE - 4
@@ -331,6 +417,12 @@ class CanvasPainter:
                         p_last = (pts[-1][0] * z, yo + pts[-1][1] * z)
                         path.lineTo(p_last[0], p_last[1])
                     p.drawPath(path)
+
+                    if is_selected:
+                        r = overlay_pdf_rect(e, zoom=z)
+                        if r:
+                            qr = QRect(int(r.x0*z), yo+int(r.y0*z), max(1,int(r.width*z)), max(1,int(r.height*z)))
+                            _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
 
         # 3. Interactive signature follow preview
         if canvas._placing_signature and canvas._sig_cursor_pos and canvas._placing_sig_pixmap:
@@ -435,14 +527,5 @@ class CanvasPainter:
                 p.setPen(QPen(QColor(ACCENT), 1.5, Qt.PenStyle.DashLine))
                 p.setBrush(QColor(59, 130, 246, 35))
                 p.drawRect(qr)
+                _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
 
-                hs = 8
-                p.setBrush(QColor("#FFFFFF"))
-                p.setPen(QPen(QColor(ACCENT), 1.5))
-                for hpt in [
-                    QPoint(qr.left(), qr.top()),
-                    QPoint(qr.right(), qr.top()),
-                    QPoint(qr.left(), qr.bottom()),
-                    QPoint(qr.right(), qr.bottom()),
-                ]:
-                    p.drawRect(QRect(hpt.x() - hs//2, hpt.y() - hs//2, hs, hs))

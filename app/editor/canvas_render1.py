@@ -124,7 +124,7 @@ class _EditPageJob(QRunnable):
             pix = None
             for attempt in range(3):
                 try:
-                    pix = page.get_pixmap(matrix=fitz.Matrix(rz, rz), annots=False)
+                    pix = page.get_pixmap(matrix=fitz.Matrix(rz, rz), annots=True)
                     break
                 except (MemoryError, Exception) as exc:
                     if attempt < 2 and rz > 0.4:

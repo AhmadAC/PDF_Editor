@@ -33,6 +33,7 @@ except ImportError:
 
 if TYPE_CHECKING:
     from app.editor.canvas import PdfEditCanvas
+    from app.editor.tab_history import TabHistoryManager
     _Base = QWidget
 else:
     _Base = object
@@ -50,6 +51,7 @@ class TabActionsMixin(_Base):
         _btn_undo: Any
         _btn_redo: Any
         _canvas: PdfEditCanvas
+        _history: TabHistoryManager
         _draw_color_cb: Any
         _draw_width_slider: Any
         _draw_width_lbl: Any
@@ -148,7 +150,10 @@ class TabActionsMixin(_Base):
             self._btn_redo.setToolTip(t("edit.redo_tip"))
         if hasattr(self, "_canvas") and self._canvas._inline_edit.isVisible():
             self._canvas._commit_inline()
+
         self._canvas.set_select_mode(idx in (_MODE_SIGNATURE, _MODE_SELECT))
+        self._canvas.set_redact_mode(idx == _MODE_REDACT)
+        self._canvas.set_note_mode(idx == _MODE_NOTE)
         is_draw = (idx == _MODE_DRAW)
         self._canvas.set_draw_mode(
             is_draw,
@@ -311,6 +316,7 @@ class TabActionsMixin(_Base):
             "flags": 0,
             "origin": [rect.x0, rect.y1],
             "_existing": True,
+            "_dirty": True,
             "_orig_rect": [rect.x0, rect.y0, rect.x1, rect.y1],
         }
         self._add(edit)
@@ -323,21 +329,15 @@ class TabActionsMixin(_Base):
         self._status("Selected element deleted (Ctrl+Z to undo)")
 
     def _edit_selection(self):
+        if hasattr(self, "_canvas") and self._canvas._selected_overlay_idx >= 0:
+            ov = self._canvas._overlays[self._canvas._selected_overlay_idx]
+            if ov.get("type") in ("text", "text_edit"):
+                self._canvas._event_handler._begin_inline_edit_for_overlay(ov)
+                return
+
         page_idx = getattr(self, "_last_selected_page", -1)
         rect = getattr(self, "_last_selected_rect", None)
         if page_idx < 0 or rect is None:
-            if hasattr(self, "_canvas") and self._canvas._selected_overlay_idx >= 0:
-                ov = self._canvas._overlays[self._canvas._selected_overlay_idx]
-                if ov.get("type") in ("text", "text_edit"):
-                    span = {
-                        "text": ov.get("new_text", ov.get("text", "")),
-                        "bbox": ov.get("bbox", [ov.get("rect").x0, ov.get("rect").y0, ov.get("rect").x1, ov.get("rect").y1] if "rect" in ov else [0, 0, 0, 0]),
-                        "size": float(ov.get("font_size", ov.get("size", 12))),
-                        "font": ov.get("font", "Helvetica"),
-                        "color": ov.get("color", 0),
-                        "flags": int(ov.get("flags", 0) or 0),
-                    }
-                    self._canvas.begin_inline_text_edit(span, ov.get("page", 0))
             return
         center = fitz.Point((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0)
         hit = self._canvas.get_span_at(page_idx, center, max_dist=12.0)
@@ -357,18 +357,28 @@ class TabActionsMixin(_Base):
             self._canvas.begin_inline_text_edit(span, page_idx)
 
     def _apply_text_edit_from_selection(self):
+        new_txt = self._sel_result.toPlainText() if hasattr(self, "_sel_result") else ""
+        if hasattr(self, "_canvas") and self._canvas._selected_overlay_idx >= 0:
+            ov = self._canvas._overlays[self._canvas._selected_overlay_idx]
+            if ov.get("type") in ("text", "text_edit"):
+                from app.editor.canvas_overlay1 import snapshot_overlay
+                before_snap = snapshot_overlay(ov)
+                was_untouched = bool(ov.get("_existing") and not ov.get("_dirty"))
+                ov["new_text"] = new_txt
+                ov["text"] = new_txt
+                if was_untouched:
+                    ov["_dirty"] = True
+                    self._on_overlay_committed(ov)
+                else:
+                    self._on_overlay_transformed(ov, before_snap)
+                self._canvas.overlay_changed.emit()
+                self._canvas.update()
+                self._status("Updated text applied (Ctrl+Z to undo)")
+                return
+
         page_idx = getattr(self, "_last_selected_page", -1)
         rect = getattr(self, "_last_selected_rect", None)
-        new_txt = self._sel_result.toPlainText() if hasattr(self, "_sel_result") else ""
         if page_idx < 0 or rect is None:
-            if hasattr(self, "_canvas") and self._canvas._selected_overlay_idx >= 0:
-                ov = self._canvas._overlays[self._canvas._selected_overlay_idx]
-                if ov.get("type") in ("text", "text_edit"):
-                    ov["new_text"] = new_txt
-                    ov["text"] = new_txt
-                    self._canvas.overlay_changed.emit()
-                    self._canvas.update()
-                    self._status("Updated text applied (Ctrl+Z to undo)")
             return
         old_txt = getattr(self, "_last_selected_original_text", "")
         edit = {
@@ -384,6 +394,7 @@ class TabActionsMixin(_Base):
             "flags": 0,
             "origin": [rect.x0, rect.y1],
             "_existing": True,
+            "_dirty": True,
             "_orig_rect": [rect.x0, rect.y0, rect.x1, rect.y1],
         }
         self._add(edit)
@@ -608,6 +619,22 @@ class TabActionsMixin(_Base):
                             return
         mode = self._mode_idx
         if mode == _MODE_SELECT:
+            if 0 <= self._canvas._selected_overlay_idx < len(self._canvas._overlays):
+                ov = self._canvas._overlays[self._canvas._selected_overlay_idx]
+                txt = (ov.get("new_text") or ov.get("text") or "").strip()
+                bb = ov.get("bbox")
+                rect = fitz.Rect(bb) if bb else ov.get("rect")
+                self._sel_result.setPlainText(txt)
+                self._last_selected_page = page_idx
+                self._last_selected_rect = rect
+                self._last_selected_original_text = txt
+                if txt:
+                    clipboard = QApplication.clipboard()
+                    if clipboard:
+                        clipboard.setText(txt)
+                self._status(f"Selected: {txt[:30]}" if txt else "Element selected (Drag to move or Del to delete)")
+                return
+
             hit = self._canvas.get_span_at(page_idx, pdf_pt, max_dist=8.0)
             if hit:
                 bb = fitz.Rect(hit["bbox"])
@@ -679,6 +706,15 @@ class TabActionsMixin(_Base):
 
     def _on_overlay_deleted(self, idx: int, edit: dict):
         self._history.handle_overlay_deleted(idx, edit)
+
+    def _on_overlay_committed(self, edit: dict):
+        self._history.handle_overlay_committed(edit)
+
+    def _on_overlay_transformed(self, edit: dict, before_snap: dict):
+        self._history.handle_overlay_transformed(edit, before_snap)
+
+    def _on_overlay_duplicated(self, new_edit: dict):
+        self._history.handle_overlay_duplicated(new_edit)
 
     def _on_note_deleted(self, overlay: dict):
         self._history.handle_note_deleted(overlay)

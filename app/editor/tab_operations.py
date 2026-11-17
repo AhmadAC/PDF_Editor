@@ -198,6 +198,11 @@ def apply_form_fields_and_save(tab, out: str) -> None:
 def apply_visual_edits_and_save(tab, out: str) -> None:
     """Apply pending visual and text edits to PDF document and write to disk."""
     try:
+        if hasattr(tab, "_canvas") and hasattr(tab._canvas, "_overlay_mgr"):
+            tab._canvas._overlay_mgr.discard_untouched_existing()
+
+        edits_to_apply = list(tab._user_pending)
+
         peek = fitz.open(tab._doc_path)
         was_encrypted = bool(peek.needs_pass)
         if was_encrypted and tab._pdf_password:
@@ -220,7 +225,7 @@ def apply_visual_edits_and_save(tab, out: str) -> None:
             d = fitz.open(tab._doc_path)
             if d.needs_pass and tab._pdf_password:
                 d.authenticate(tab._pdf_password)
-            res = apply_pending_edits(d, tab._pending)
+            res = apply_pending_edits(d, edits_to_apply)
             reenc = bool(encrypt_choice == "protect" and tab._pdf_password)
             if reenc:
                 perms = get_fitz_permissions(d)
@@ -238,7 +243,7 @@ def apply_visual_edits_and_save(tab, out: str) -> None:
         _non_latin = any(
             e.get("type") in ("text", "note", "text_edit")
             and any(ord(c) > 0xFF for c in (e.get("text") or e.get("new_text") or ""))
-            for e in tab._pending
+            for e in edits_to_apply
         )
         if _non_latin:
             tab._status(t("tool.warn.font_latin_only"))
@@ -269,8 +274,7 @@ def apply_visual_edits_and_save(tab, out: str) -> None:
         if win and hasattr(win, "_remember_save_dir"):
             win._remember_save_dir(os.path.dirname(out))
 
-        tab._pending.clear()
-        tab._pending_list.clear()
+        tab._history.clear()
 
         if win and hasattr(win, "_viewers"):
             for v in win._viewers:

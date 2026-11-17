@@ -1,6 +1,6 @@
 # app/editor/canvas_events1.py
 
-"""Canvas interaction handler: mouse, drag handles, keyboard, stroke smoothing, vector stamps, and SVG context menus."""
+"""Canvas interaction handler: mouse, drag handles, keyboard, stroke smoothing, vector stamps, Foxit-style object move/delete, and SVG context menus."""
 
 from __future__ import annotations
 
@@ -28,7 +28,11 @@ from app.utils import (
     SVG_ZOOM_OUT,
     svg_icon,
 )
-from app.editor.canvas_overlay1 import CanvasOverlayManager
+from app.editor.canvas_overlay1 import (
+    CanvasOverlayManager,
+    overlay_pdf_rect,
+    snapshot_overlay,
+)
 from app.viewer.canvas_action_menus import (
     PRESET_COLORS,
     make_circular_color_icon,
@@ -67,20 +71,151 @@ def smooth_stroke_points(pts: list[tuple[float, float]], iterations: int = 2) ->
     return smoothed
 
 
+def _overlay_geometry_changed(ov: dict, before_snap: dict | None) -> bool:
+    if not before_snap:
+        return False
+    for key in ("rect", "bbox", "rects", "points", "point"):
+        if ov.get(key) != before_snap.get(key):
+            return True
+    return False
+
+
+def _translate_overlay(ov: dict, before_snap: dict, dx: float, dy: float) -> None:
+    if "rect" in before_snap:
+        orig_r = fitz.Rect(before_snap["rect"])
+        ov["rect"] = fitz.Rect(orig_r.x0 + dx, orig_r.y0 + dy, orig_r.x1 + dx, orig_r.y1 + dy)
+    if "bbox" in before_snap:
+        orig_b = before_snap["bbox"]
+        ov["bbox"] = [orig_b[0] + dx, orig_b[1] + dy, orig_b[2] + dx, orig_b[3] + dy]
+    if "origin" in before_snap:
+        orig_o = before_snap["origin"]
+        ov["origin"] = [orig_o[0] + dx, orig_o[1] + dy]
+    if "rects" in before_snap:
+        ov["rects"] = [
+            fitz.Rect(r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy)
+            for r in before_snap["rects"]
+        ]
+    if "points" in before_snap:
+        ov["points"] = [
+            (float(px) + dx, float(py) + dy)
+            for px, py in before_snap["points"]
+        ]
+    if "point" in before_snap:
+        orig_pt = before_snap["point"]
+        ov["point"] = fitz.Point(orig_pt.x + dx, orig_pt.y + dy)
+
+
+def _resize_overlay_from_rect(ov: dict, before_snap: dict, orig_r: fitz.Rect, new_r: fitz.Rect) -> None:
+    if "rect" in ov or "rect" in before_snap:
+        ov["rect"] = fitz.Rect(new_r)
+    if "bbox" in ov or "bbox" in before_snap:
+        ov["bbox"] = [new_r.x0, new_r.y0, new_r.x1, new_r.y1]
+
+    orig_h = max(4.0, orig_r.height)
+    scale_h = new_r.height / orig_h
+    scale_w = new_r.width / max(4.0, orig_r.width)
+
+    if ov.get("type") in ("text", "text_edit"):
+        base_sz = float(before_snap.get("font_size", before_snap.get("size", 12.0)))
+        new_sz = max(4.0, base_sz * scale_h)
+        if "font_size" in ov or "font_size" in before_snap:
+            ov["font_size"] = new_sz
+        if "size" in ov or "size" in before_snap:
+            ov["size"] = new_sz
+        if "origin" in before_snap:
+            ov["origin"] = [new_r.x0, new_r.y0 + new_sz * 0.85]
+        if "point" in before_snap:
+            ov["point"] = fitz.Point(new_r.x0, new_r.y0 + new_sz * 0.85)
+    elif ov.get("type") == "draw" and "points" in before_snap:
+        sx = (new_r.width / orig_r.width) if orig_r.width > 1e-3 else 1.0
+        sy = (new_r.height / orig_r.height) if orig_r.height > 1e-3 else 1.0
+        ov["points"] = [
+            (
+                new_r.x0 + (px - orig_r.x0) * sx,
+                new_r.y0 + (py - orig_r.y0) * sy,
+            )
+            for px, py in before_snap["points"]
+        ]
+    elif ov.get("type") in ("check", "cross"):
+        base_w = float(before_snap.get("width", 2.2))
+        ov["width"] = max(1.5, base_w * ((scale_w + scale_h) * 0.5))
+
+
 class CanvasEventHandler:
     def __init__(self, canvas):
         self.canvas = canvas
         self._menu_style: _ScrollableMenuStyle | None = None
+
+    def _emit_text_started_for_overlay(self, ov: dict) -> None:
+        c = self.canvas
+        if ov.get("type") not in ("text", "text_edit"):
+            return
+        fn = ov.get("font", "Helvetica")
+        sz = float(ov.get("font_size", ov.get("size", 12)))
+        color_val = ov.get("color", 0)
+        flags = int(ov.get("flags", 0) or 0)
+        if isinstance(color_val, (list, tuple)) and len(color_val) >= 3:
+            col = tuple(float(x) for x in color_val[:3])
+        elif isinstance(color_val, int):
+            col = (
+                ((color_val >> 16) & 0xFF) / 255.0,
+                ((color_val >> 8) & 0xFF) / 255.0,
+                (color_val & 0xFF) / 255.0,
+            )
+        else:
+            col = (0.0, 0.0, 0.0)
+        c.text_edit_started.emit({
+            "font": fn, "size": sz, "color": col,
+            "bold": bool(flags & 16), "italic": bool(flags & 2),
+            "text": ov.get("new_text", ov.get("text", "")),
+        })
+
+    def _begin_inline_edit_for_overlay(self, ov: dict) -> None:
+        c = self.canvas
+        r = overlay_pdf_rect(ov, zoom=c._zoom or 1.0)
+        bb = [r.x0, r.y0, r.x1, r.y1] if r else [0, 0, 100, 20]
+        span = {
+            "text": ov.get("new_text", ov.get("text", "")),
+            "bbox": list(ov.get("bbox", bb)),
+            "size": float(ov.get("font_size", ov.get("size", 12))),
+            "font_size": float(ov.get("font_size", ov.get("size", 12))),
+            "font": ov.get("font", "Helvetica"),
+            "color": ov.get("color", 0),
+            "flags": int(ov.get("flags", 0) or 0),
+            "origin": list(ov.get("origin", [bb[0], ov["point"].y if "point" in ov else bb[3]])),
+        }
+        c._inline_mgr.begin_edit(span, ov.get("page", 0), target_overlay=ov)
+
+    def _commit_overlay_mutation(self, ov: dict, before_snap: dict | None) -> None:
+        c = self.canvas
+        if ov.get("_existing") and not ov.get("_dirty"):
+            ov["_dirty"] = True
+            if hasattr(c, "overlay_committed"):
+                c.overlay_committed.emit(ov)
+        elif before_snap is not None and hasattr(c, "overlay_transformed"):
+            c.overlay_transformed.emit(ov, before_snap)
+        c.overlay_changed.emit()
 
     def handle_mouse_double_click(self, e):
         c = self.canvas
         if e.button() != Qt.MouseButton.LeftButton:
             return
         pos = e.position().toPoint()
+
+        for idx in reversed(range(len(c._overlays))):
+            ov = c._overlays[idx]
+            if not ov.get("_deleted") and ov.get("type") in ("text", "text_edit"):
+                if c._overlay_mgr.is_pos_inside_overlay(idx, pos):
+                    self._begin_inline_edit_for_overlay(ov)
+                    e.accept()
+                    return
+
         page_idx, lx, ly = c._page_and_local(pos.x(), pos.y())
         pdf_pt = c._to_pdf(page_idx, lx, ly)
         span = c.get_span_at(page_idx, pdf_pt, max_dist=8.0)
         if span:
+            c._overlay_mgr.discard_untouched_existing()
+            c._selected_overlay_idx = -1
             c.begin_inline_text_edit(span, page_idx)
             e.accept()
             return
@@ -106,19 +241,14 @@ class CanvasEventHandler:
                 sig_h = sig_w * aspect
                 r = fitz.Rect(max(0.0, px - sig_w / 2), max(0.0, py - sig_h / 2),
                               px + sig_w / 2, py + sig_h / 2)
-                edit = {
-                    "type": "signature",
-                    "page": page_idx,
-                    "rect": r,
-                    "path": c._placing_sig_path,
-                }
-                c._overlays.append(edit)
-                c._selected_overlay_idx = len(c._overlays) - 1
+                sig_path = c._placing_sig_path
                 c._placing_signature = False
                 c._placing_sig_path = ""
                 c._sig_cursor_pos = None
                 c.setCursor(Qt.CursorShape.ArrowCursor)
-                c.signature_added.emit(page_idx, r, edit["path"])
+                c.signature_added.emit(page_idx, r, sig_path)
+                if c._overlays:
+                    c._selected_overlay_idx = len(c._overlays) - 1
                 c.update()
                 e.accept()
                 return
@@ -139,90 +269,95 @@ class CanvasEventHandler:
                               max(0.0, py - st_size / 2.0),
                               px + st_size / 2.0,
                               py + st_size / 2.0)
-                color = getattr(c, "_stamp_color", (0, 0, 0))
-                edit = {
-                    "type": st_type,
-                    "page": page_idx,
-                    "rect": r,
-                    "color": color,
-                    "width": max(1.5, st_size * 0.12),
-                }
-                c._overlays.append(edit)
-                c._selected_overlay_idx = len(c._overlays) - 1
                 c._placing_stamp = False
                 c._placing_stamp_type = ""
                 c._stamp_cursor_pos = None
                 c.setCursor(Qt.CursorShape.ArrowCursor)
                 c.stamp_added.emit(page_idx, r, st_type)
+                if c._overlays:
+                    c._selected_overlay_idx = len(c._overlays) - 1
                 c.update()
                 e.accept()
                 return
 
-        if c._selected_overlay_idx >= 0 and e.button() == Qt.MouseButton.LeftButton:
+        is_paint_tool = bool(
+            c._draw_mode or getattr(c, "_highlight_mode", False) or getattr(c, "_redact_mode", False)
+        )
+
+        # 1. Active selected overlay handle resize / body move
+        if not is_paint_tool and c._selected_overlay_idx >= 0 and e.button() == Qt.MouseButton.LeftButton:
             handle = c._overlay_mgr.get_overlay_handle_at(c._selected_overlay_idx, pos)
             if handle != CanvasOverlayManager.HANDLE_NONE:
+                cur_ov = c._overlays[c._selected_overlay_idx]
                 c._drag_handle = handle
                 c._drag_start_pos = pos
-                cur_ov = c._overlays[c._selected_overlay_idx]
-                r_val = cur_ov.get("rect") if "rect" in cur_ov else fitz.Rect(cur_ov.get("bbox", (0, 0, 0, 0)))
-                c._drag_start_rect = fitz.Rect(r_val)
+                c._drag_before_snapshot = snapshot_overlay(cur_ov)
+                c._drag_start_rect = overlay_pdf_rect(cur_ov, zoom=c._zoom or 1.0)
                 e.accept()
                 return
             if c._overlay_mgr.is_pos_inside_overlay(c._selected_overlay_idx, pos):
+                cur_ov = c._overlays[c._selected_overlay_idx]
                 c._moving_overlay = True
                 c._drag_start_pos = pos
-                cur_ov = c._overlays[c._selected_overlay_idx]
-                r_val = cur_ov.get("rect") if "rect" in cur_ov else fitz.Rect(cur_ov.get("bbox", (0, 0, 0, 0)))
-                c._drag_start_rect = fitz.Rect(r_val)
+                c._drag_before_snapshot = snapshot_overlay(cur_ov)
+                c._drag_start_rect = overlay_pdf_rect(cur_ov, zoom=c._zoom or 1.0)
                 e.accept()
                 return
             c._selected_overlay_idx = -1
+            c._overlay_mgr.discard_untouched_existing()
             c.update()
 
-        if e.button() == Qt.MouseButton.LeftButton:
+        if not is_paint_tool and e.button() == Qt.MouseButton.LeftButton:
+            # 2. Any overlay already in _overlays (top-most first)
             for idx in reversed(range(len(c._overlays))):
+                ov = c._overlays[idx]
+                if getattr(c, "_note_mode", False) and ov.get("type") != "note":
+                    continue
                 if c._overlay_mgr.is_pos_inside_overlay(idx, pos):
                     c._selected_overlay_idx = idx
                     c._moving_overlay = True
                     c._drag_start_pos = pos
-                    cur_ov = c._overlays[idx]
-                    r_val = cur_ov.get("rect") if "rect" in cur_ov else fitz.Rect(cur_ov.get("bbox", (0, 0, 0, 0)))
-                    c._drag_start_rect = fitz.Rect(r_val)
-                    if cur_ov.get("type") in ("text", "text_edit"):
-                        fn = cur_ov.get("font", "Helvetica")
-                        sz = float(cur_ov.get("font_size", cur_ov.get("size", 12)))
-                        color_val = cur_ov.get("color", 0)
-                        flags = int(cur_ov.get("flags", 0) or 0)
-                        if isinstance(color_val, (list, tuple)) and len(color_val) >= 3:
-                            col = tuple(float(x) for x in color_val[:3])
-                        elif isinstance(color_val, int):
-                            col = (((color_val >> 16) & 0xFF) / 255.0, ((color_val >> 8) & 0xFF) / 255.0, (color_val & 0xFF) / 255.0)
-                        else:
-                            col = (0.0, 0.0, 0.0)
-                        c.text_edit_started.emit({
-                            "font": fn, "size": sz, "color": col,
-                            "bold": bool(flags & 16), "italic": bool(flags & 2),
-                            "text": cur_ov.get("new_text", cur_ov.get("text", "")),
-                        })
+                    c._drag_before_snapshot = snapshot_overlay(ov)
+                    c._drag_start_rect = overlay_pdf_rect(ov, zoom=c._zoom or 1.0)
+                    self._emit_text_started_for_overlay(ov)
                     c._active_sel_rect = None
                     c.update()
                     e.accept()
                     return
 
-            page_idx, lx, ly = c._page_and_local(pos.x(), pos.y())
-            pdf_pt = c._to_pdf(page_idx, lx, ly)
-            existing_media = c._overlay_mgr.detect_existing_media_at(page_idx, pdf_pt)
-            if existing_media:
-                c._selected_overlay_idx = c._overlays.index(existing_media)
-                c._moving_overlay = True
-                c._drag_start_pos = pos
-                c._drag_start_rect = fitz.Rect(existing_media["rect"])
-                c._active_sel_rect = None
-                c.update()
-                e.accept()
-                return
+            # 3. Existing document elements (images, annotations, vector drawings)
+            if not getattr(c, "_note_mode", False):
+                c._overlay_mgr.discard_untouched_existing()
+                page_idx, lx, ly = c._page_and_local(pos.x(), pos.y())
+                pdf_pt = c._to_pdf(page_idx, lx, ly)
 
+                existing_media = c._overlay_mgr.detect_existing_media_at(page_idx, pdf_pt)
+                if existing_media:
+                    c._selected_overlay_idx = c._overlays.index(existing_media)
+                    c._moving_overlay = True
+                    c._drag_start_pos = pos
+                    c._drag_before_snapshot = snapshot_overlay(existing_media)
+                    c._drag_start_rect = fitz.Rect(existing_media["rect"])
+                    c._active_sel_rect = None
+                    c.update()
+                    e.accept()
+                    return
+
+                existing_drawing = c._overlay_mgr.detect_existing_drawing_at(page_idx, pdf_pt)
+                if existing_drawing:
+                    c._selected_overlay_idx = c._overlays.index(existing_drawing)
+                    c._moving_overlay = True
+                    c._drag_start_pos = pos
+                    c._drag_before_snapshot = snapshot_overlay(existing_drawing)
+                    c._drag_start_rect = fitz.Rect(existing_drawing["rect"])
+                    c._active_sel_rect = None
+                    c.update()
+                    e.accept()
+                    return
+
+            # 4. Active Select Mode marquee handles / interior
             if getattr(c, "_select_mode", False):
+                page_idx, lx, ly = c._page_and_local(pos.x(), pos.y())
                 if c._active_sel_rect is not None and c._active_sel_page == page_idx:
                     h_id = self._get_active_sel_handle_at(pos)
                     if h_id != CanvasOverlayManager.HANDLE_NONE:
@@ -237,29 +372,6 @@ class CanvasEventHandler:
                         c._active_sel_orig_rect = fitz.Rect(c._active_sel_rect)
                         e.accept()
                         return
-
-                existing_text = c._overlay_mgr.detect_existing_text_at(page_idx, pdf_pt)
-                if existing_text:
-                    c._selected_overlay_idx = c._overlays.index(existing_text)
-                    c._moving_overlay = True
-                    c._drag_start_pos = pos
-                    cur_ov = existing_text
-                    r_val = cur_ov.get("rect") if "rect" in cur_ov else fitz.Rect(cur_ov.get("bbox", (0, 0, 0, 0)))
-                    c._drag_start_rect = fitz.Rect(r_val)
-                    c._active_sel_rect = fitz.Rect(r_val)
-                    c._active_sel_page = page_idx
-                    fn = cur_ov.get("font", "Helvetica")
-                    sz = float(cur_ov.get("font_size", cur_ov.get("size", 12)))
-                    c.text_edit_started.emit({
-                        "font": fn, "size": sz, "color": (0, 0, 0),
-                        "bold": False, "italic": False,
-                        "text": cur_ov.get("new_text", cur_ov.get("text", "")),
-                    })
-                    c.rect_selected.emit(page_idx, c._active_sel_rect)
-                    c.update()
-                    e.accept()
-                    return
-
                 c._active_sel_rect = None
 
         if e.button() != Qt.MouseButton.LeftButton:
@@ -375,17 +487,19 @@ class CanvasEventHandler:
                 c.setCursor(Qt.CursorShape.SizeAllCursor)
                 return
 
-        if c._selected_overlay_idx >= 0:
+        if c._selected_overlay_idx >= 0 and 0 <= c._selected_overlay_idx < len(c._overlays):
             z = c._zoom
             orig = c._drag_start_rect
             start = c._drag_start_pos
+            ov = c._overlays[c._selected_overlay_idx]
+            snap = c._drag_before_snapshot or {}
 
             if c._drag_handle != CanvasOverlayManager.HANDLE_NONE and orig:
                 dx = (pos.x() - start.x()) / z
                 dy = (pos.y() - start.y()) / z
                 handle = c._drag_handle
                 r = fitz.Rect(orig)
-                min_s = 10.0
+                min_s = 8.0
 
                 if handle == CanvasOverlayManager.HANDLE_BR:
                     r.x1 = max(r.x0 + min_s, orig.x1 + dx)
@@ -400,33 +514,16 @@ class CanvasEventHandler:
                     r.x0 = min(r.x1 - min_s, orig.x0 + dx)
                     r.y0 = min(r.y1 - min_s, orig.y0 + dy)
 
-                ov = c._overlays[c._selected_overlay_idx]
-                if "rect" in ov:
-                    ov["rect"] = r
-                elif "bbox" in ov:
-                    ov["bbox"] = [r.x0, r.y0, r.x1, r.y1]
-                if "point" in ov:
-                    ov["point"] = fitz.Point(r.x0, r.y0 + ov.get("size", 12) * 0.82)
+                _resize_overlay_from_rect(ov, snap, orig, r)
                 c.overlay_changed.emit()
                 c.update()
                 e.accept()
                 return
 
-            if c._moving_overlay and orig:
+            if c._moving_overlay and snap:
                 dx = (pos.x() - start.x()) / z
                 dy = (pos.y() - start.y()) / z
-                w = orig.width
-                h = orig.height
-                ov = c._overlays[c._selected_overlay_idx]
-                new_r = fitz.Rect(orig.x0 + dx, orig.y0 + dy, orig.x0 + dx + w, orig.y0 + dy + h)
-                if "rect" in ov:
-                    ov["rect"] = new_r
-                elif "bbox" in ov:
-                    ov["bbox"] = [new_r.x0, new_r.y0, new_r.x1, new_r.y1]
-                    if "origin" in ov:
-                        ov["origin"] = [new_r.x0, new_r.y1]
-                if "point" in ov:
-                    ov["point"] = fitz.Point(new_r.x0, new_r.y0 + ov.get("size", 12) * 0.82)
+                _translate_overlay(ov, snap, dx, dy)
                 c.overlay_changed.emit()
                 c.update()
                 e.accept()
@@ -442,7 +539,7 @@ class CanvasEventHandler:
             if c._overlay_mgr.is_pos_inside_overlay(c._selected_overlay_idx, pos):
                 c.setCursor(Qt.CursorShape.SizeAllCursor)
                 return
-            c.setCursor(Qt.CursorShape.ArrowCursor)
+            c.setCursor(Qt.CursorShape.IBeamCursor if c._text_mode else Qt.CursorShape.ArrowCursor)
 
         if c._draw_mode and c._current_stroke is not None and (e.buttons() & Qt.MouseButton.LeftButton):
             if c._stroke_page < 0 or c._stroke_page >= len(c._page_offsets):
@@ -472,10 +569,19 @@ class CanvasEventHandler:
                 e.accept()
                 return
 
-        if c._selected_overlay_idx >= 0:
+        if c._selected_overlay_idx >= 0 and 0 <= c._selected_overlay_idx < len(c._overlays):
             if c._drag_handle != CanvasOverlayManager.HANDLE_NONE or c._moving_overlay:
+                ov = c._overlays[c._selected_overlay_idx]
+                before_snap = c._drag_before_snapshot
+                moved = _overlay_geometry_changed(ov, before_snap)
                 c._drag_handle = CanvasOverlayManager.HANDLE_NONE
                 c._moving_overlay = False
+                c._drag_before_snapshot = None
+                if moved:
+                    self._commit_overlay_mutation(ov, before_snap)
+                elif ov.get("type") == "note":
+                    idx = c._selected_overlay_idx
+                    c._open_note = None if c._open_note == idx else idx
                 c.update()
                 e.accept()
                 return
@@ -516,6 +622,7 @@ class CanvasEventHandler:
                 hit, _ = c._overlay_mgr.annot_note_at(pos)
             if hit >= 0:
                 c._open_note = None if c._open_note == hit else hit
+                c._selected_overlay_idx = hit
                 c.update()
                 c._drag_start = None; c._drag_rect = None
                 return
@@ -523,8 +630,21 @@ class CanvasEventHandler:
                 c._open_note = None
                 c.update()
             page_idx, lx, ly = c._page_and_local(pos.x(), pos.y())
+            pdf_pt = c._to_pdf(page_idx, lx, ly)
             c._page_idx = page_idx
-            c.point_clicked.emit(page_idx, c._to_pdf(page_idx, lx, ly))
+
+            if getattr(c, "_select_mode", False):
+                existing_text = c._overlay_mgr.detect_existing_text_at(page_idx, pdf_pt)
+                if existing_text:
+                    c._selected_overlay_idx = c._overlays.index(existing_text)
+                    c._active_sel_rect = None
+                    self._emit_text_started_for_overlay(existing_text)
+                    c.point_clicked.emit(page_idx, pdf_pt)
+                    c.update()
+                    c._drag_start = None; c._drag_rect = None
+                    return
+
+            c.point_clicked.emit(page_idx, pdf_pt)
 
         c._drag_start = None
         c._drag_rect = None
@@ -556,6 +676,7 @@ class CanvasEventHandler:
                 return
             if c._selected_overlay_idx >= 0:
                 c._selected_overlay_idx = -1
+                c._overlay_mgr.discard_untouched_existing()
                 c.update()
                 e.accept()
                 return
@@ -573,22 +694,12 @@ class CanvasEventHandler:
             elif key == Qt.Key.Key_Up: dy = -step
             elif key == Qt.Key.Key_Down: dy = step
 
-            if c._selected_overlay_idx >= 0:
+            if c._selected_overlay_idx >= 0 and 0 <= c._selected_overlay_idx < len(c._overlays):
                 ov = c._overlays[c._selected_overlay_idx]
-                if "rect" in ov:
-                    r = ov["rect"]
-                    ov["rect"] = fitz.Rect(r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy)
-                    if "point" in ov:
-                        ov["point"] = fitz.Point(ov["point"].x + dx, ov["point"].y + dy)
-                elif "bbox" in ov:
-                    b = ov["bbox"]
-                    ov["bbox"] = [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy]
-                    if "origin" in ov:
-                        ov["origin"] = [b[0] + dx, b[3] + dy]
-                    if "point" in ov:
-                        ov["point"] = fitz.Point(ov["point"].x + dx, ov["point"].y + dy)
-                c._drag_start_rect = fitz.Rect(ov["rect"]) if "rect" in ov else fitz.Rect(ov["bbox"])
-                c.overlay_changed.emit()
+                before_snap = snapshot_overlay(ov)
+                _translate_overlay(ov, before_snap, dx, dy)
+                c._drag_start_rect = overlay_pdf_rect(ov, zoom=c._zoom or 1.0)
+                self._commit_overlay_mutation(ov, before_snap)
             elif c._active_sel_rect is not None:
                 r = c._active_sel_rect
                 c._active_sel_rect = fitz.Rect(r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy)
@@ -620,21 +731,49 @@ class CanvasEventHandler:
             c.cancel_stamp_placement()
             return
 
+        if not (0 <= c._selected_overlay_idx < len(c._overlays) and c._overlay_mgr.is_pos_inside_overlay(c._selected_overlay_idx, pos)):
+            hit_idx = -1
+            for idx in reversed(range(len(c._overlays))):
+                if c._overlay_mgr.is_pos_inside_overlay(idx, pos):
+                    hit_idx = idx
+                    break
+            if hit_idx >= 0:
+                c._selected_overlay_idx = hit_idx
+                c.update()
+            else:
+                c._overlay_mgr.discard_untouched_existing()
+                page_idx, lx, ly = c._page_and_local(pos.x(), pos.y())
+                pdf_pt = c._to_pdf(page_idx, lx, ly)
+                el = (
+                    c._overlay_mgr.detect_existing_media_at(page_idx, pdf_pt)
+                    or c._overlay_mgr.detect_existing_drawing_at(page_idx, pdf_pt)
+                    or c._overlay_mgr.detect_existing_text_at(page_idx, pdf_pt)
+                )
+                if el and el in c._overlays:
+                    c._selected_overlay_idx = c._overlays.index(el)
+                    c.update()
+
         menu = QMenu(c)
         self._menu_style = _ScrollableMenuStyle(menu.style())
         menu.setStyle(self._menu_style)
         menu.setStyleSheet("QMenu { menu-scrollable: 1; }")
 
-        if c._selected_overlay_idx >= 0 and c._overlay_mgr.is_pos_inside_overlay(c._selected_overlay_idx, pos):
-            act_inc = menu.addAction(svg_icon(SVG_ZOOM_IN, color=ACCENT, size=15), "Increase Size (Ctrl+)")
-            act_inc.triggered.connect(lambda _=False: c.scale_selected_overlay(1.10))
-            act_dec = menu.addAction(svg_icon(SVG_ZOOM_OUT, color=ACCENT, size=15), "Decrease Size (Ctrl-)")
-            act_dec.triggered.connect(lambda _=False: c.scale_selected_overlay(0.90))
+        if 0 <= c._selected_overlay_idx < len(c._overlays) and c._overlay_mgr.is_pos_inside_overlay(c._selected_overlay_idx, pos):
+            ov = c._overlays[c._selected_overlay_idx]
+            if ov.get("type") in ("text", "text_edit"):
+                act_edit_ov = menu.addAction(svg_icon(SVG_EDIT, color=ACCENT, size=15), "Edit Text")
+                act_edit_ov.triggered.connect(lambda _=False, o=ov: self._begin_inline_edit_for_overlay(o))
+            if ov.get("type") in CanvasOverlayManager._RESIZABLE_TYPES:
+                act_inc = menu.addAction(svg_icon(SVG_ZOOM_IN, color=ACCENT, size=15), "Increase Size (Ctrl+)")
+                act_inc.triggered.connect(lambda _=False: c.scale_selected_overlay(1.10))
+                act_dec = menu.addAction(svg_icon(SVG_ZOOM_OUT, color=ACCENT, size=15), "Decrease Size (Ctrl-)")
+                act_dec.triggered.connect(lambda _=False: c.scale_selected_overlay(0.90))
             menu.addSeparator()
-            act_del = menu.addAction(svg_icon(SVG_TRASH, color="#EF4444", size=15), t("btn.delete"))
+            act_del = menu.addAction(svg_icon(SVG_TRASH, color="#EF4444", size=15), t("btn.delete") + " (Del)")
             act_del.triggered.connect(lambda _=False: c.delete_selected_overlay())
-            act_dup = menu.addAction(svg_icon(SVG_CLONE, color=ACCENT, size=15), t("Duplicate", default="Duplicate"))
-            act_dup.triggered.connect(lambda _=False: c.duplicate_selected_overlay())
+            if ov.get("type") != "note":
+                act_dup = menu.addAction(svg_icon(SVG_CLONE, color=ACCENT, size=15), "Duplicate")
+                act_dup.triggered.connect(lambda _=False: c.duplicate_selected_overlay())
             menu.exec(e.globalPos())
             return
 
@@ -645,7 +784,7 @@ class CanvasEventHandler:
             act_del.triggered.connect(lambda _=False: c.delete_active_selection())
             menu.addSeparator()
 
-            act_copy = menu.addAction(svg_icon(SVG_COPY, color=ACCENT, size=15), t("btn.copy", default="Copy"))
+            act_copy = menu.addAction(svg_icon(SVG_COPY, color=ACCENT, size=15), t("btn.copy"))
             act_copy.triggered.connect(lambda _=False: QApplication.clipboard().setText(c._sel_text if hasattr(c, "_sel_text") else ""))
 
             act_hi = menu.addAction(svg_icon(SVG_HIGHLIGHTER, color=ACCENT, size=15), "Highlight Selection")
