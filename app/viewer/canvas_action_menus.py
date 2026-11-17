@@ -1,3 +1,5 @@
+
+# app/viewer/canvas_action_menus.py
 """PDF_Editor – Context menus, note interaction, comment deletion, and rich highlight/color tools."""
 from __future__ import annotations
 
@@ -36,11 +38,11 @@ PRESET_COLORS = [
     ("#3B82F6", "Blue", (0.23, 0.51, 0.96)),
     ("#F472B6", "Pink", (0.95, 0.45, 0.71)),
     ("#F97316", "Orange", (0.97, 0.45, 0.09)),
+    ("#8B5CF6", "Purple", (0.55, 0.36, 0.96)),
 ]
 
 
 def make_circular_color_icon(color_hex: str, size: int = 16) -> QIcon:
-    """Render a crisp, antialiased circular color preset icon."""
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
@@ -53,7 +55,6 @@ def make_circular_color_icon(color_hex: str, size: int = 16) -> QIcon:
 
 
 def make_rainbow_wheel_icon(size: int = 16) -> QIcon:
-    """Render a vector-quality circular rainbow color wheel icon for the color dialog picker."""
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
@@ -74,8 +75,6 @@ def make_rainbow_wheel_icon(size: int = 16) -> QIcon:
 
 
 class _ScrollableMenuStyle(QProxyStyle):
-    """Enforce single-column scrollable QMenu across all platforms."""
-
     def styleHint(self, hint, option=None, widget=None, returnData=None):
         if hint == QStyle.StyleHint.SH_Menu_Scrollable:
             return 1
@@ -83,8 +82,6 @@ class _ScrollableMenuStyle(QProxyStyle):
 
 
 class CanvasActionMenuBuilder:
-    """Builds and executes context menus for signatures, comments, text, and rich highlights."""
-
     def __init__(self, canvas: _SelectCanvas):
         self.canvas = canvas
         self._menu_style: _ScrollableMenuStyle | None = None
@@ -104,12 +101,7 @@ class CanvasActionMenuBuilder:
             for annot_idx, (rect, _txt) in enumerate(annots):
                 px = x_off + int(round(rect.x0 * z))
                 py = entry.y_off + int(round(rect.y0 * z))
-                hit_r = QRect(
-                    px - margin,
-                    py - margin,
-                    _NOTE_ICON_SIZE + margin * 2,
-                    _NOTE_ICON_SIZE + margin * 2,
-                )
+                hit_r = QRect(px - margin, py - margin, _NOTE_ICON_SIZE + margin * 2, _NOTE_ICON_SIZE + margin * 2)
                 if hit_r.contains(pos):
                     return (page_idx, annot_idx)
         return None
@@ -124,9 +116,7 @@ class CanvasActionMenuBuilder:
 
         rect, txt = annots[annot_idx]
         reply = QMessageBox.question(
-            c,
-            t("msg.confirm"),
-            t("viewer.confirm_delete_comment"),
+            c, t("msg.confirm"), t("viewer.confirm_delete_comment"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -138,18 +128,13 @@ class CanvasActionMenuBuilder:
             if c._path and os.path.isfile(c._path):
                 try:
                     src_dir = os.path.dirname(c._path) or "."
-                    fd, backup_path = tempfile.mkstemp(
-                        prefix=".PDF_Editor_backup_",
-                        suffix=".pdf.bak",
-                        dir=src_dir,
-                    )
+                    fd, backup_path = tempfile.mkstemp(prefix=".PDF_Editor_backup_", suffix=".pdf.bak", dir=src_dir)
                     os.close(fd)
                     shutil.copy2(c._path, backup_path)
                 except Exception:
                     if backup_path:
                         with contextlib.suppress(Exception):
                             os.unlink(backup_path)
-                        backup_path = None
                     return
 
             target_annot = None
@@ -195,7 +180,6 @@ class CanvasActionMenuBuilder:
                     if backup_path:
                         with contextlib.suppress(Exception):
                             shutil.move(backup_path, c._path)
-                        backup_path = None
                     new_doc = c._reopen_document()
                     if new_doc is not None:
                         c._schedule_visible()
@@ -297,10 +281,18 @@ class CanvasActionMenuBuilder:
                             )
                     elif mode == "edit" and hasattr(edit_w, "_set_text_submode"):
                         edit_w._set_text_submode("edit")
-                    elif mode == "draw_highlight" and hasattr(edit_w, "_on_mode_btn"):
-                        hi_btn = edit_w._mode_btns[3] if len(getattr(edit_w, "_mode_btns", [])) > 3 else None
-                        if hi_btn:
-                            edit_w._on_mode_btn(hi_btn)
+                    elif mode == "draw" and hasattr(edit_w, "_on_mode_btn"):
+                        draw_btn = edit_w._mode_btns[8] if len(getattr(edit_w, "_mode_btns", [])) > 8 else None
+                        if draw_btn:
+                            edit_w._on_mode_btn(draw_btn)
+                    elif mode == "highlight_rect" and hasattr(edit_w, "_on_mode_btn"):
+                        hi_rect_btn = edit_w._mode_btns[4] if len(getattr(edit_w, "_mode_btns", [])) > 4 else None
+                        if hi_rect_btn:
+                            edit_w._on_mode_btn(hi_rect_btn)
+                    elif mode == "highlight_text" and hasattr(edit_w, "_on_mode_btn"):
+                        hi_text_btn = edit_w._mode_btns[3] if len(getattr(edit_w, "_mode_btns", [])) > 3 else None
+                        if hi_text_btn:
+                            edit_w._on_mode_btn(hi_text_btn)
 
     def show_context_menu(
         self,
@@ -322,9 +314,9 @@ class CanvasActionMenuBuilder:
             menu.setStyle(self._menu_style)
             menu.setStyleSheet("QMenu { menu-scrollable: 1; }")
             act_apply = menu.addAction(qta.icon("fa5s.check", color=ACCENT), t("btn.apply"))
-            act_apply.triggered.connect(c.commit_active_signature)
+            act_apply.triggered.connect(lambda _=False: c.commit_active_signature())
             act_del = menu.addAction(qta.icon("fa5s.trash-alt", color="#EF4444"), t("btn.delete"))
-            act_del.triggered.connect(c.delete_active_signature)
+            act_del.triggered.connect(lambda _=False: c.delete_active_signature())
             menu.exec(e.globalPos())
             return
 
@@ -345,88 +337,87 @@ class CanvasActionMenuBuilder:
         menu.setStyle(self._menu_style)
         menu.setStyleSheet("QMenu { menu-scrollable: 1; }")
 
-        # ── Copy & Selection ──────────────────────────────────────────
         if c._sel_text:
             act_copy = menu.addAction(
                 qta.icon("fa5s.copy", color=ACCENT),
                 t("viewer.copy_chars", n=len(c._sel_text)),
             )
-            act_copy.triggered.connect(lambda: QApplication.clipboard().setText(c._sel_text))
+            act_copy.triggered.connect(lambda _=False: QApplication.clipboard().setText(c._sel_text))
 
             act_hi_sel = menu.addAction(
                 qta.icon("fa5s.highlighter", color=ACCENT),
                 t("tool.text.highlight", default="Highlight Selection"),
             )
-            act_hi_sel.triggered.connect(lambda: self._apply_highlight_to_selection(self._current_hi_color))
+            act_hi_sel.triggered.connect(lambda _=False: self._apply_highlight_to_selection(self._current_hi_color))
             menu.addSeparator()
 
         act_sel_all = menu.addAction(
             qta.icon("fa5s.object-group", color=TEXT_SEC),
             t("Select All Text", default="Select All Text\tCtrl+A"),
         )
-        act_sel_all.triggered.connect(select_all_fn)
+        act_sel_all.triggered.connect(lambda _=False: select_all_fn())
         menu.addSeparator()
 
-        # ── Add Text & Edit Text ──────────────────────────────────────
         act_add_text = menu.addAction(
             qta.icon("fa5s.plus-circle", color=ACCENT),
             "Add Text",
         )
-        act_add_text.triggered.connect(lambda: self._route_to_edit_tool("add", pos))
+        act_add_text.triggered.connect(lambda _=False: self._route_to_edit_tool("add", pos))
 
         act_edit_text = menu.addAction(
             qta.icon("fa5s.edit", color=ACCENT),
             "Edit Text",
         )
-        act_edit_text.triggered.connect(lambda: self._route_to_edit_tool("edit", pos))
-
-        act_draw_hi = menu.addAction(
-            qta.icon("fa5s.highlighter", color=ACCENT),
-            "Drawn Highlight",
-        )
-        act_draw_hi.triggered.connect(lambda: self._route_to_edit_tool("draw_highlight", pos))
+        act_edit_text.triggered.connect(lambda _=False: self._route_to_edit_tool("edit", pos))
         menu.addSeparator()
 
-        # ── Color Presets Submenu with Rainbow Wheel ──────────────────
-        color_menu = menu.addMenu(
-            make_rainbow_wheel_icon(18),
-            "Highlight Color",
+        act_draw = menu.addAction(
+            qta.icon("fa5s.pen", color=ACCENT),
+            "Draw (Freehand Pen)",
         )
+        act_draw.triggered.connect(lambda _=False: self._route_to_edit_tool("draw", pos))
 
-        act_custom = color_menu.addAction(
-            make_rainbow_wheel_icon(16),
-            "Custom Color...",
+        act_draw_hi_rect = menu.addAction(
+            qta.icon("fa5s.vector-square", color=ACCENT),
+            "Draw Highlight (Rectangle)",
         )
+        act_draw_hi_rect.triggered.connect(lambda _=False: c.set_rect_highlight_mode(True, self._current_hi_color))
+
+        act_hi_text = menu.addAction(
+            qta.icon("fa5s.highlighter", color=ACCENT),
+            "Highlight Text",
+        )
+        act_hi_text.triggered.connect(lambda _=False: self._route_to_edit_tool("highlight_text", pos))
+        menu.addSeparator()
+
+        color_menu = menu.addMenu(make_rainbow_wheel_icon(18), "Highlight Color")
+        act_custom = color_menu.addAction(make_rainbow_wheel_icon(16), "Custom Color...")
 
         def _on_custom_chosen():
             chosen = self._pick_custom_color()
-            if chosen and c._sel_text:
-                self._apply_highlight_to_selection(chosen)
+            if chosen:
+                if c._rect_hi_mode:
+                    c.set_rect_highlight_mode(True, chosen)
+                if c._sel_text:
+                    self._apply_highlight_to_selection(chosen)
 
-        act_custom.triggered.connect(_on_custom_chosen)
+        act_custom.triggered.connect(lambda _=False: _on_custom_chosen())
         color_menu.addSeparator()
 
         for hex_code, label, rgb_tuple in PRESET_COLORS:
-            act_color = color_menu.addAction(
-                make_circular_color_icon(hex_code, 16),
-                label,
-            )
+            act_color = color_menu.addAction(make_circular_color_icon(hex_code, 16), label)
 
             def _make_color_handler(ct=rgb_tuple):
-                return lambda: (
+                return lambda _=False: (
                     setattr(self, "_current_hi_color", ct),
+                    c.set_rect_highlight_mode(True, ct) if getattr(c, "_rect_hi_mode", False) else None,
                     self._apply_highlight_to_selection(ct) if c._sel_text else None,
                 )
 
             act_color.triggered.connect(_make_color_handler(rgb_tuple))
 
         menu.addSeparator()
-
-        # ── Stamps & Signature ────────────────────────────────────────
-        act_sig = menu.addAction(
-            qta.icon("fa5s.signature", color=ACCENT),
-            t("viewer.add_signature"),
-        )
-        act_sig.triggered.connect(lambda: c.start_add_signature_flow(pos))
+        act_sig = menu.addAction(qta.icon("fa5s.signature", color=ACCENT), t("viewer.add_signature"))
+        act_sig.triggered.connect(lambda _=False: c.start_add_signature_flow(pos))
 
         menu.exec(e.globalPos())

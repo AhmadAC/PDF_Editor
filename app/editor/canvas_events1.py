@@ -1,3 +1,4 @@
+
 # app/editor/canvas_events1.py
 
 """Canvas interaction handler: mouse, drag handles, keyboard, stroke smoothing, vector stamps, and rich context menus."""
@@ -599,80 +600,125 @@ class CanvasEventHandler:
         menu.setStyle(self._menu_style)
         menu.setStyleSheet("QMenu { menu-scrollable: 1; }")
 
-        # 1. Overlay clicked context menu
         if c._selected_overlay_idx >= 0 and c._overlay_mgr.is_pos_inside_overlay(c._selected_overlay_idx, pos):
             act_inc = menu.addAction(qta.icon("fa5s.search-plus", color=ACCENT), "Increase Size (Ctrl+)")
-            act_inc.triggered.connect(lambda: c.scale_selected_overlay(1.10))
+            act_inc.triggered.connect(lambda _=False: c.scale_selected_overlay(1.10))
             act_dec = menu.addAction(qta.icon("fa5s.search-minus", color=ACCENT), "Decrease Size (Ctrl-)")
-            act_dec.triggered.connect(lambda: c.scale_selected_overlay(0.90))
+            act_dec.triggered.connect(lambda _=False: c.scale_selected_overlay(0.90))
             menu.addSeparator()
             act_del = menu.addAction(qta.icon("fa5s.trash-alt", color="#EF4444"), t("btn.delete"))
-            act_del.triggered.connect(c.delete_selected_overlay)
+            act_del.triggered.connect(lambda _=False: c.delete_selected_overlay())
             act_dup = menu.addAction(qta.icon("fa5s.clone", color=ACCENT), t("Duplicate", default="Duplicate"))
-            act_dup.triggered.connect(c.duplicate_selected_overlay)
+            act_dup.triggered.connect(lambda _=False: c.duplicate_selected_overlay())
             menu.exec(e.globalPos())
             return
 
-        # 2. In Select Mode with active text/element selection
         if getattr(c, "_select_mode", False) and (getattr(c, "_active_sel_rect", None) or self._is_pos_inside_active_sel(pos)):
             act_edit = menu.addAction(qta.icon("fa5s.edit", color=ACCENT), "Edit Text")
-            act_edit.triggered.connect(c.edit_selection_requested.emit)
+            act_edit.triggered.connect(lambda _=False: c.edit_selection_requested.emit())
             act_del = menu.addAction(qta.icon("fa5s.trash-alt", color="#EF4444"), "Delete (Del)")
-            act_del.triggered.connect(c.delete_active_selection)
+            act_del.triggered.connect(lambda _=False: c.delete_active_selection())
             menu.addSeparator()
 
             act_copy = menu.addAction(qta.icon("fa5s.copy", color=ACCENT), t("btn.copy", default="Copy"))
-            act_copy.triggered.connect(lambda: QApplication.clipboard().setText(c._sel_text if hasattr(c, "_sel_text") else ""))
+            act_copy.triggered.connect(lambda _=False: QApplication.clipboard().setText(c._sel_text if hasattr(c, "_sel_text") else ""))
 
             act_hi = menu.addAction(qta.icon("fa5s.highlighter", color=ACCENT), "Highlight Selection")
-            act_hi.triggered.connect(c.highlight_selection_requested.emit)
+            act_hi.triggered.connect(lambda _=False: c.highlight_selection_requested.emit())
 
             act_redact = menu.addAction(qta.icon("fa5s.eraser", color="#EF4444"), "Redact Selection")
-            act_redact.triggered.connect(c.redact_selection_requested.emit)
+            act_redact.triggered.connect(lambda _=False: c.redact_selection_requested.emit())
             menu.addSeparator()
 
-        # ── Global Canvas Context Menu ────────────────────────────────
         page_idx, lx, ly = c._page_and_local(pos.x(), pos.y())
         pdf_pt = c._to_pdf(page_idx, lx, ly)
 
         act_add_text = menu.addAction(qta.icon("fa5s.font", color=ACCENT), "Add Text")
         act_add_text.triggered.connect(
-            lambda: c.begin_inline_text_insert(page_idx, pdf_pt, 12.0, (0.0, 0.0, 0.0))
+            lambda _=False, p=page_idx, pt=pdf_pt: (
+                c.mode_change_requested.emit(1),
+                c.set_text_mode(True),
+                c.begin_inline_text_insert(p, pt, 12.0, (0.0, 0.0, 0.0)),
+            )
         )
 
         span = c.get_span_at(page_idx, pdf_pt, max_dist=8.0)
         if span:
             act_edit_click = menu.addAction(qta.icon("fa5s.edit", color=ACCENT), "Edit Text")
-            act_edit_click.triggered.connect(lambda s=span, p=page_idx: c.begin_inline_text_edit(s, p))
+            act_edit_click.triggered.connect(
+                lambda _=False, s=span, p=page_idx: (
+                    c.mode_change_requested.emit(1),
+                    c.set_text_mode(True),
+                    c.begin_inline_text_edit(s, p),
+                )
+            )
 
-        act_draw_hi = menu.addAction(qta.icon("fa5s.highlighter", color=ACCENT), "Drawn Highlight")
-        act_draw_hi.triggered.connect(lambda: c.set_highlight_mode(True, (1.0, 1.0, 0.0), Qt.CursorShape.CrossCursor))
+        act_draw_pen = menu.addAction(qta.icon("fa5s.pen", color=ACCENT), "Draw (Freehand Pen)")
+        act_draw_pen.triggered.connect(
+            lambda _=False: (
+                c.mode_change_requested.emit(8),
+                c.set_draw_mode(True),
+            )
+        )
+
+        act_draw_hi_rect = menu.addAction(qta.icon("fa5s.vector-square", color=ACCENT), "Draw Highlight (Rectangle)")
+        act_draw_hi_rect.triggered.connect(
+            lambda _=False: (
+                c.mode_change_requested.emit(4),
+                c.set_highlight_mode(True, c._highlight_color, Qt.CursorShape.CrossCursor),
+            )
+        )
+
+        act_hi_text = menu.addAction(qta.icon("fa5s.highlighter", color=ACCENT), "Highlight Text")
+        act_hi_text.triggered.connect(
+            lambda _=False: (
+                c.mode_change_requested.emit(3),
+                c.set_highlight_mode(True, c._highlight_color, Qt.CursorShape.IBeamCursor),
+            )
+        )
         menu.addSeparator()
 
-        color_menu = menu.addMenu(make_rainbow_wheel_icon(18), "Highlight Color")
+        color_menu = menu.addMenu(make_rainbow_wheel_icon(18), "Highlight & Pen Color")
         act_custom = color_menu.addAction(make_rainbow_wheel_icon(16), "Custom Color...")
 
         def _on_custom_col():
-            curr = QColor(255, 255, 0)
-            col = QColorDialog.getColor(curr, c, "Select Highlight Color")
+            curr = QColor(
+                int(c._highlight_color[0] * 255),
+                int(c._highlight_color[1] * 255),
+                int(c._highlight_color[2] * 255),
+            )
+            col = QColorDialog.getColor(curr, c, "Select Color")
             if col.isValid():
                 c_tup = (col.redF(), col.greenF(), col.blueF())
-                c.set_highlight_mode(True, c_tup)
+                c._highlight_color = c_tup
+                c._draw_color = c_tup
+                if c._highlight_mode:
+                    c.set_highlight_mode(True, c_tup)
+                elif c._draw_mode:
+                    c.set_draw_mode(True, c_tup)
 
-        act_custom.triggered.connect(_on_custom_col)
+        act_custom.triggered.connect(lambda _=False: _on_custom_col())
         color_menu.addSeparator()
 
         for hex_code, label, rgb_tuple in PRESET_COLORS:
             act_c = color_menu.addAction(make_circular_color_icon(hex_code, 16), label)
-            act_c.triggered.connect(lambda _=False, rgb=rgb_tuple: c.set_highlight_mode(True, rgb))
+            act_c.triggered.connect(
+                lambda _=False, rgb=rgb_tuple: (
+                    setattr(c, "_highlight_color", rgb),
+                    setattr(c, "_draw_color", rgb),
+                    c.set_highlight_mode(True, rgb) if c._highlight_mode else (
+                        c.set_draw_mode(True, rgb) if c._draw_mode else None
+                    ),
+                )
+            )
 
         menu.addSeparator()
         act_add_check = menu.addAction(qta.icon("fa5s.check", color=ACCENT), "Add Checkmark (✔)")
-        act_add_check.triggered.connect(lambda: c.begin_stamp_placement("check"))
+        act_add_check.triggered.connect(lambda _=False: c.begin_stamp_placement("check"))
         act_add_cross = menu.addAction(qta.icon("fa5s.times", color="#EF4444"), "Add Crossmark (✖)")
-        act_add_cross.triggered.connect(lambda: c.begin_stamp_placement("cross"))
+        act_add_cross.triggered.connect(lambda _=False: c.begin_stamp_placement("cross"))
         menu.addSeparator()
         act_add_sig = menu.addAction(qta.icon("fa5s.signature", color=ACCENT), t("viewer.add_signature"))
-        act_add_sig.triggered.connect(lambda: c.start_add_signature_flow(pos))
+        act_add_sig.triggered.connect(lambda _=False: c.start_add_signature_flow(pos))
 
         menu.exec(e.globalPos())

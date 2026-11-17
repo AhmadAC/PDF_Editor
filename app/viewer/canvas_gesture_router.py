@@ -1,4 +1,8 @@
-"""PDF_Editor – Mouse gesture routing for canvas interactions (signatures, crop, dragging)."""
+
+
+# app/viewer/canvas_gesture_router.py
+"""PDF_Editor – Mouse gesture routing for canvas interactions (signatures, crop, drag-to-highlight)."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -136,7 +140,16 @@ class CanvasGestureRouter:
             if e.button() == Qt.MouseButton.LeftButton:
                 c.commit_active_signature()
 
-        # 3. Crop mode
+        # 3. Direct Draw Highlight (Rectangle) Mode
+        if getattr(c, "_rect_hi_mode", False) and e.button() == Qt.MouseButton.LeftButton:
+            c.setFocus()
+            c._rect_hi_drag_start = pos
+            c._rect_hi_drag_cur = pos
+            c.update()
+            e.accept()
+            return
+
+        # 4. Crop mode
         if c._crop_mode and e.button() == Qt.MouseButton.LeftButton:
             c.setFocus()
             c._crop_active_page = page_idx
@@ -146,7 +159,7 @@ class CanvasGestureRouter:
             e.accept()
             return
 
-        # 4. Standard text selection
+        # 5. Standard text selection
         if e.button() == Qt.MouseButton.LeftButton:
             c.setFocus()
             self.selection_engine.clear_selection()
@@ -226,6 +239,12 @@ class CanvasGestureRouter:
                 return
             c.setCursor(Qt.CursorShape.ArrowCursor)
 
+        if getattr(c, "_rect_hi_mode", False) and getattr(c, "_rect_hi_drag_start", None):
+            c._rect_hi_drag_cur = pos
+            c.update()
+            e.accept()
+            return
+
         if c._crop_mode and c._crop_drag_start:
             c._crop_drag_cur = pos
             c.update()
@@ -273,6 +292,47 @@ class CanvasGestureRouter:
                 c.update()
                 e.accept()
                 return
+
+        # Direct Draw Highlight (Rectangle) committing to PDF
+        if getattr(c, "_rect_hi_mode", False) and getattr(c, "_rect_hi_drag_start", None):
+            start = c._rect_hi_drag_start
+            end = e.position().toPoint()
+            page_idx = c.page_at_y(start.y())
+            hi_color = getattr(c, "_rect_hi_color", (1.0, 1.0, 0.0))
+            c._rect_hi_drag_start = None
+            c._rect_hi_drag_cur = None
+            c.set_rect_highlight_mode(False)
+
+            if abs(end.x() - start.x()) > 5 and abs(end.y() - start.y()) > 5 and 0 <= page_idx < len(c._entries):
+                entry = c._entries[page_idx]
+                x_off = c.page_x_offset(entry)
+                z = c._zoom or 1.0
+                rx0 = max(0.0, min(start.x() - x_off, end.x() - x_off) / z)
+                ry0 = max(0.0, min(start.y() - entry.y_off, end.y() - entry.y_off) / z)
+                rx1 = min(entry.w / z, max(start.x() - x_off, end.x() - x_off) / z)
+                ry1 = min(entry.h / z, max(start.y() - entry.y_off, end.y() - entry.y_off) / z)
+                pdf_rect = fitz.Rect(rx0, ry0, rx1, ry1)
+
+                if c._doc and c._path:
+                    try:
+                        doc = fitz.open(c._path)
+                        if c._password and doc.needs_pass:
+                            doc.authenticate(c._password)
+                        page = doc[page_idx]
+                        annot = page.add_highlight_annot(pdf_rect)
+                        annot.set_colors(stroke=hi_color)
+                        annot.update()
+
+                        parent = c.parentWidget()
+                        while parent and not hasattr(parent, "_save_and_reload"):
+                            parent = parent.parentWidget()
+                        if parent and hasattr(parent, "_save_and_reload"):
+                            parent._save_and_reload(doc, target_page=page_idx)
+                    except Exception:
+                        pass
+            c.update()
+            e.accept()
+            return
 
         if c._crop_mode and c._crop_drag_start:
             start = c._crop_drag_start

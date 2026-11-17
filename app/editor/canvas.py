@@ -1,13 +1,12 @@
-
 # app/editor/canvas.py
-"""PDF_Editor – PdfEditCanvas facade: visual PDF edit canvas with Foxit-style media object selection, vector check/cross stamps & text editing."""
+"""PDF_Editor – PdfEditCanvas facade: visual PDF edit canvas with media selection, stamps, drawing, and highlights."""
 
 from __future__ import annotations
 
 import contextlib
 from typing import cast
 import fitz
-from PySide6.QtCore import Qt, Signal, QPoint, QPointF, QThreadPool
+from PySide6.QtCore import QTimer, Qt, Signal, QPoint, QPointF, QThreadPool
 from PySide6.QtGui import QCursor, QPainter
 from PySide6.QtWidgets import QWidget, QSizePolicy
 
@@ -52,6 +51,7 @@ class PdfEditCanvas(QWidget):
     edit_selection_requested      = Signal()
     highlight_selection_requested = Signal()
     redact_selection_requested    = Signal()
+    mode_change_requested         = Signal(int)                # (mode_idx)
 
     HANDLE_NONE = 0
     HANDLE_TL   = 1
@@ -90,7 +90,6 @@ class PdfEditCanvas(QWidget):
         self._open_note   = None
         self._screen_signal_window = None
 
-        # Active Persistent Selection State (Foxit-style element selection)
         self._active_sel_rect: fitz.Rect | None = None
         self._active_sel_page: int = -1
         self._active_sel_handle: int = self.HANDLE_NONE
@@ -98,7 +97,6 @@ class PdfEditCanvas(QWidget):
         self._active_sel_drag_start: QPoint = QPoint()
         self._active_sel_orig_rect: fitz.Rect | None = None
 
-        # Media Overlay State
         self._placing_signature: bool = False
         self._placing_sig_path: str = ""
         self._placing_sig_pixmap = None
@@ -109,7 +107,6 @@ class PdfEditCanvas(QWidget):
         self._drag_start_rect: fitz.Rect | None = None
         self._moving_overlay: bool = False
 
-        # Vector checkmark / crossmark stamp state (Fill & Sign)
         self._placing_stamp: bool = False
         self._placing_stamp_type: str = ""
         self._stamp_cursor_pos: QPoint | None = None
@@ -123,7 +120,6 @@ class PdfEditCanvas(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._bg_color = BG_INNER
 
-        # Subsystem managers
         self._overlay_mgr = CanvasOverlayManager(self)
         self._inline_mgr = CanvasInlineTextManager(self)
         self._painter = CanvasPainter()
@@ -132,8 +128,6 @@ class PdfEditCanvas(QWidget):
     @property
     def _inline_edit(self):
         return self._inline_mgr.edit
-
-    # ── Tool Modes ────────────────────────────────────────────────────────
 
     def set_dark_mode(self, dark: bool):
         self._bg_color = BG_INNER if dark else _LN
@@ -146,10 +140,13 @@ class PdfEditCanvas(QWidget):
         else:
             self.clear_active_selection()
 
-    def set_highlight_mode(self, active: bool, color: tuple = (1.0, 1.0, 0.0), cursor_shape: Qt.CursorShape = Qt.CursorShape.IBeamCursor):
+    def set_highlight_mode(self, active: bool, color: tuple = (1.0, 1.0, 0.0), cursor_shape: Qt.CursorShape = Qt.CursorShape.CrossCursor):
         self._highlight_mode = active
         self._highlight_color = color
         if active:
+            self._draw_mode = False
+            self._text_mode = False
+            self._select_mode = False
             self.setCursor(cursor_shape)
         elif not self._draw_mode and not self._text_mode and not self._placing_signature and not getattr(self, "_placing_stamp", False) and not self._select_mode:
             self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -158,6 +155,9 @@ class PdfEditCanvas(QWidget):
     def set_text_mode(self, active: bool):
         self._text_mode = active
         if active:
+            self._draw_mode = False
+            self._highlight_mode = False
+            self._select_mode = False
             self.setCursor(Qt.CursorShape.IBeamCursor)
         elif not self._draw_mode and not self._placing_signature and not getattr(self, "_placing_stamp", False) and not self._highlight_mode and not self._select_mode:
             self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -169,13 +169,16 @@ class PdfEditCanvas(QWidget):
         if width is not None:
             self._draw_width = max(1, int(width))
         if active:
+            self._highlight_mode = False
+            self._text_mode = False
+            self._select_mode = False
             self.setCursor(_get_icon_cursor("fa5s.pen", 4, 4, size=28, rotate=90))
         else:
             self._current_stroke = None
             self._stroke_page = -1
             if not self._text_mode and not self._placing_signature and not getattr(self, "_placing_stamp", False) and not self._highlight_mode and not self._select_mode:
                 self.setCursor(Qt.CursorShape.ArrowCursor)
-            self.update()
+        self.update()
 
     def set_overlays(self, overlays: list):
         self._overlays = overlays
@@ -184,10 +187,7 @@ class PdfEditCanvas(QWidget):
             self._selected_overlay_idx = -1
         self.update()
 
-    # ── Stamp & Selection Delegation ──────────────────────────────────────
-
     def begin_stamp_placement(self, stamp_type: str, color=(0.0, 0.0, 0.0), size=20.0):
-        """Enter stamp placement mode (check or cross) with live follow preview."""
         self.cancel_signature_placement()
         self.clear_active_selection()
         self._selected_overlay_idx = -1
@@ -221,7 +221,6 @@ class PdfEditCanvas(QWidget):
             self.delete_selection_requested.emit()
 
     def scale_selected_overlay(self, factor: float) -> bool:
-        """Scale the currently selected overlay by the given factor around its center."""
         if not (0 <= self._selected_overlay_idx < len(self._overlays)):
             return False
         ov = self._overlays[self._selected_overlay_idx]
@@ -294,8 +293,6 @@ class PdfEditCanvas(QWidget):
     def _annot_note_at(self, pos: QPoint):
         return self._overlay_mgr.annot_note_at(pos)
 
-    # ── Text Inline Editing Delegation ────────────────────────────────────
-
     def begin_inline_text_edit(self, span: dict, page_idx: int):
         self._inline_mgr.begin_edit(span, page_idx)
 
@@ -318,8 +315,6 @@ class PdfEditCanvas(QWidget):
         if self._inline_mgr.handle_event_filter(obj, event):
             return True
         return super().eventFilter(obj, event)
-
-    # ── Document, Layout & Background Rendering ───────────────────────────
 
     def _get_scroll_area(self):
         from PySide6.QtWidgets import QScrollArea as _SA
@@ -346,7 +341,6 @@ class PdfEditCanvas(QWidget):
         self.clear_active_selection()
         self._selected_overlay_idx = -1
         self._page_prev_pixmaps.clear()
-        from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self._layout_and_schedule)
 
     def zoom_in(self, anchor_pos: QPoint | None = None):
@@ -521,7 +515,6 @@ class PdfEditCanvas(QWidget):
         return (target_page, pdf_x, pdf_y, vp_x, vp_y)
 
     def relayout_to_viewport(self):
-        """Recalculate layout based on the current viewport width and preserve scroll anchor."""
         if not self._doc:
             return
         anchor = self._calc_anchor()
@@ -530,9 +523,7 @@ class PdfEditCanvas(QWidget):
     def _invalidate_and_relayout(self, anchor_pos: QPoint | None = None):
         self._gen += 1
         self._pending.clear()
-
         anchor = self._calc_anchor(anchor_pos)
-
         old_pixmaps = [
             p if p is not None else prev
             for p, prev in zip(
@@ -680,8 +671,6 @@ class PdfEditCanvas(QWidget):
                 return None
         return r
 
-    # ── Qt Event Dispatches ───────────────────────────────────────────────
-
     def paintEvent(self, _):
         p = QPainter(self)
         self._painter.paint(self, p)
@@ -706,5 +695,4 @@ class PdfEditCanvas(QWidget):
 
     def contextMenuEvent(self, e):
         self._event_handler.handle_context_menu(e)
-
 

@@ -83,6 +83,10 @@ class TabActionsMixin(_Base):
         def _update_nav(self) -> None: ...
         def _status(self, msg: str) -> None: ...
 
+    def _set_mode_by_idx(self, idx: int):
+        if 0 <= idx < len(self._mode_btns):
+            self._on_mode_btn(self._mode_btns[idx])
+
     def _start_stamp_check(self):
         sz = float(self._stamp_size.value()) if hasattr(self, "_stamp_size") else 20.0
         col = self._stamp_color.color_tuple() if hasattr(self, "_stamp_color") else (0.0, 0.0, 0.0)
@@ -433,6 +437,47 @@ class TabActionsMixin(_Base):
         self._page_idx = page_idx
         self._update_nav()
         mode = self._mode_idx
+
+        # If highlight mode is active on canvas, ALWAYS process as highlight, never as text!
+        if getattr(self._canvas, "_highlight_mode", False) or mode in (_MODE_HIGHLIGHT, _MODE_HIGHLIGHT_RECT):
+            hi_color = getattr(self._canvas, "_highlight_color", None)
+            if hi_color is None:
+                hi_color = self._hi_color.color_tuple() if hasattr(self, "_hi_color") else (1.0, 1.0, 0.0)
+
+            if mode == _MODE_HIGHLIGHT:
+                doc = self._canvas._doc
+                line_rects = []
+                if doc and 0 <= page_idx < doc.page_count:
+                    page = doc[page_idx]
+                    words = page.get_text("words", clip=pdf_rect)
+                    if words:
+                        lines_dict = {}
+                        for w in words:
+                            key = (w[5], w[6])
+                            lines_dict.setdefault(key, []).append(w)
+                        for line_words in lines_dict.values():
+                            lx0 = min(w[0] for w in line_words)
+                            ly0 = min(w[1] for w in line_words)
+                            lx1 = max(w[2] for w in line_words)
+                            ly1 = max(w[3] for w in line_words)
+                            line_rects.append(fitz.Rect(lx0, ly0, lx1, ly1))
+                self._add({
+                    "type": "highlight",
+                    "page": page_idx,
+                    "rect": pdf_rect,
+                    "rects": line_rects if line_rects else None,
+                    "color": hi_color
+                })
+            else:
+                self._add({
+                    "type": "highlight",
+                    "page": page_idx,
+                    "rect": pdf_rect,
+                    "color": hi_color
+                })
+            self._status("✔ Highlight rectangle added (Ctrl+Z to undo)")
+            return
+
         if mode == _MODE_SELECT:
             doc = self._canvas._doc
             if not doc:
@@ -489,39 +534,6 @@ class TabActionsMixin(_Base):
                 if not sig or not os.path.isfile(sig):
                     return
             self._add({"type": "signature", "page": self._page_idx, "rect": pdf_rect, "path": sig})
-        elif mode == _MODE_HIGHLIGHT:
-            doc = self._canvas._doc
-            line_rects = []
-            hi_color = self._hi_color.color_tuple() if hasattr(self, "_hi_color") else (1.0, 1.0, 0.0)
-            if doc and 0 <= page_idx < doc.page_count:
-                page = doc[page_idx]
-                words = page.get_text("words", clip=pdf_rect)
-                if words:
-                    lines_dict = {}
-                    for w in words:
-                        key = (w[5], w[6])
-                        lines_dict.setdefault(key, []).append(w)
-                    for line_words in lines_dict.values():
-                        lx0 = min(w[0] for w in line_words)
-                        ly0 = min(w[1] for w in line_words)
-                        lx1 = max(w[2] for w in line_words)
-                        ly1 = max(w[3] for w in line_words)
-                        line_rects.append(fitz.Rect(lx0, ly0, lx1, ly1))
-            self._add({
-                "type": "highlight",
-                "page": self._page_idx,
-                "rect": pdf_rect,
-                "rects": line_rects if line_rects else None,
-                "color": hi_color
-            })
-        elif mode == _MODE_HIGHLIGHT_RECT:
-            hi_color = self._hi_rect_color.color_tuple() if hasattr(self, "_hi_rect_color") else (1.0, 1.0, 0.0)
-            self._add({
-                "type": "highlight",
-                "page": self._page_idx,
-                "rect": pdf_rect,
-                "color": hi_color
-            })
 
     def _on_point(self, page_idx: int, pdf_pt):
         self._page_idx = page_idx
@@ -613,3 +625,4 @@ class TabActionsMixin(_Base):
 
     def _on_note_deleted(self, overlay: dict):
         self._history.handle_note_deleted(overlay)
+

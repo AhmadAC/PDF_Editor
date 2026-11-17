@@ -1,5 +1,7 @@
+
+
 # app/viewer/canvas_1.py
-"""PDF_Editor – _SelectCanvas: continuous-scroll visual PDF viewer canvas with smooth zooming, persistent zoom preference, cursor-anchored zoom, and screen-fit layout."""
+"""PDF_Editor – _SelectCanvas: continuous-scroll visual PDF viewer canvas with zoom, highlights, signatures, and notes."""
 
 from __future__ import annotations
 
@@ -27,7 +29,6 @@ from app.viewer.canvas_worker import (
     _RenderSignals,
 )
 
-# Safe fallback for PyMuPDF annotation constant to satisfy Pylance
 _PDF_ANNOT_TEXT: int = getattr(fitz, "PDF_ANNOT_TEXT", 0)
 
 
@@ -99,6 +100,11 @@ class _SelectCanvas(QWidget):
         self._numbers_preview: dict | None = None
         self._screen_signal_window = None
 
+        self._rect_hi_mode: bool = False
+        self._rect_hi_color: tuple[float, float, float] = (1.0, 1.0, 0.0)
+        self._rect_hi_drag_start: QPoint | None = None
+        self._rect_hi_drag_cur: QPoint | None = None
+
         self._placing_signature: bool = False
         self._placing_sig_path: str = ""
         self._placing_sig_pixmap = None
@@ -121,11 +127,9 @@ class _SelectCanvas(QWidget):
         self.setMinimumSize(300, 400)
 
     def select_all(self):
-        """Select all text on all pages across the loaded document."""
         self._interaction.select_all()
 
     def page_x_offset(self, entry) -> int:
-        """Calculate horizontal centering offset for a page within the canvas width."""
         if not entry:
             return 0
         return max(0, (self.width() - entry.w) // 2)
@@ -139,7 +143,6 @@ class _SelectCanvas(QWidget):
             pass
 
     def get_viewport_width(self) -> int:
-        """Determine true available viewport width, inspecting container and display geometry."""
         sa = self._get_scroll_area()
         if sa and sa.viewport() and sa.viewport().width() > 100:
             return sa.viewport().width()
@@ -152,8 +155,6 @@ class _SelectCanvas(QWidget):
         if screen:
             return max(600, screen.availableGeometry().width() - 280)
         return 1200
-
-    # ── Display Modes and Themes ──────────────────────────────────────────
 
     def set_dark_mode(self, dark: bool):
         self._bg_color = BG_INNER if dark else _LN
@@ -168,11 +169,24 @@ class _SelectCanvas(QWidget):
     def set_crop_mode(self, active: bool):
         self._crop_mode = active
         if active:
+            self._rect_hi_mode = False
             self.setCursor(Qt.CursorShape.CrossCursor)
         else:
             self.setCursor(Qt.CursorShape.IBeamCursor)
             self._crop_drag_start = None
             self._crop_drag_cur = None
+        self.update()
+
+    def set_rect_highlight_mode(self, active: bool, color: tuple[float, float, float] = (1.0, 1.0, 0.0)):
+        self._rect_hi_mode = active
+        self._rect_hi_color = color
+        if active:
+            self._crop_mode = False
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.setCursor(Qt.CursorShape.IBeamCursor)
+            self._rect_hi_drag_start = None
+            self._rect_hi_drag_cur = None
         self.update()
 
     def set_crop_preview(self, crop_data: dict | None):
@@ -199,8 +213,6 @@ class _SelectCanvas(QWidget):
         self._search_highlights = highlights
         self._search_current = current
         self.update()
-
-    # ── Signature Flow & Placement Methods ────────────────────────────────
 
     def start_add_signature_flow(self, pos: QPoint | None = None):
         dlg = _SignatureDialog(self)
@@ -243,8 +255,6 @@ class _SelectCanvas(QWidget):
         self.setCursor(Qt.CursorShape.IBeamCursor)
         self.update()
 
-    # ── Document Lifecycle ────────────────────────────────────────────────
-
     def load(self, doc, target_page: int = 0, path: str = "", password: str = "", target_scroll: int = -1):
         if self._doc:
             with contextlib.suppress(Exception):
@@ -260,6 +270,7 @@ class _SelectCanvas(QWidget):
         self._search_highlights.clear()
         self._search_current = -1
         self.cancel_signature_placement()
+        self.set_rect_highlight_mode(False)
         self._active_sig = None
         self._interaction.clear_selection()
         self._entries.clear()
@@ -270,6 +281,7 @@ class _SelectCanvas(QWidget):
         self._pending.clear()
         self._render_debounce_timer.stop()
         self.cancel_signature_placement()
+        self.set_rect_highlight_mode(False)
         self._active_sig = None
         if self._doc:
             with contextlib.suppress(Exception):
@@ -303,8 +315,6 @@ class _SelectCanvas(QWidget):
             return doc
         except Exception:
             return None
-
-    # ── Geometry, Zoom and Anchored Navigation ────────────────────────────
 
     def _get_scroll_area(self):
         from PySide6.QtWidgets import QScrollArea as _SA
@@ -351,7 +361,6 @@ class _SelectCanvas(QWidget):
             self._layout_and_schedule(anchor=anchor)
 
     def _calc_anchor(self, anchor_pos: Any = None) -> tuple[int, float, float, float, float] | None:
-        """Calculate invariant point under cursor in PDF coordinates: (page_idx, pdf_x, pdf_y, vp_x, vp_y)."""
         sa = self._get_scroll_area()
         if not sa or not self._entries or self.height() <= 0:
             return None
@@ -403,9 +412,7 @@ class _SelectCanvas(QWidget):
     def _invalidate_and_relayout(self, anchor_pos: Any = None, preserve_pixmaps: bool = True):
         self._gen += 1
         self._pending.clear()
-
         anchor = self._calc_anchor(anchor_pos)
-
         old_pixmaps: dict[int, QPixmap] = {}
         if preserve_pixmaps:
             for e in self._entries:
@@ -413,10 +420,7 @@ class _SelectCanvas(QWidget):
                 if p is not None and not p.isNull():
                     old_pixmaps[e.src_page] = p
 
-        self._layout_and_schedule(
-            old_pixmaps=old_pixmaps,
-            anchor=anchor,
-        )
+        self._layout_and_schedule(old_pixmaps=old_pixmaps, anchor=anchor)
 
     def _layout_and_schedule(
         self,
@@ -445,7 +449,6 @@ class _SelectCanvas(QWidget):
                     page0.set_cropbox(cr0)
             if rot0:
                 page0.set_rotation((orig_rot0 + rot0) % 360)
-
             ref_w = max(page0.rect.width, 1.0)
         finally:
             if rot0:
@@ -479,7 +482,6 @@ class _SelectCanvas(QWidget):
                         pg.set_cropbox(cr)
                 if rot:
                     pg.set_rotation((orig_rot + rot) % 360)
-
                 w = pg.rect.width
                 h = pg.rect.height
             finally:
@@ -522,7 +524,6 @@ class _SelectCanvas(QWidget):
         canvas_w = max(max_w + 32, vp_w, 300)
         canvas_h = max(total_h, 400)
         self.setFixedSize(canvas_w, canvas_h)
-
         sa = self._get_scroll_area()
         if sa:
             vp = sa.viewport()
@@ -540,7 +541,6 @@ class _SelectCanvas(QWidget):
                 if 0 <= target_page < len(self._entries):
                     new_entry = self._entries[target_page]
                     new_x_off = self.page_x_offset(new_entry)
-
                     new_canvas_x = new_x_off + pdf_x * self._zoom
                     new_canvas_y = new_entry.y_off + pdf_y * self._zoom
 
@@ -573,8 +573,7 @@ class _SelectCanvas(QWidget):
         found = False
         for i, entry in enumerate(self._entries):
             if not found and entry.y_off + entry.h >= y0:
-                first = i
-                found = True
+                first = i; found = True
             if entry.y_off <= y1:
                 last = i
         return (max(0, first - buf), min(n - 1, last + buf))
@@ -632,8 +631,6 @@ class _SelectCanvas(QWidget):
             self._doc.close()
             self._doc = None
 
-    # ── Screen and UI Events ──────────────────────────────────────────────
-
     def showEvent(self, event):
         super().showEvent(event)
         win = self.window().windowHandle() if self.window() else None
@@ -678,7 +675,6 @@ class _SelectCanvas(QWidget):
         self._interaction.context_menu(e)
 
     def paintEvent(self, event):
-        from app.viewer.canvas_painter import CanvasPainter
         CanvasPainter.paint(self, event)
 
     def wheelEvent(self, e):
