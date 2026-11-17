@@ -674,6 +674,8 @@ class TabMarcaDagua(BasePage):
         if (not pdf_path or not os.path.isfile(pdf_path)) and viewer and viewer.current_path():
             pdf_path = viewer.current_path()
             self._base_orig_path = getattr(viewer, "_original_doc_path", "") or pdf_path
+            if not self._pdf_password:
+                self._pdf_password = getattr(viewer, "_pdf_password", "") or ""
 
         wm_path = self.wm_card.path() or self.drop_wm.path()
         if not pdf_path or not os.path.isfile(pdf_path):
@@ -681,6 +683,9 @@ class TabMarcaDagua(BasePage):
             return
         if not wm_path or not os.path.isfile(wm_path):
             QMessageBox.warning(self, t("msg.warning"), t("tool.watermark.select_wm"))
+            return
+
+        if not self._maybe_prompt_password(pdf_path):
             return
 
         wm_pwd = self._prompt_watermark_password(wm_path)
@@ -698,7 +703,7 @@ class TabMarcaDagua(BasePage):
                 pages_text=self.edit_pages.text(),
                 match_pages=match_pages,
                 include_omitted_wm=include_omitted_wm,
-                open_base_fitz=self._open_base_fitz,
+                open_base_fitz=self._open_fitz,
             )
         except EmptyPdfError as e:
             QMessageBox.warning(self, t("msg.warning"), str(e))
