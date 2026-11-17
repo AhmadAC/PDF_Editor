@@ -1,4 +1,3 @@
-
 # app/window_tools_router.py
 """PDF_Editor – Tool activation, sidebar navigation dispatch, and preview synchronizations mixin."""
 
@@ -282,5 +281,3 @@ class WindowToolsRouterMixin(_Base):
     def _on_numbers_preview_changed(self, preview_data: dict | None):
         if self._viewer:
             self._viewer.set_numbers_preview(preview_data)
-
-

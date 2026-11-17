@@ -216,4 +216,3 @@ class WindowRecentMenuMixin(_Base):
             if callable(refresh):
                 with contextlib.suppress(Exception):
                     refresh()
-

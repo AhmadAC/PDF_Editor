@@ -1,5 +1,3 @@
-
-
 # app/window_nav_page.py
 """PDF_Editor – Window page navigation, top bar page controls, and language selector mixin."""
 
@@ -290,5 +288,3 @@ class WindowNavPageMixin(_Base):
         app = QApplication.instance()
         if app is not None:
             app.exit(0)
-
-
