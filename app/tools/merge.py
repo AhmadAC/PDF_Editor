@@ -1,21 +1,34 @@
-"""PDF_Editor – TabJuntar: merge PDFs tool."""
+# app/tools/merge.py
+"""PDF_Editor – TabJuntar: merge PDFs tool with SVG icons."""
 
 import contextlib
 import os
 from typing import Any
 
+from PySide6.QtCore import Qt, QSize
 from PySide6.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-    QAbstractItemView, QPushButton, QMessageBox, QFileDialog,
+    QAbstractItemView, QPushButton, QMessageBox,
 )
 from pypdf import PdfReader, PdfWriter
 
 from app.base import BasePage
+from app.constants import TEXT_PRI, _LQ
 from app.pdf_io import atomic_pdf_write
 from app.i18n import t
 from app.pdf_password import decrypt_pypdf
-from app.utils import (section, danger_btn, pick_pdfs, show_error,
-                       WrongPasswordError)
+from app.utils import (
+    SVG_ARROW_DOWN,
+    SVG_ARROW_UP,
+    SVG_CLOSE,
+    SVG_MINUS,
+    section,
+    danger_btn,
+    pick_pdfs,
+    show_error,
+    svg_icon,
+    WrongPasswordError,
+)
 from app.widgets import DropFileEdit, MultiDropWidget
 
 
@@ -24,8 +37,6 @@ class TabJuntar(BasePage):
         super().__init__("fa5s.object-group", t("tool.merge.name"),
                          t("tool.merge.desc"),
                          t("tool.merge.btn"), status_fn)
-        # Per-file password map. BasePage._pdf_password is single-string;
-        # merge needs one password per input PDF since they may differ.
         self._pwd_map: dict[str, str] = {}
         f = self._form
 
@@ -39,21 +50,41 @@ class TabJuntar(BasePage):
         self.lst.setAlternatingRowColors(True)
         self.lst.setMinimumHeight(180)
         self.lst.setMinimumWidth(0)
-        from PySide6.QtCore import Qt as _Qt
-        self.lst.setHorizontalScrollBarPolicy(_Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.lst.setTextElideMode(_Qt.TextElideMode.ElideMiddle)
+        self.lst.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.lst.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         vl.addWidget(self.lst)
         hb = QHBoxLayout()
-        for icon, slot, tip in [
-            ("▲", self._up,         t("btn.up")),
-            ("▼", self._dn,         t("btn.down")),
-            ("−", self._remove,     t("btn.remove")),
-            ("✕", self._clear_all,  t("btn.clear")),
-        ]:
-            btn = danger_btn(icon) if slot == self._remove else QPushButton(icon)
-            btn.setToolTip(tip)
-            btn.setFixedWidth(40)
-            btn.clicked.connect(slot); hb.addWidget(btn)
+
+        self._btn_up = QPushButton()
+        self._btn_up.setIcon(svg_icon(SVG_ARROW_UP, color=TEXT_PRI, size=14))
+        self._btn_up.setIconSize(QSize(14, 14))
+        self._btn_up.setToolTip(t("btn.up"))
+        self._btn_up.setFixedWidth(40)
+        self._btn_up.clicked.connect(self._up)
+
+        self._btn_dn = QPushButton()
+        self._btn_dn.setIcon(svg_icon(SVG_ARROW_DOWN, color=TEXT_PRI, size=14))
+        self._btn_dn.setIconSize(QSize(14, 14))
+        self._btn_dn.setToolTip(t("btn.down"))
+        self._btn_dn.setFixedWidth(40)
+        self._btn_dn.clicked.connect(self._dn)
+
+        self._btn_rem = danger_btn("")
+        self._btn_rem.setIcon(svg_icon(SVG_MINUS, color="#FCA5A5", size=14))
+        self._btn_rem.setIconSize(QSize(14, 14))
+        self._btn_rem.setToolTip(t("btn.remove"))
+        self._btn_rem.setFixedWidth(40)
+        self._btn_rem.clicked.connect(self._remove)
+
+        self._btn_clr = QPushButton()
+        self._btn_clr.setIcon(svg_icon(SVG_CLOSE, color=TEXT_PRI, size=14))
+        self._btn_clr.setIconSize(QSize(14, 14))
+        self._btn_clr.setToolTip(t("btn.clear"))
+        self._btn_clr.setFixedWidth(40)
+        self._btn_clr.clicked.connect(self._clear_all)
+
+        for btn in (self._btn_up, self._btn_dn, self._btn_rem, self._btn_clr):
+            hb.addWidget(btn)
         hb.addStretch(); vl.addLayout(hb)
         f.addWidget(grp)
 
@@ -61,6 +92,14 @@ class TabJuntar(BasePage):
         self.drop_out = DropFileEdit(save=True, default_name="merged.pdf")
         f.addWidget(self.drop_out)
         f.addStretch()
+
+    def update_theme(self, dark: bool) -> None:
+        super().update_theme(dark)
+        pri = TEXT_PRI if dark else _LQ
+        self._btn_up.setIcon(svg_icon(SVG_ARROW_UP, color=pri, size=14))
+        self._btn_dn.setIcon(svg_icon(SVG_ARROW_DOWN, color=pri, size=14))
+        self._btn_rem.setIcon(svg_icon(SVG_MINUS, color="#FCA5A5" if dark else "#DC2626", size=14))
+        self._btn_clr.setIcon(svg_icon(SVG_CLOSE, color=pri, size=14))
 
     def _add_path(self, p: str) -> bool:
         """Prompt for password if encrypted, store it, append to list."""
@@ -110,14 +149,12 @@ class TabJuntar(BasePage):
         paths = [self.lst.item(i).text() for i in range(self.lst.count())]
         if len(paths) < 2:
             QMessageBox.warning(self, t("msg.warning"), t("tool.merge.min2")); return
-        # Validate all files exist before starting
         missing = [p for p in paths if not os.path.isfile(p)]
         if missing:
             QMessageBox.critical(self, t("msg.error"),
                                  t("tool.merge.missing_files", files="\n".join(missing)))
             return
 
-        # Prompt Save As dialog so user can choose destination file and name
         default_name = "merged.pdf"
         if paths:
             base, ext = os.path.splitext(os.path.basename(paths[0]))
@@ -127,7 +164,7 @@ class TabJuntar(BasePage):
         if not out_path:
             return
         self.drop_out.set_path(out_path)
-        
+
         win: Any = self.window()
         viewer = getattr(win, "_viewer", None)
 
@@ -143,7 +180,6 @@ class TabJuntar(BasePage):
                 for page in reader.pages:
                     w.add_page(page)
 
-            # Release viewer document locks before atomic overwrite if applicable
             if viewer and viewer.current_path() and os.path.abspath(viewer.current_path()) == os.path.abspath(out_path):
                 viewer._canvas.close_doc()
                 if viewer._fitz_doc:
@@ -153,7 +189,7 @@ class TabJuntar(BasePage):
                 viewer._thumbnails._stop_all_workers()
 
             atomic_pdf_write(w, out_path, sources=paths)
-            
+
             self._status(t("tool.merge.status.done", name=os.path.basename(out_path)))
             msg = t("tool.merge.done", path=out_path)
 

@@ -1,21 +1,31 @@
-"""PDF_Editor – TabReordenar: reorder PDF pages tool."""
+# app/tools/reorder.py
+"""PDF_Editor – TabReordenar: reorder PDF pages tool with SVG icons."""
 
 import contextlib
 import os
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtWidgets import (
     QGroupBox, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QAbstractItemView, QPushButton, QFileDialog, QMessageBox,
 )
-import qtawesome as qta
 from pypdf import PdfWriter
 
 from app.base import BasePage
 from app.pdf_io import atomic_pdf_write
 from app.i18n import t
-from app.utils import section, info_lbl, danger_btn, show_error
+from app.utils import (
+    SVG_ARROW_DOWN,
+    SVG_ARROW_UP,
+    SVG_HISTORY,
+    SVG_TRASH,
+    section,
+    info_lbl,
+    danger_btn,
+    show_error,
+    svg_icon,
+)
 from app.constants import DESKTOP, TEXT_PRI, _LQ
 from app.widgets import DropFileEdit
 
@@ -75,28 +85,32 @@ class TabReordenar(BasePage):
         hb.setSpacing(6)
 
         self.btn_up = QPushButton()
-        self.btn_up.setIcon(qta.icon("fa5s.arrow-up", color=TEXT_PRI))
+        self.btn_up.setIcon(svg_icon(SVG_ARROW_UP, color=TEXT_PRI, size=14))
+        self.btn_up.setIconSize(QSize(14, 14))
         self.btn_up.setToolTip(t("btn.up"))
         self.btn_up.setAccessibleName(t("btn.up"))
         self.btn_up.setFixedWidth(40)
         self.btn_up.clicked.connect(self._up)
 
         self.btn_dn = QPushButton()
-        self.btn_dn.setIcon(qta.icon("fa5s.arrow-down", color=TEXT_PRI))
+        self.btn_dn.setIcon(svg_icon(SVG_ARROW_DOWN, color=TEXT_PRI, size=14))
+        self.btn_dn.setIconSize(QSize(14, 14))
         self.btn_dn.setToolTip(t("btn.down"))
         self.btn_dn.setAccessibleName(t("btn.down"))
         self.btn_dn.setFixedWidth(40)
         self.btn_dn.clicked.connect(self._dn)
 
         self.btn_del = danger_btn("")
-        self.btn_del.setIcon(qta.icon("fa5s.trash-alt", color="#F87171"))
+        self.btn_del.setIcon(svg_icon(SVG_TRASH, color="#F87171", size=14))
+        self.btn_del.setIconSize(QSize(14, 14))
         self.btn_del.setToolTip(t("btn.delete"))
         self.btn_del.setAccessibleName(t("btn.delete"))
         self.btn_del.setFixedWidth(40)
         self.btn_del.clicked.connect(self._del)
 
         self.btn_reset = QPushButton()
-        self.btn_reset.setIcon(qta.icon("fa5s.history", color=TEXT_PRI))
+        self.btn_reset.setIcon(svg_icon(SVG_HISTORY, color=TEXT_PRI, size=14))
+        self.btn_reset.setIconSize(QSize(14, 14))
         self.btn_reset.setToolTip(t("btn.reset_order"))
         self.btn_reset.setAccessibleName(t("btn.reset_order"))
         self.btn_reset.setFixedWidth(40)
@@ -121,10 +135,10 @@ class TabReordenar(BasePage):
     def update_theme(self, dark: bool) -> None:
         super().update_theme(dark)
         pri = TEXT_PRI if dark else _LQ
-        self.btn_up.setIcon(qta.icon("fa5s.arrow-up", color=pri))
-        self.btn_dn.setIcon(qta.icon("fa5s.arrow-down", color=pri))
-        self.btn_del.setIcon(qta.icon("fa5s.trash-alt", color="#F87171" if dark else "#DC2626"))
-        self.btn_reset.setIcon(qta.icon("fa5s.history", color=pri))
+        self.btn_up.setIcon(svg_icon(SVG_ARROW_UP, color=pri, size=14))
+        self.btn_dn.setIcon(svg_icon(SVG_ARROW_DOWN, color=pri, size=14))
+        self.btn_del.setIcon(svg_icon(SVG_TRASH, color="#F87171" if dark else "#DC2626", size=14))
+        self.btn_reset.setIcon(svg_icon(SVG_HISTORY, color=pri, size=14))
 
     def _pick_input(self):
         p, _ = QFileDialog.getOpenFileName(self, t("btn.open_pdf"), DESKTOP, t("file_filter.pdf"))

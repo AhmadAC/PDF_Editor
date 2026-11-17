@@ -1,5 +1,5 @@
 # app/tools/_import_gui.py
-"""PDF_Editor – GUI bindings for the multi-format PDF import tab."""
+"""PDF_Editor – GUI bindings for the multi-format PDF import tab with SVG icons."""
 
 import contextlib
 import logging
@@ -7,18 +7,25 @@ import os
 from typing import Any
 
 import fitz
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSize
 from PySide6.QtWidgets import (
     QAbstractItemView, QFileDialog, QHBoxLayout, QLabel,
     QListWidget, QListWidgetItem, QMessageBox, QPushButton
 )
-import qtawesome as qta
 
 from app.base import BasePage
 from app.pdf_io import atomic_pdf_write
 from app.i18n import t
-from app.utils import section, danger_btn, result_label_style
-from app.constants import DESKTOP, TEXT_SEC
+from app.utils import (
+    SVG_MINUS,
+    SVG_PLUS,
+    section,
+    danger_btn,
+    result_label_style,
+    svg_for_name,
+    svg_icon,
+)
+from app.constants import DESKTOP, TEXT_SEC, _LQ
 from app.widgets import DropFileEdit
 from app.tools._import_base import IMAGE_EXTS, DOC_EXTS, PPT_EXTS, EXCEL_EXTS, EBOOK_EXTS, _ALL_SUPPORTED_FILTER, _NoContent
 from app.tools._import_core import convert_file_to_pdf
@@ -91,12 +98,14 @@ class TabImport(BasePage):
 
         file_btns = QHBoxLayout()
         self._add_btn = QPushButton(t("tool.import.add_files"))
-        self._add_btn.setIcon(qta.icon("fa5s.plus", color=TEXT_SEC))
+        self._add_btn.setIcon(svg_icon(SVG_PLUS, color=TEXT_SEC, size=14))
+        self._add_btn.setIconSize(QSize(14, 14))
         self._add_btn.clicked.connect(self._pick_files)
         file_btns.addWidget(self._add_btn)
 
         self._remove_selected_btn = QPushButton(t("btn.remove"))
-        self._remove_selected_btn.setIcon(qta.icon("fa5s.minus", color=TEXT_SEC))
+        self._remove_selected_btn.setIcon(svg_icon(SVG_MINUS, color=TEXT_SEC, size=14))
+        self._remove_selected_btn.setIconSize(QSize(14, 14))
         self._remove_selected_btn.clicked.connect(self._remove_selected_files)
         file_btns.addWidget(self._remove_selected_btn)
 
@@ -120,8 +129,17 @@ class TabImport(BasePage):
 
     def update_theme(self, dark: bool) -> None:
         super().update_theme(dark)
+        col = TEXT_SEC if dark else _LQ
         try:
             self.lbl_result.setStyleSheet(result_label_style(dark))
+            self._add_btn.setIcon(svg_icon(SVG_PLUS, color=col, size=14))
+            self._remove_selected_btn.setIcon(svg_icon(SVG_MINUS, color=col, size=14))
+            for i in range(self._file_list.count()):
+                item = self._file_list.item(i)
+                if item is not None:
+                    p = item.data(Qt.ItemDataRole.UserRole) or ""
+                    ext = os.path.splitext(p)[1].lower()
+                    item.setIcon(svg_for_name(self._icon_for_ext(ext), color=col, size=15))
         except RuntimeError:
             pass
 
@@ -157,7 +175,7 @@ class TabImport(BasePage):
 
         ext = os.path.splitext(p)[1].lower()
         icon_name = self._icon_for_ext(ext)
-        item = QListWidgetItem(qta.icon(icon_name, color=TEXT_SEC), os.path.basename(p))
+        item = QListWidgetItem(svg_for_name(icon_name, color=TEXT_SEC, size=15), os.path.basename(p))
         item.setData(Qt.ItemDataRole.UserRole, p)
         item.setToolTip(p)
         self._file_list.addItem(item)
@@ -277,7 +295,7 @@ class TabImport(BasePage):
         self._done(out_path)
 
     def _done(self, out_path: str):
-        self.lbl_result.setText(f"  \u2192 {os.path.basename(out_path)}")
+        self.lbl_result.setText(f"  -> {os.path.basename(out_path)}")
         self._status(t("tool.import.status.done", path=out_path))
 
         win: Any = self.window()

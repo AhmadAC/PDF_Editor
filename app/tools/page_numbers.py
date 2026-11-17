@@ -1,23 +1,31 @@
-"""PDF_Editor – TabPageNumbers: add page numbers to a PDF with live preview and undo/redo."""
+# app/tools/page_numbers.py
+"""PDF_Editor – TabPageNumbers: add page numbers to a PDF with live preview, SVG icons, and undo/redo."""
 
 import contextlib
 import os
 import re
 from typing import Any, cast
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtWidgets import (
     QGroupBox, QFormLayout, QHBoxLayout, QLineEdit, QFileDialog, QMessageBox,
-    QPushButton, QLabel,
+    QPushButton,
 )
-import qtawesome as qta
 
 from app.base import BasePage
 from app.pdf_io import atomic_pdf_write
 from app.i18n import t
-from app.utils import (section, info_lbl, parse_pages, show_error,
-                       WrongPasswordError)
-from app.constants import ACCENT, DESKTOP, TEXT_PRI, _LQ
+from app.utils import (
+    SVG_ROTATE_LEFT,
+    SVG_ROTATE_RIGHT,
+    section,
+    info_lbl,
+    parse_pages,
+    show_error,
+    svg_icon,
+    WrongPasswordError,
+)
+from app.constants import DESKTOP, TEXT_PRI, _LQ
 from app.widgets import DropFileEdit, FocusComboBox, FocusSpinBox
 
 
@@ -109,13 +117,17 @@ class TabPageNumbers(BasePage):
         undo_redo_row = QHBoxLayout()
         undo_redo_row.setSpacing(6)
 
-        self.btn_undo = QPushButton("↶ " + t("btn.undo", default="Undo"))
+        self.btn_undo = QPushButton(t("btn.undo", default="Undo"))
+        self.btn_undo.setIcon(svg_icon(SVG_ROTATE_LEFT, color=TEXT_PRI, size=14))
+        self.btn_undo.setIconSize(QSize(14, 14))
         self.btn_undo.setToolTip("Ctrl+Z")
         self.btn_undo.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_undo.clicked.connect(self._undo)
         self.btn_undo.setEnabled(False)
 
-        self.btn_redo = QPushButton("↷ " + t("btn.redo", default="Redo"))
+        self.btn_redo = QPushButton(t("btn.redo", default="Redo"))
+        self.btn_redo.setIcon(svg_icon(SVG_ROTATE_RIGHT, color=TEXT_PRI, size=14))
+        self.btn_redo.setIconSize(QSize(14, 14))
         self.btn_redo.setToolTip("Ctrl+Y")
         self.btn_redo.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_redo.clicked.connect(self._redo)
@@ -205,7 +217,7 @@ class TabPageNumbers(BasePage):
             self._update_undo_redo_state()
             self.numbers_preview_changed.emit(None)
             if hasattr(self, "_status"):
-                self._status("↩ " + t("tool.page_numbers.undone", default="Page numbers undone (Ctrl+Y to redo)"))
+                self._status(t("tool.page_numbers.undone", default="Page numbers undone (Ctrl+Y to redo)"))
 
     def _redo(self):
         win: Any = self.window()
@@ -215,7 +227,7 @@ class TabPageNumbers(BasePage):
             self._update_undo_redo_state()
             self.numbers_preview_changed.emit(None)
             if hasattr(self, "_status"):
-                self._status("↪ " + t("tool.page_numbers.redone", default="Page numbers redone"))
+                self._status(t("tool.page_numbers.redone", default="Page numbers redone"))
 
     def _update_undo_redo_state(self):
         win: Any = self.window()
@@ -269,7 +281,9 @@ class TabPageNumbers(BasePage):
         super().update_theme(dark)
         pri = TEXT_PRI if dark else _LQ
         self.btn_undo.setStyleSheet(f"color: {pri};")
+        self.btn_undo.setIcon(svg_icon(SVG_ROTATE_LEFT, color=pri, size=14))
         self.btn_redo.setStyleSheet(f"color: {pri};")
+        self.btn_redo.setIcon(svg_icon(SVG_ROTATE_RIGHT, color=pri, size=14))
 
     def _run(self):
         pdf_path = self.drop_in.path()
@@ -356,7 +370,6 @@ class TabPageNumbers(BasePage):
                 return
             replace = (ans == QMessageBox.StandardButton.Yes)
 
-        # If document is loaded in viewer / compact mode, apply directly in-memory with Undo/Redo
         if viewer is not None and viewer.current_path():
             try:
                 import fitz
@@ -398,27 +411,24 @@ class TabPageNumbers(BasePage):
                                      fontsize=font_size, fontname="helv",
                                      color=(0, 0, 0))
 
-                # Clear live preview overlay once applied
                 self.numbers_preview_changed.emit(None)
 
                 first_target = min(i for i in range(total) if i in targets and i >= start_page)
                 viewer._save_and_reload(doc, target_page=first_target)
 
-                # Keep the tool's drop_in in sync with the viewer's current path
                 cur_p = viewer.current_path()
                 if cur_p:
                     self.drop_in.blockSignals(True)
                     self.drop_in.set_path(cur_p)
                     self.drop_in.blockSignals(False)
 
-                self._status(t("tool.page_numbers.applied", default="✔ Page numbers added (Ctrl+Z to undo, Ctrl+S to save)"))
+                self._status(t("tool.page_numbers.applied", default="Page numbers added (Ctrl+Z to undo, Ctrl+S to save)"))
                 self._update_undo_redo_state()
                 return
             except Exception as e:
                 show_error(self, e)
                 return
 
-        # Standalone mode: prompt for Save As location
         default_name = "numbered.pdf"
         if pdf_path:
             base, ext = os.path.splitext(os.path.basename(pdf_path))

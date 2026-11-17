@@ -1,4 +1,4 @@
-# app\tools\info.py
+# app/tools/info.py
 
 """PDF_Editor – TabInfo: PDF information/metadata tool."""
 
@@ -13,7 +13,7 @@ from app.utils import format_size_localized
 
 
 def _format_pdf_date(raw: str) -> str:
-    """Convert PDF date 'D:20260213104540Z' → '2026-02-13 10:45:40'."""
+    """Convert PDF date 'D:20260213104540Z' -> '2026-02-13 10:45:40'."""
     s = str(raw).strip()
     if s.startswith("D:"):
         s = s[2:]
@@ -77,8 +77,8 @@ class TabInfo(BasePage):
             enc = t("tool.info.yes") if reader.is_encrypted else t("tool.info.no")
             page_count = len(reader.pages)
             lines = [
-                f"  📄  {os.path.basename(path)}",
-                f"  📁  {path}",
+                f"  File:           {os.path.basename(path)}",
+                f"  Path:           {path}",
                 "",
                 f"  {t('tool.info.pages'):<16}{page_count}",
                 f"  {t('tool.info.size'):<16}{format_size_localized(size/1024)} KB  ({size:,} bytes)".replace(",", " "),
@@ -100,10 +100,10 @@ class TabInfo(BasePage):
                 pg = reader.pages[0]
                 w, h = float(pg.mediabox.width), float(pg.mediabox.height)
                 lines += ["",
-                    f"  {t('tool.info.page_size')}  {w:.0f} × {h:.0f} pt",
-                    f"                   {w/72*25.4:.0f} × {h/72*25.4:.0f} mm",
+                    f"  {t('tool.info.page_size')}  {w:.0f} x {h:.0f} pt",
+                    f"                   {w/72*25.4:.0f} x {h/72*25.4:.0f} mm",
                 ]
             self.txt.setPlainText("\n".join(lines))
-            self._status(f"ℹ  {os.path.basename(path)}  ·  {page_count} {t('tool.info.pages').lower()}  ·  {format_size_localized(size/1024)} KB")
+            self._status(f"{os.path.basename(path)}  -  {page_count} {t('tool.info.pages').lower()}  -  {format_size_localized(size/1024)} KB")
         except Exception as e:
             self.txt.setPlainText(t("tool.info.error", e=e))

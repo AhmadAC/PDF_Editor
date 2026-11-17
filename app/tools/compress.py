@@ -212,7 +212,7 @@ class TabComprimir(BasePage):
             if isinstance(result, tuple) and result and result[0] == "__no_gain__":
                 before_kb = os.path.getsize(pdf_path) / 1024
                 self.lbl_result.setText(f"  {before_kb:.0f} KB")
-                self._status(f"ℹ  {t('msg.no_gain')}")
+                self._status(t('msg.no_gain'))
                 QMessageBox.information(self, t("msg.no_gain"),
                     t("tool.compress.no_gain", e=result[1]))
                 return
@@ -223,7 +223,7 @@ class TabComprimir(BasePage):
                     after=f"{after/1024:.0f}",
                     pct=f"{ratio:.0f}")
             self.lbl_result.setText(msg)
-            self._status(f"✔  {msg.strip()}")
+            self._status(msg.strip())
 
             win_done: Any = self.window()
             viewer_done = getattr(win_done, "_viewer", None)

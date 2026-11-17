@@ -1,6 +1,5 @@
 # app/editor/dialogs.py
-
-"""PDF_Editor – editor dialogs: password, text edit, text insert, note, signature."""
+"""PDF_Editor – editor dialogs: password, text edit, text insert, note, signature with SVG icons."""
 
 import os
 import tempfile
@@ -14,7 +13,6 @@ from PySide6.QtWidgets import (
     QCheckBox, QFileDialog, QMessageBox, QListWidget,
     QListWidgetItem, QAbstractItemView,
 )
-import qtawesome as qta
 
 from app.constants import (
     ACCENT, ACCENT_H, ACCENT_P, BORDER, TEXT_PRI, TEXT_SEC, BG_INNER,
@@ -23,7 +21,7 @@ from app.constants import (
 from app.i18n import (
     t, get_saved_signatures, save_new_signature, delete_saved_signature,
 )
-from app.utils import error_color, format_size_localized
+from app.utils import SVG_LOCK, SVG_TRASH, error_color, format_size_localized, svg_icon, svg_pixmap
 from app.widgets import FocusComboBox, FocusSpinBox
 
 _LOCK_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512">
@@ -36,7 +34,7 @@ def _render_lock_pixmap(color: str, size: int = 44, dpr: float = 1.0) -> QPixmap
     svg_bytes = _LOCK_SVG.format(color=color).encode("utf-8")
     renderer = QSvgRenderer(QByteArray(svg_bytes))
     if not renderer.isValid():
-        return qta.icon("fa5s.lock", color=color, scale_factor=0.8).pixmap(int(size * dpr), int(size * dpr))
+        return svg_pixmap(SVG_LOCK, color=color, size=size, dpr=dpr)
 
     total_px = int(size * dpr)
     pix = QPixmap(total_px, total_px)
@@ -47,7 +45,6 @@ def _render_lock_pixmap(color: str, size: int = 44, dpr: float = 1.0) -> QPixmap
     avail_w = float(size) - (pad * 2.0)
     avail_h = float(size) - (pad * 2.0)
 
-    # 448 / 512 aspect ratio
     target_h = avail_h
     target_w = target_h * (448.0 / 512.0)
     if target_w > avail_w:
@@ -75,8 +72,7 @@ def _theme_colors(parent):
 
 
 def _style_dialog_buttons(ca_btn: QPushButton, ok_btn: QPushButton, dark: bool = True, w: int = 105, h: int = 36):
-    """Ensure dialog Cancel and OK/Open/Apply buttons have identical dimensions and alignment,
-    completely overriding global QSS rules like #btn_primary that cause size discrepancies."""
+    """Ensure dialog Cancel and OK/Open/Apply buttons have identical dimensions and alignment."""
     base_btn_qss = (
         f"min-width: {w}px; max-width: {w}px; min-height: {h}px; max-height: {h}px; "
         f"padding: 0px; font-size: 10pt; font-weight: 600; border-radius: 6px;"
@@ -226,19 +222,7 @@ class _PdfPasswordDialog(QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
-        QTimer.singleShot(50, lambda: self._print_button_diagnostics("showEvent (layout ready)"))
-
-    def _print_button_diagnostics(self, context: str = ""):
-        ca = getattr(self, "_ca_btn", None)
-        ok = getattr(self, "_ok_btn", None)
-        if not ca or not ok:
-            return
-        print(f"[PDF_Editor _PdfPasswordDialog Diagnostics - {context}]")
-        print(f"  Cancel Button : pos=({ca.x()}, {ca.y()}), size={ca.width()}x{ca.height()}")
-        print(f"  Open Button   : pos=({ok.x()}, {ok.y()}), size={ok.width()}x{ok.height()}")
-        print(f"  Aligned Y?    : {ca.y() == ok.y()} (Cancel Y={ca.y()}, Open Y={ok.y()})")
-        print(f"  Same Height?  : {ca.height() == ok.height()} ({ca.height()}px)")
-        print(f"  Same Width?   : {ca.width() == ok.width()} ({ca.width()}px)")
+        QTimer.singleShot(50, lambda: None)
 
     def password(self) -> str:
         return self._edit.text()
@@ -493,7 +477,7 @@ class _SignatureDialog(QDialog):
 
         sig_btns_row = QHBoxLayout()
         self._del_sig_btn = QPushButton(t("btn.delete"))
-        self._del_sig_btn.setIcon(qta.icon("fa5s.trash-alt", color="#EF4444"))
+        self._del_sig_btn.setIcon(svg_icon(SVG_TRASH, color="#EF4444", size=14))
         self._del_sig_btn.setEnabled(False)
         self._del_sig_btn.clicked.connect(self._delete_selected_saved_sig)
         sig_btns_row.addWidget(self._del_sig_btn)
@@ -608,7 +592,6 @@ class _SignatureDialog(QDialog):
 
         self._refresh_saved_list()
 
-        # If saved signatures exist, focus saved list, otherwise switch to create tab
         if self._sig_list.count() > 0:
             self._main_tabs.setCurrentIndex(0)
             self._sig_list.setCurrentRow(0)
@@ -695,7 +678,6 @@ class _SignatureDialog(QDialog):
                     self._sig_name_input.setText(stem.title())
 
     def _on_accept(self):
-        # 1. If user selected an existing signature from "My Signatures"
         if self._main_tabs.currentIndex() == 0:
             item = self._sig_list.currentItem()
             if not item and self._sig_list.count() > 0:
@@ -709,7 +691,6 @@ class _SignatureDialog(QDialog):
             QMessageBox.warning(self, t("msg.warning"), t("edit.signature.no_saved"))
             return
 
-        # 2. If user is in "Create / Import"
         sub_tab = self._sub_tabs.currentIndex()
 
         if sub_tab == 0:

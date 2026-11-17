@@ -1,23 +1,31 @@
-# app\tools\rotate.py
+# app/tools/rotate.py
 
-"""PDF_Editor – TabRotar: rotate PDF pages tool."""
+"""PDF_Editor – TabRotar: rotate PDF pages tool with SVG icons."""
 import contextlib
 import os
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtWidgets import (
     QGroupBox, QFormLayout, QHBoxLayout, QLineEdit,
     QPushButton, QFileDialog, QMessageBox,
 )
-import qtawesome as qta
 from pypdf import PdfWriter
 
 from app import i18n
 from app.base import BasePage
 from app.pdf_io import atomic_pdf_write
 from app.i18n import t, get_language
-from app.utils import section, info_lbl, parse_pages, show_error
+from app.utils import (
+    SVG_HISTORY,
+    SVG_ROTATE_LEFT,
+    SVG_ROTATE_RIGHT,
+    section,
+    info_lbl,
+    parse_pages,
+    show_error,
+    svg_icon,
+)
 from app.constants import DESKTOP, TEXT_PRI, TEXT_SEC, _LQ
 from app.widgets import DropFileEdit, FocusComboBox
 
@@ -94,12 +102,14 @@ class TabRotar(BasePage):
         btn_row.setSpacing(6)
 
         self.btn_rot_left = QPushButton("90°")
-        self.btn_rot_left.setIcon(qta.icon("fa5s.undo", color=TEXT_PRI))
+        self.btn_rot_left.setIcon(svg_icon(SVG_ROTATE_LEFT, color=TEXT_PRI, size=14))
+        self.btn_rot_left.setIconSize(QSize(14, 14))
         self.btn_rot_left.setToolTip("90° Counter-clockwise")
         self.btn_rot_left.clicked.connect(self._rotate_left)
 
         self.btn_rot_right = QPushButton("90°")
-        self.btn_rot_right.setIcon(qta.icon("fa5s.redo", color=TEXT_PRI))
+        self.btn_rot_right.setIcon(svg_icon(SVG_ROTATE_RIGHT, color=TEXT_PRI, size=14))
+        self.btn_rot_right.setIconSize(QSize(14, 14))
         self.btn_rot_right.setToolTip("90° Clockwise")
         self.btn_rot_right.clicked.connect(self._rotate_right)
 
@@ -107,7 +117,8 @@ class TabRotar(BasePage):
         self.btn_rot_180.clicked.connect(self._rotate_180)
 
         self.btn_reset_rot = QPushButton()
-        self.btn_reset_rot.setIcon(qta.icon("fa5s.history", color=TEXT_SEC))
+        self.btn_reset_rot.setIcon(svg_icon(SVG_HISTORY, color=TEXT_SEC, size=14))
+        self.btn_reset_rot.setIconSize(QSize(14, 14))
         self.btn_reset_rot.setToolTip(t("btn.reset_order"))
         self.btn_reset_rot.clicked.connect(self._reset_rotations)
 
@@ -119,7 +130,6 @@ class TabRotar(BasePage):
 
         f.addWidget(grp)
 
-        # In-panel save button row
         btn_save_row = QHBoxLayout()
         btn_save_row.setContentsMargins(0, 10, 0, 0)
         btn_save_row.addStretch()
@@ -295,11 +305,11 @@ class TabRotar(BasePage):
             except Exception as e:
                 self.lbl_info.setText(t("tool.split.error_info", e=e))
                 return
-        
+
         self._rotations.clear()
         self._undo_stack.clear()
         self._redo_stack.clear()
-        
+
         self.lbl_info.setText(t("edit.status.pages", n=self._page_count))
         self.rotations_changed.emit(self._rotations)
 
@@ -310,9 +320,10 @@ class TabRotar(BasePage):
     def update_theme(self, dark: bool) -> None:
         super().update_theme(dark)
         pri = TEXT_PRI if dark else _LQ
-        self.btn_rot_left.setIcon(qta.icon("fa5s.undo", color=pri))
-        self.btn_rot_right.setIcon(qta.icon("fa5s.redo", color=pri))
-        self.btn_reset_rot.setIcon(qta.icon("fa5s.history", color=TEXT_SEC if dark else _LQ))
+        sec = TEXT_SEC if dark else _LQ
+        self.btn_rot_left.setIcon(svg_icon(SVG_ROTATE_LEFT, color=pri, size=14))
+        self.btn_rot_right.setIcon(svg_icon(SVG_ROTATE_RIGHT, color=pri, size=14))
+        self.btn_reset_rot.setIcon(svg_icon(SVG_HISTORY, color=sec, size=14))
 
     def _run(self):
         pdf_path = self.drop_in.path()
