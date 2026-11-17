@@ -1,19 +1,25 @@
 # app/editor/canvas_events1.py
 
-"""Canvas interaction handler: mouse, drag handles, keyboard, stroke smoothing, vector stamps, and context menus."""
+"""Canvas interaction handler: mouse, drag handles, keyboard, stroke smoothing, vector stamps, and rich context menus."""
 
 from __future__ import annotations
 
 import fitz
 from PySide6.QtCore import Qt, QRect, QPoint
-from PySide6.QtWidgets import QMenu, QMessageBox, QApplication
+from PySide6.QtWidgets import QMenu, QMessageBox, QApplication, QColorDialog
+from PySide6.QtGui import QColor
 import qtawesome as qta
 
 from app.constants import ACCENT
 from app.i18n import t
 from app.editor.canvas_overlay1 import CanvasOverlayManager
+from app.viewer.canvas_action_menus import (
+    PRESET_COLORS,
+    make_circular_color_icon,
+    make_rainbow_wheel_icon,
+    _ScrollableMenuStyle,
+)
 
-# Safe fallback for PyMuPDF annotation constant to satisfy Pylance
 _PDF_ANNOT_TEXT: int = getattr(fitz, "PDF_ANNOT_TEXT", 0)
 
 
@@ -39,6 +45,7 @@ def smooth_stroke_points(pts: list[tuple[float, float]], iterations: int = 2) ->
 class CanvasEventHandler:
     def __init__(self, canvas):
         self.canvas = canvas
+        self._menu_style: _ScrollableMenuStyle | None = None
 
     def handle_mouse_double_click(self, e):
         c = self.canvas
@@ -58,7 +65,6 @@ class CanvasEventHandler:
         pos = e.position().toPoint()
         c.setFocus()
 
-        # 1. Placing signature from cursor
         if c._placing_signature:
             if e.button() == Qt.MouseButton.RightButton:
                 c.cancel_signature_placement()
@@ -92,7 +98,6 @@ class CanvasEventHandler:
                 e.accept()
                 return
 
-        # 2. Placing vector checkmark or crossmark stamp (Fill & Sign)
         if getattr(c, "_placing_stamp", False):
             if e.button() == Qt.MouseButton.RightButton:
                 c.cancel_stamp_placement()
@@ -128,7 +133,6 @@ class CanvasEventHandler:
                 e.accept()
                 return
 
-        # 3. Selected overlay handle or drag move
         if c._selected_overlay_idx >= 0 and e.button() == Qt.MouseButton.LeftButton:
             handle = c._overlay_mgr.get_overlay_handle_at(c._selected_overlay_idx, pos)
             if handle != CanvasOverlayManager.HANDLE_NONE:
@@ -150,7 +154,6 @@ class CanvasEventHandler:
             c._selected_overlay_idx = -1
             c.update()
 
-        # 4. Hit testing overlays
         if e.button() == Qt.MouseButton.LeftButton:
             for idx in reversed(range(len(c._overlays))):
                 if c._overlay_mgr.is_pos_inside_overlay(idx, pos):
@@ -181,7 +184,6 @@ class CanvasEventHandler:
                     e.accept()
                     return
 
-            # 5. Check existing media in PDF
             page_idx, lx, ly = c._page_and_local(pos.x(), pos.y())
             pdf_pt = c._to_pdf(page_idx, lx, ly)
             existing_media = c._overlay_mgr.detect_existing_media_at(page_idx, pdf_pt)
@@ -195,7 +197,6 @@ class CanvasEventHandler:
                 e.accept()
                 return
 
-            # 6. In Select Mode: Check active selection handles or existing text
             if getattr(c, "_select_mode", False):
                 if c._active_sel_rect is not None and c._active_sel_page == page_idx:
                     h_id = self._get_active_sel_handle_at(pos)
@@ -300,7 +301,6 @@ class CanvasEventHandler:
             e.accept()
             return
 
-        # Handle active selection resizing/moving in Select mode
         if getattr(c, "_select_mode", False) and c._active_sel_rect is not None:
             z = c._zoom
             orig = getattr(c, "_active_sel_orig_rect", None)
@@ -438,7 +438,6 @@ class CanvasEventHandler:
     def handle_mouse_release(self, e):
         c = self.canvas
 
-        # Release active selection resize/move in Select mode
         if getattr(c, "_select_mode", False):
             if getattr(c, "_active_sel_handle", CanvasOverlayManager.HANDLE_NONE) != CanvasOverlayManager.HANDLE_NONE or getattr(c, "_active_sel_moving", False):
                 c._active_sel_handle = CanvasOverlayManager.HANDLE_NONE
@@ -540,7 +539,6 @@ class CanvasEventHandler:
                 e.accept()
                 return
 
-        # Nudge movement of selected overlay or active selection
         if (c._selected_overlay_idx >= 0 or (getattr(c, "_select_mode", False) and getattr(c, "_active_sel_rect", None))) and key in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down):
             step = 15.0 if (modifiers & Qt.KeyboardModifier.ShiftModifier) else (1.0 if (modifiers & Qt.KeyboardModifier.AltModifier) else 4.0)
             dx = 0.0
@@ -574,7 +572,6 @@ class CanvasEventHandler:
             e.accept()
             return
 
-        # Resizing selected overlay using Ctrl + and Ctrl -
         if c._selected_overlay_idx >= 0:
             if (modifiers & Qt.KeyboardModifier.ControlModifier) or key in (Qt.Key.Key_Plus, Qt.Key.Key_Minus):
                 if key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
@@ -585,42 +582,6 @@ class CanvasEventHandler:
                     c.scale_selected_overlay(0.90)
                     e.accept()
                     return
-
-        # Scroll navigation when nothing is selected
-        if c._selected_overlay_idx < 0 and not c._inline_mgr.edit.isVisible():
-            if not (modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)):
-                if key in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_PageUp, Qt.Key.Key_PageDown, Qt.Key.Key_Home, Qt.Key.Key_End):
-                    sa = c._get_scroll_area()
-                    if sa:
-                        sb = sa.verticalScrollBar()
-                        if sb:
-                            step = 60
-                            if modifiers & Qt.KeyboardModifier.ShiftModifier:
-                                step = 150
-                            if key == Qt.Key.Key_Down:
-                                sb.setValue(min(sb.maximum(), sb.value() + step))
-                                e.accept()
-                                return
-                            elif key == Qt.Key.Key_Up:
-                                sb.setValue(max(0, sb.value() - step))
-                                e.accept()
-                                return
-                            elif key == Qt.Key.Key_PageDown:
-                                sb.setValue(min(sb.maximum(), sb.value() + sb.pageStep()))
-                                e.accept()
-                                return
-                            elif key == Qt.Key.Key_PageUp:
-                                sb.setValue(max(0, sb.value() - sb.pageStep()))
-                                e.accept()
-                                return
-                            elif key == Qt.Key.Key_Home:
-                                sb.setValue(0)
-                                e.accept()
-                                return
-                            elif key == Qt.Key.Key_End:
-                                sb.setValue(sb.maximum())
-                                e.accept()
-                                return
 
     def handle_context_menu(self, e):
         c = self.canvas
@@ -633,9 +594,13 @@ class CanvasEventHandler:
             c.cancel_stamp_placement()
             return
 
-        # Context menu for selected or clicked overlay
+        menu = QMenu(c)
+        self._menu_style = _ScrollableMenuStyle(menu.style())
+        menu.setStyle(self._menu_style)
+        menu.setStyleSheet("QMenu { menu-scrollable: 1; }")
+
+        # 1. Overlay clicked context menu
         if c._selected_overlay_idx >= 0 and c._overlay_mgr.is_pos_inside_overlay(c._selected_overlay_idx, pos):
-            menu = QMenu(c)
             act_inc = menu.addAction(qta.icon("fa5s.search-plus", color=ACCENT), "Increase Size (Ctrl+)")
             act_inc.triggered.connect(lambda: c.scale_selected_overlay(1.10))
             act_dec = menu.addAction(qta.icon("fa5s.search-minus", color=ACCENT), "Decrease Size (Ctrl-)")
@@ -648,82 +613,60 @@ class CanvasEventHandler:
             menu.exec(e.globalPos())
             return
 
-        for idx in reversed(range(len(c._overlays))):
-            if c._overlay_mgr.is_pos_inside_overlay(idx, pos):
-                c._selected_overlay_idx = idx
-                c.update()
-                menu = QMenu(c)
-                act_inc = menu.addAction(qta.icon("fa5s.search-plus", color=ACCENT), "Increase Size (Ctrl+)")
-                act_inc.triggered.connect(lambda: c.scale_selected_overlay(1.10))
-                act_dec = menu.addAction(qta.icon("fa5s.search-minus", color=ACCENT), "Decrease Size (Ctrl-)")
-                act_dec.triggered.connect(lambda: c.scale_selected_overlay(0.90))
-                menu.addSeparator()
-                act_del = menu.addAction(qta.icon("fa5s.trash-alt", color="#EF4444"), t("btn.delete"))
-                act_del.triggered.connect(c.delete_selected_overlay)
-                act_dup = menu.addAction(qta.icon("fa5s.clone", color=ACCENT), t("Duplicate", default="Duplicate"))
-                act_dup.triggered.connect(c.duplicate_selected_overlay)
-                menu.exec(e.globalPos())
-                return
-
-        # Context menu for Select Mode when active selection or text is present
+        # 2. In Select Mode with active text/element selection
         if getattr(c, "_select_mode", False) and (getattr(c, "_active_sel_rect", None) or self._is_pos_inside_active_sel(pos)):
-            menu = QMenu(c)
             act_edit = menu.addAction(qta.icon("fa5s.edit", color=ACCENT), "Edit Text")
             act_edit.triggered.connect(c.edit_selection_requested.emit)
             act_del = menu.addAction(qta.icon("fa5s.trash-alt", color="#EF4444"), "Delete (Del)")
             act_del.triggered.connect(c.delete_active_selection)
             menu.addSeparator()
+
             act_copy = menu.addAction(qta.icon("fa5s.copy", color=ACCENT), t("btn.copy", default="Copy"))
             act_copy.triggered.connect(lambda: QApplication.clipboard().setText(c._sel_text if hasattr(c, "_sel_text") else ""))
+
             act_hi = menu.addAction(qta.icon("fa5s.highlighter", color=ACCENT), "Highlight Selection")
             act_hi.triggered.connect(c.highlight_selection_requested.emit)
+
             act_redact = menu.addAction(qta.icon("fa5s.eraser", color="#EF4444"), "Redact Selection")
             act_redact.triggered.connect(c.redact_selection_requested.emit)
             menu.addSeparator()
-            act_add_check = menu.addAction(qta.icon("fa5s.check", color=ACCENT), "Add Checkmark (✔)")
-            act_add_check.triggered.connect(lambda: c.begin_stamp_placement("check"))
-            act_add_cross = menu.addAction(qta.icon("fa5s.times", color="#EF4444"), "Add Crossmark (✖)")
-            act_add_cross.triggered.connect(lambda: c.begin_stamp_placement("cross"))
-            menu.exec(e.globalPos())
-            return
 
-        hit = c._overlay_mgr.note_icon_at(pos)
-        if hit < 0:
-            hit, _ = c._overlay_mgr.annot_note_at(pos)
-        if hit >= 0:
-            menu = QMenu(c)
-            delete_action = menu.addAction(t("viewer.delete_comment"))
-            action = menu.exec(e.globalPos())
-            if action == delete_action:
-                reply = QMessageBox.question(
-                    c, t("msg.confirm"),
-                    t("viewer.confirm_delete_comment"),
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No,
-                )
-                if reply != QMessageBox.StandardButton.Yes:
-                    return
-                overlay = c._overlays[hit]
-                if c._doc and overlay.get("_existing"):
-                    page = c._doc[overlay.get("page", 0)]
-                    for annot in page.annots() or []:
-                        if annot.type[0] == _PDF_ANNOT_TEXT or annot.type[1] == "Text":
-                            txt = annot.info.get("content", "") or ""
-                            if txt.strip() == overlay.get("text", "").strip():
-                                page.delete_annot(annot)
-                                break
-                c._overlays.pop(hit)
-                if hasattr(c, "note_deleted"):
-                    c.note_deleted.emit(overlay)
-                if c._open_note == hit:
-                    c._open_note = None
-                elif c._open_note is not None and c._open_note > hit:
-                    c._open_note -= 1
-                c.update()
-            return
+        # ── Global Canvas Context Menu ────────────────────────────────
+        page_idx, lx, ly = c._page_and_local(pos.x(), pos.y())
+        pdf_pt = c._to_pdf(page_idx, lx, ly)
 
-        # General Canvas context menu
-        menu = QMenu(c)
+        act_add_text = menu.addAction(qta.icon("fa5s.font", color=ACCENT), "Add Text")
+        act_add_text.triggered.connect(
+            lambda: c.begin_inline_text_insert(page_idx, pdf_pt, 12.0, (0.0, 0.0, 0.0))
+        )
+
+        span = c.get_span_at(page_idx, pdf_pt, max_dist=8.0)
+        if span:
+            act_edit_click = menu.addAction(qta.icon("fa5s.edit", color=ACCENT), "Edit Text")
+            act_edit_click.triggered.connect(lambda s=span, p=page_idx: c.begin_inline_text_edit(s, p))
+
+        act_draw_hi = menu.addAction(qta.icon("fa5s.highlighter", color=ACCENT), "Drawn Highlight")
+        act_draw_hi.triggered.connect(lambda: c.set_highlight_mode(True, (1.0, 1.0, 0.0), Qt.CursorShape.CrossCursor))
+        menu.addSeparator()
+
+        color_menu = menu.addMenu(make_rainbow_wheel_icon(18), "Highlight Color")
+        act_custom = color_menu.addAction(make_rainbow_wheel_icon(16), "Custom Color...")
+
+        def _on_custom_col():
+            curr = QColor(255, 255, 0)
+            col = QColorDialog.getColor(curr, c, "Select Highlight Color")
+            if col.isValid():
+                c_tup = (col.redF(), col.greenF(), col.blueF())
+                c.set_highlight_mode(True, c_tup)
+
+        act_custom.triggered.connect(_on_custom_col)
+        color_menu.addSeparator()
+
+        for hex_code, label, rgb_tuple in PRESET_COLORS:
+            act_c = color_menu.addAction(make_circular_color_icon(hex_code, 16), label)
+            act_c.triggered.connect(lambda _=False, rgb=rgb_tuple: c.set_highlight_mode(True, rgb))
+
+        menu.addSeparator()
         act_add_check = menu.addAction(qta.icon("fa5s.check", color=ACCENT), "Add Checkmark (✔)")
         act_add_check.triggered.connect(lambda: c.begin_stamp_placement("check"))
         act_add_cross = menu.addAction(qta.icon("fa5s.times", color="#EF4444"), "Add Crossmark (✖)")
@@ -731,4 +674,5 @@ class CanvasEventHandler:
         menu.addSeparator()
         act_add_sig = menu.addAction(qta.icon("fa5s.signature", color=ACCENT), t("viewer.add_signature"))
         act_add_sig.triggered.connect(lambda: c.start_add_signature_flow(pos))
+
         menu.exec(e.globalPos())
