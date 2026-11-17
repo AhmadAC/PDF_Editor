@@ -1,13 +1,36 @@
-"""PDF_Editor – WorkspaceBar: top toolbar for workspace actions and navigation."""
+# app/workspace_bar.py
+"""PDF_Editor – WorkspaceBar: top toolbar for workspace actions and navigation using SVG icons."""
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QLabel, QPushButton, QLineEdit, QSizePolicy
 )
-import qtawesome as qta
 
 from app.constants import TEXT_PRI, ACCENT, _LP
 from app.i18n import t
-from app.utils import _paint_bg
+from app.utils import (
+    SVG_ARROW_CIRCLE_UP,
+    SVG_BARS,
+    SVG_BOOKMARK,
+    SVG_CHEVRON_LEFT,
+    SVG_CHEVRON_RIGHT,
+    SVG_COLUMNS,
+    SVG_COMPRESS,
+    SVG_DOUBLE_LEFT,
+    SVG_DOUBLE_RIGHT,
+    SVG_FOLDER,
+    SVG_MOON,
+    SVG_PRINT,
+    SVG_ROTATE_LEFT,
+    SVG_ROTATE_RIGHT,
+    SVG_SEARCH,
+    SVG_SUN,
+    SVG_TH_LARGE,
+    SVG_TV,
+    SVG_ZOOM_IN,
+    SVG_ZOOM_OUT,
+    _paint_bg,
+    svg_icon,
+)
 
 
 class ElidedLabel(QLabel):
@@ -57,7 +80,7 @@ class WorkspaceBar(QWidget):
 
         # ── Left Side: App Sidebar Toggle & Pages Sidebar Toggle ──────
         self._sidebar_toggle_btn = QPushButton()
-        self._ico_bars = qta.icon("fa5s.bars", color=TEXT_PRI)
+        self._ico_bars = svg_icon(SVG_BARS, color=TEXT_PRI, size=15)
         self._sidebar_toggle_btn.setIcon(self._ico_bars)
         self._sidebar_toggle_btn.setObjectName("viewer_nav_btn")
         self._sidebar_toggle_btn.setFixedSize(28, 28)
@@ -66,7 +89,7 @@ class WorkspaceBar(QWidget):
         layout.addWidget(self._sidebar_toggle_btn)
 
         self._pages_toggle_btn = QPushButton()
-        self._ico_pages = qta.icon("fa5s.th-large", color=TEXT_PRI)
+        self._ico_pages = svg_icon(SVG_TH_LARGE, color=TEXT_PRI, size=15)
         self._pages_toggle_btn.setIcon(self._ico_pages)
         self._pages_toggle_btn.setObjectName("viewer_nav_btn")
         self._pages_toggle_btn.setFixedSize(28, 28)
@@ -80,7 +103,7 @@ class WorkspaceBar(QWidget):
 
         # ── Viewer Action Buttons ─────────────────────────────────────
         self._open_pdf_btn = QPushButton()
-        self._open_pdf_btn.setIcon(qta.icon("fa5s.folder-open", color=TEXT_PRI))
+        self._open_pdf_btn.setIcon(svg_icon(SVG_FOLDER, color=TEXT_PRI, size=15))
         self._open_pdf_btn.setObjectName("viewer_nav_btn")
         self._open_pdf_btn.setFixedSize(28, 28)
         self._open_pdf_btn.setIconSize(QSize(15, 15))
@@ -88,7 +111,7 @@ class WorkspaceBar(QWidget):
         layout.addWidget(self._open_pdf_btn)
 
         self._toc_top_btn = QPushButton()
-        self._toc_top_btn.setIcon(qta.icon("fa5s.bookmark", color=TEXT_PRI))
+        self._toc_top_btn.setIcon(svg_icon(SVG_BOOKMARK, color=TEXT_PRI, size=15))
         self._toc_top_btn.setObjectName("viewer_nav_btn")
         self._toc_top_btn.setFixedSize(28, 28)
         self._toc_top_btn.setIconSize(QSize(15, 15))
@@ -97,7 +120,7 @@ class WorkspaceBar(QWidget):
         layout.addWidget(self._toc_top_btn)
 
         self._night_top_btn = QPushButton()
-        self._night_top_btn.setIcon(qta.icon("fa5s.moon", color=TEXT_PRI))
+        self._night_top_btn.setIcon(svg_icon(SVG_MOON, color=TEXT_PRI, size=15))
         self._night_top_btn.setObjectName("viewer_nav_btn")
         self._night_top_btn.setFixedSize(28, 28)
         self._night_top_btn.setIconSize(QSize(15, 15))
@@ -106,7 +129,7 @@ class WorkspaceBar(QWidget):
         layout.addWidget(self._night_top_btn)
 
         self._print_top_btn = QPushButton()
-        self._print_top_btn.setIcon(qta.icon("fa5s.print", color=TEXT_PRI))
+        self._print_top_btn.setIcon(svg_icon(SVG_PRINT, color=TEXT_PRI, size=15))
         self._print_top_btn.setObjectName("viewer_nav_btn")
         self._print_top_btn.setFixedSize(28, 28)
         self._print_top_btn.setIconSize(QSize(15, 15))
@@ -114,7 +137,7 @@ class WorkspaceBar(QWidget):
         layout.addWidget(self._print_top_btn)
 
         self._present_btn = QPushButton()
-        self._present_btn.setIcon(qta.icon("fa5s.tv", color=TEXT_PRI))
+        self._present_btn.setIcon(svg_icon(SVG_TV, color=TEXT_PRI, size=15))
         self._present_btn.setObjectName("viewer_nav_btn")
         self._present_btn.setFixedSize(28, 28)
         self._present_btn.setIconSize(QSize(15, 15))
@@ -122,7 +145,7 @@ class WorkspaceBar(QWidget):
         layout.addWidget(self._present_btn)
 
         self._search_top_btn = QPushButton()
-        self._search_top_btn.setIcon(qta.icon("fa5s.search", color=TEXT_PRI))
+        self._search_top_btn.setIcon(svg_icon(SVG_SEARCH, color=TEXT_PRI, size=15))
         self._search_top_btn.setObjectName("viewer_nav_btn")
         self._search_top_btn.setFixedSize(28, 28)
         self._search_top_btn.setIconSize(QSize(15, 15))
@@ -136,7 +159,7 @@ class WorkspaceBar(QWidget):
         zw_h.setSpacing(2)
 
         self._zm_btn = QPushButton()
-        self._zm_btn.setIcon(qta.icon("fa5s.search-minus", color=TEXT_PRI))
+        self._zm_btn.setIcon(svg_icon(SVG_ZOOM_OUT, color=TEXT_PRI, size=15))
         self._zm_btn.setFixedSize(28, 28)
         self._zm_btn.setIconSize(QSize(15, 15))
         self._zm_btn.setObjectName("viewer_nav_btn")
@@ -147,14 +170,14 @@ class WorkspaceBar(QWidget):
         self._lbl_zoom.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self._zp_btn = QPushButton()
-        self._zp_btn.setIcon(qta.icon("fa5s.search-plus", color=TEXT_PRI))
+        self._zp_btn.setIcon(svg_icon(SVG_ZOOM_IN, color=TEXT_PRI, size=15))
         self._zp_btn.setFixedSize(28, 28)
         self._zp_btn.setIconSize(QSize(15, 15))
         self._zp_btn.setObjectName("viewer_nav_btn")
         _a11y(self._zp_btn, t("zoom.in"))
 
         self._z0_btn = QPushButton()
-        self._z0_btn.setIcon(qta.icon("fa5s.compress-arrows-alt", color=TEXT_PRI))
+        self._z0_btn.setIcon(svg_icon(SVG_COMPRESS, color=TEXT_PRI, size=15))
         self._z0_btn.setObjectName("viewer_nav_btn")
         self._z0_btn.setFixedSize(28, 28)
         self._z0_btn.setIconSize(QSize(15, 15))
@@ -174,7 +197,7 @@ class WorkspaceBar(QWidget):
         pn_h.setSpacing(2)
 
         self._first_pg_btn = QPushButton()
-        self._first_pg_btn.setIcon(qta.icon("fa5s.angle-double-left", color=TEXT_PRI))
+        self._first_pg_btn.setIcon(svg_icon(SVG_DOUBLE_LEFT, color=TEXT_PRI, size=15))
         self._first_pg_btn.setFixedSize(28, 28)
         self._first_pg_btn.setIconSize(QSize(15, 15))
         self._first_pg_btn.setObjectName("viewer_nav_btn")
@@ -182,7 +205,7 @@ class WorkspaceBar(QWidget):
         _a11y(self._first_pg_btn, first_tip)
 
         self._prev_pg_btn = QPushButton()
-        self._prev_pg_btn.setIcon(qta.icon("fa5s.chevron-left", color=TEXT_PRI))
+        self._prev_pg_btn.setIcon(svg_icon(SVG_CHEVRON_LEFT, color=TEXT_PRI, size=15))
         self._prev_pg_btn.setFixedSize(28, 28)
         self._prev_pg_btn.setIconSize(QSize(15, 15))
         self._prev_pg_btn.setObjectName("viewer_nav_btn")
@@ -197,14 +220,14 @@ class WorkspaceBar(QWidget):
         self._page_total_lbl.setMinimumWidth(26)
 
         self._next_pg_btn = QPushButton()
-        self._next_pg_btn.setIcon(qta.icon("fa5s.chevron-right", color=TEXT_PRI))
+        self._next_pg_btn.setIcon(svg_icon(SVG_CHEVRON_RIGHT, color=TEXT_PRI, size=15))
         self._next_pg_btn.setFixedSize(28, 28)
         self._next_pg_btn.setIconSize(QSize(15, 15))
         self._next_pg_btn.setObjectName("viewer_nav_btn")
         _a11y(self._next_pg_btn, t("nav.next_page"))
 
         self._last_pg_btn = QPushButton()
-        self._last_pg_btn.setIcon(qta.icon("fa5s.angle-double-right", color=TEXT_PRI))
+        self._last_pg_btn.setIcon(svg_icon(SVG_DOUBLE_RIGHT, color=TEXT_PRI, size=15))
         self._last_pg_btn.setFixedSize(28, 28)
         self._last_pg_btn.setIconSize(QSize(15, 15))
         self._last_pg_btn.setObjectName("viewer_nav_btn")
@@ -222,7 +245,7 @@ class WorkspaceBar(QWidget):
 
         # Undo/redo top buttons
         self._undo_top_btn = QPushButton()
-        self._undo_top_btn.setIcon(qta.icon("fa5s.undo", color=TEXT_PRI))
+        self._undo_top_btn.setIcon(svg_icon(SVG_ROTATE_LEFT, color=TEXT_PRI, size=15))
         self._undo_top_btn.setObjectName("viewer_nav_btn")
         self._undo_top_btn.setFixedSize(28, 28)
         self._undo_top_btn.setIconSize(QSize(15, 15))
@@ -231,7 +254,7 @@ class WorkspaceBar(QWidget):
         layout.addWidget(self._undo_top_btn)
 
         self._redo_top_btn = QPushButton()
-        self._redo_top_btn.setIcon(qta.icon("fa5s.redo", color=TEXT_PRI))
+        self._redo_top_btn.setIcon(svg_icon(SVG_ROTATE_RIGHT, color=TEXT_PRI, size=15))
         self._redo_top_btn.setObjectName("viewer_nav_btn")
         self._redo_top_btn.setFixedSize(28, 28)
         self._redo_top_btn.setIconSize(QSize(15, 15))
@@ -254,7 +277,7 @@ class WorkspaceBar(QWidget):
         layout.addWidget(self._lang_btn)
 
         self._theme_btn = QPushButton()
-        self._theme_btn.setIcon(qta.icon("fa5s.sun", color="#FBBF24"))
+        self._theme_btn.setIcon(svg_icon(SVG_SUN, color="#FBBF24", size=15))
         self._theme_btn.setObjectName("theme_btn")
         _a11y(self._theme_btn, t("theme.toggle"))
         self._theme_btn.setFixedSize(28, 28)
@@ -262,7 +285,7 @@ class WorkspaceBar(QWidget):
         layout.addWidget(self._theme_btn)
 
         self._update_btn = QPushButton()
-        self._update_btn.setIcon(qta.icon("fa5s.arrow-circle-up", color=ACCENT))
+        self._update_btn.setIcon(svg_icon(SVG_ARROW_CIRCLE_UP, color=ACCENT, size=15))
         self._update_btn.setObjectName("viewer_nav_btn")
         self._update_btn.setFixedSize(28, 28)
         self._update_btn.setIconSize(QSize(15, 15))
@@ -276,7 +299,7 @@ class WorkspaceBar(QWidget):
 
         # ── Far Right: Tool Pane Toggle ──────────────────────────────
         self._right_pane_toggle_btn = QPushButton()
-        self._right_pane_toggle_btn.setIcon(qta.icon("fa5s.columns", color=TEXT_PRI))
+        self._right_pane_toggle_btn.setIcon(svg_icon(SVG_COLUMNS, color=TEXT_PRI, size=15))
         self._right_pane_toggle_btn.setObjectName("viewer_nav_btn")
         self._right_pane_toggle_btn.setFixedSize(28, 28)
         self._right_pane_toggle_btn.setIconSize(QSize(15, 15))
@@ -292,28 +315,29 @@ class WorkspaceBar(QWidget):
 
     def update_theme(self, dark: bool, sidebar_collapsed: bool = False):
         bar_color = TEXT_PRI if dark else _LP
-        self._ico_bars = qta.icon("fa5s.bars", color=bar_color)
-        self._ico_pages = qta.icon("fa5s.th-large", color=bar_color)
+        self._ico_bars = svg_icon(SVG_BARS, color=bar_color, size=15)
+        self._ico_pages = svg_icon(SVG_TH_LARGE, color=bar_color, size=15)
 
         self._sidebar_toggle_btn.setIcon(self._ico_bars)
         self._pages_toggle_btn.setIcon(self._ico_pages)
-        self._right_pane_toggle_btn.setIcon(qta.icon("fa5s.columns", color=bar_color))
-        self._open_pdf_btn.setIcon(qta.icon("fa5s.folder-open", color=bar_color))
-        self._toc_top_btn.setIcon(qta.icon("fa5s.bookmark", color=bar_color))
+        self._right_pane_toggle_btn.setIcon(svg_icon(SVG_COLUMNS, color=bar_color, size=15))
+        self._open_pdf_btn.setIcon(svg_icon(SVG_FOLDER, color=bar_color, size=15))
+        self._toc_top_btn.setIcon(svg_icon(SVG_BOOKMARK, color=bar_color, size=15))
 
         is_night = self._night_top_btn.isChecked()
-        self._night_top_btn.setIcon(qta.icon("fa5s.sun" if is_night else "fa5s.moon", color=ACCENT if is_night else bar_color))
-        self._print_top_btn.setIcon(qta.icon("fa5s.print", color=bar_color))
-        self._present_btn.setIcon(qta.icon("fa5s.tv", color=bar_color))
-        self._search_top_btn.setIcon(qta.icon("fa5s.search", color=bar_color))
-        self._undo_top_btn.setIcon(qta.icon("fa5s.undo", color=bar_color))
-        self._redo_top_btn.setIcon(qta.icon("fa5s.redo", color=bar_color))
-        self._zm_btn.setIcon(qta.icon("fa5s.search-minus", color=bar_color))
-        self._zp_btn.setIcon(qta.icon("fa5s.search-plus", color=bar_color))
-        self._z0_btn.setIcon(qta.icon("fa5s.compress-arrows-alt", color=bar_color))
-        self._first_pg_btn.setIcon(qta.icon("fa5s.angle-double-left", color=bar_color))
-        self._prev_pg_btn.setIcon(qta.icon("fa5s.chevron-left", color=bar_color))
-        self._next_pg_btn.setIcon(qta.icon("fa5s.chevron-right", color=bar_color))
-        self._last_pg_btn.setIcon(qta.icon("fa5s.angle-double-right", color=bar_color))
+        self._night_top_btn.setIcon(svg_icon(SVG_SUN if is_night else SVG_MOON, color=ACCENT if is_night else bar_color, size=15))
+        self._print_top_btn.setIcon(svg_icon(SVG_PRINT, color=bar_color, size=15))
+        self._present_btn.setIcon(svg_icon(SVG_TV, color=bar_color, size=15))
+        self._search_top_btn.setIcon(svg_icon(SVG_SEARCH, color=bar_color, size=15))
+        self._undo_top_btn.setIcon(svg_icon(SVG_ROTATE_LEFT, color=bar_color, size=15))
+        self._redo_top_btn.setIcon(svg_icon(SVG_ROTATE_RIGHT, color=bar_color, size=15))
+        self._zm_btn.setIcon(svg_icon(SVG_ZOOM_OUT, color=bar_color, size=15))
+        self._zp_btn.setIcon(svg_icon(SVG_ZOOM_IN, color=bar_color, size=15))
+        self._z0_btn.setIcon(svg_icon(SVG_COMPRESS, color=bar_color, size=15))
+        self._first_pg_btn.setIcon(svg_icon(SVG_DOUBLE_LEFT, color=bar_color, size=15))
+        self._prev_pg_btn.setIcon(svg_icon(SVG_CHEVRON_LEFT, color=bar_color, size=15))
+        self._next_pg_btn.setIcon(svg_icon(SVG_CHEVRON_RIGHT, color=bar_color, size=15))
+        self._last_pg_btn.setIcon(svg_icon(SVG_DOUBLE_RIGHT, color=bar_color, size=15))
 
-        self._theme_btn.setIcon(qta.icon("fa5s.sun" if dark else "fa5s.moon", color="#FBBF24" if dark else ACCENT))
+        self._theme_btn.setIcon(svg_icon(SVG_SUN if dark else SVG_MOON, color="#FBBF24" if dark else ACCENT, size=15))
+

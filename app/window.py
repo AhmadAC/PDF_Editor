@@ -1,5 +1,5 @@
 # app/window.py
-"""PDF_Editor – MainWindow: application main window facade."""
+"""PDF_Editor – MainWindow: application main window facade with SVG icons."""
 import os
 import json
 from typing import cast, Any
@@ -16,16 +16,16 @@ from PySide6.QtWidgets import (
     QFrame, QApplication, QLineEdit, QMessageBox, QStyledItemDelegate, QStyle
 )
 from shiboken6 import isValid
-import qtawesome as qta
 
 from app.constants import ACCENT, TEXT_PRI, TEXT_SEC, _LQ, DESKTOP, APP_VERSION
 from app.i18n import t, _CONFIG_PATH
 from app.styles import STYLE, STYLE_LIGHT
-from app.utils import resource_path, _make_palette
+from app.utils import resource_path, _make_palette, svg_for_name
 from app.widgets import DropFileEdit
 from app.single_instance import SingleInstanceServer
 from app.update_controller import UpdateController
 from app.viewer.panel import PdfViewerPanel
+from app.viewer.panel_page_ops import cleanup_page_clipboard
 from app.viewer.thumbnails import ThumbnailPanel
 from app.viewer.canvas_1 import _SelectCanvas
 from app.base import BasePage
@@ -44,7 +44,7 @@ def _get_nav_icon(icon_name: str, color: str) -> QIcon:
     key = (icon_name, color)
     ico = _NAV_ICON_CACHE.get(key)
     if ico is None:
-        ico = qta.icon(icon_name, color=color)
+        ico = svg_for_name(icon_name, color=color, size=20)
         _NAV_ICON_CACHE[key] = ico
     return ico
 
@@ -55,7 +55,7 @@ class _LazyPlaceholderWidget(QWidget):
 
 
 class NavItemDelegate(QStyledItemDelegate):
-    """Delegate for sidebar navigation list ensuring icons and selection boxes
+    """Delegate for sidebar navigation list ensuring SVG icons and selection boxes
     are perfectly centered horizontally when the sidebar is collapsed."""
 
     def __init__(self, parent_nav: QListWidget, is_dark_fn=None):
@@ -358,7 +358,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         footer_h = QHBoxLayout(self._footer_w)
         footer_h.setContentsMargins(14, 8, 14, 10)
         footer_h.setSpacing(0)
-        footer_lbl = QLabel(f"v{APP_VERSION}  ·  {t('app.credits')}")
+        footer_lbl = QLabel(f"v{APP_VERSION}  -  {t('app.credits')}")
         footer_lbl.setObjectName("sidebar_footer")
         footer_h.addWidget(footer_lbl, 1)
         sb_lay.addWidget(self._footer_w)
@@ -585,6 +585,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
                     return
         for v in list(self._viewers):
             self._cleanup_pipeline(id(v))
+        cleanup_page_clipboard()
         self._wait_for_workers_on_all_pages()
         self._wipe_all_pdf_passwords()
         self._update_controller.release_worker()
@@ -608,3 +609,4 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         except Exception:
             pass
         super().closeEvent(event)
+

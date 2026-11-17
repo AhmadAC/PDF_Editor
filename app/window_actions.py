@@ -28,14 +28,13 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QWidget,
 )
-import qtawesome as qta
 from shiboken6 import isValid
 
 from app.constants import ACCENT, DESKTOP, OPEN_ALL_FILES_FILTER, TEXT_PRI, TEXT_SEC, _LP, _LQ
 from app.i18n import t
 from app.nav_config import NAV_ITEMS, _NAV_KEYS
 from app.styles import STYLE, STYLE_LIGHT
-from app.utils import _make_palette, show_error
+from app.utils import SVG_MOON, SVG_SUN, _make_palette, show_error, svg_for_name, svg_icon
 from app.viewer.presentation import PresentationWidget
 from app.widgets import DropFileEdit, MultiDropWidget
 from app.window_nav_page import WindowNavPageMixin
@@ -212,10 +211,10 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
         if viewer and viewer.current_path():
             cur_file = os.path.basename(viewer._original_doc_path or viewer.current_path())
 
-        file_part = f"  ›  {cur_file}" if cur_file else ""
+        file_part = f"  >  {cur_file}" if cur_file else ""
         if getattr(self, "_current_tool", -1) >= 0 and self._current_tool < len(NAV_ITEMS):
             tool_name = NAV_ITEMS[self._current_tool][0]
-            self._breadcrumb.setText(f"{t('workspace.title')}{file_part}  ›  {tool_name}")
+            self._breadcrumb.setText(f"{t('workspace.title')}{file_part}  >  {tool_name}")
         elif cur_file:
             self._breadcrumb.setText(f"{t('workspace.title')}{file_part}")
         else:
@@ -385,7 +384,7 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
             if canvas:
                 canvas.set_night_mode(active)
             bar_color = TEXT_PRI if self._dark_mode else _LP
-            self._night_top_btn.setIcon(qta.icon("fa5s.sun" if active else "fa5s.moon", color=ACCENT if active else bar_color))
+            self._night_top_btn.setIcon(svg_icon(SVG_SUN if active else SVG_MOON, color=ACCENT if active else bar_color, size=15))
 
     def _refresh_viewer_top_buttons(self):
         try:
@@ -396,7 +395,7 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
                 is_night = bool(getattr(canvas, "_night_mode", False))
                 self._night_top_btn.setChecked(is_night)
                 bar_color = TEXT_PRI if self._dark_mode else _LP
-                self._night_top_btn.setIcon(qta.icon("fa5s.sun" if is_night else "fa5s.moon", color=ACCENT if is_night else bar_color))
+                self._night_top_btn.setIcon(svg_icon(SVG_SUN if is_night else SVG_MOON, color=ACCENT if is_night else bar_color, size=15))
             else:
                 self._toc_top_btn.setVisible(False)
                 self._night_top_btn.setChecked(False)
@@ -589,7 +588,7 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
                 tool_idx = it.data(Qt.ItemDataRole.UserRole)
                 if tool_idx is not None and tool_idx >= 0:
                     _, icon_name, _ = _NAV_KEYS[tool_idx]
-                    it.setIcon(qta.icon(icon_name, color=nav_color))
+                    it.setIcon(svg_for_name(icon_name, color=nav_color, size=20))
                 else:
                     it.setForeground(QColor(nav_color))
         self.nav.viewport().update()
