@@ -1,5 +1,5 @@
 # app/editor/tab_ui.py
-"""PDF_Editor – tab_ui: UI builder and styling manager for TabEditar with Fill & Sign check/cross tools."""
+"""PDF_Editor – tab_ui: UI builder and styling manager for TabEditar with Fill & Sign check/cross tools using SVG icons."""
 
 import json
 import os
@@ -13,10 +13,14 @@ from PySide6.QtWidgets import (
     QTextEdit, QApplication, QSlider, QGridLayout,
     QSplitter, QTabWidget, QTreeWidget,
 )
-import qtawesome as qta
 
 from app.constants import ACCENT, TEXT_PRI, TEXT_SEC, DESKTOP, BG_INNER, _LN, _LP, _LQ
-from app.utils import ToolHeader, ActionBar, info_lbl
+from app.utils import (
+    ToolHeader, ActionBar, info_lbl, svg_for_name, svg_icon,
+    SVG_BOLD, SVG_CHECK, SVG_CLOSE, SVG_COPY, SVG_EDIT, SVG_ERASER,
+    SVG_HIGHLIGHTER, SVG_ITALIC, SVG_PLUS, SVG_ROTATE_LEFT, SVG_ROTATE_RIGHT,
+    SVG_CHEVRON_LEFT, SVG_CHEVRON_RIGHT, SVG_SIGNATURE, SVG_TRASH,
+)
 from app.i18n import t, get_saved_signature, _CONFIG_PATH
 from app.widgets import DropFileEdit, ColorPickerButton, FocusSpinBox, FocusComboBox
 from app.editor.canvas import PdfEditCanvas
@@ -58,7 +62,7 @@ def _delete_selection_helper(tab):
     if hasattr(tab, "_sel_result"):
         tab._sel_result.setPlainText("")
     tab._canvas.update()
-    tab._status("✔ Selected element deleted (Ctrl+Z to undo)")
+    tab._status("Selected element deleted (Ctrl+Z to undo)")
 
 
 def _edit_selection_helper(tab):
@@ -108,7 +112,7 @@ def _apply_text_edit_from_selection_helper(tab):
                 ov["text"] = new_txt
                 tab._canvas.overlay_changed.emit()
                 tab._canvas.update()
-                tab._status("✔ Updated text applied (Ctrl+Z to undo)")
+                tab._status("Updated text applied (Ctrl+Z to undo)")
         return
     old_txt = getattr(tab, "_last_selected_original_text", "")
     edit = {
@@ -131,7 +135,7 @@ def _apply_text_edit_from_selection_helper(tab):
         tab._canvas._active_sel_rect = None
     tab._last_selected_rect = None
     tab._canvas.update()
-    tab._status("✔ Edited text applied (Ctrl+Z to undo)")
+    tab._status("Edited text applied (Ctrl+Z to undo)")
 
 
 def _redact_selection_helper(tab):
@@ -151,7 +155,7 @@ def _redact_selection_helper(tab):
     if hasattr(tab, "_sel_result"):
         tab._sel_result.setPlainText("")
     tab._canvas.update()
-    tab._status("✔ Selection redacted (Ctrl+Z to undo)")
+    tab._status("Selection redacted (Ctrl+Z to undo)")
 
 
 def setup_editor_ui(tab) -> None:
@@ -161,7 +165,6 @@ def setup_editor_ui(tab) -> None:
     root.setContentsMargins(0, 0, 0, 0)
     root.setSpacing(0)
 
-    # Attach selection helpers dynamically if not yet declared
     if not hasattr(tab, "_delete_selection"):
         tab._delete_selection = lambda: _delete_selection_helper(tab)
     if not hasattr(tab, "_edit_selection"):
@@ -176,7 +179,7 @@ def setup_editor_ui(tab) -> None:
     body_h.setContentsMargins(0, 0, 0, 0)
     body_h.setSpacing(0)
 
-    # Canvas Scroll Area (Center window - full height, centered to eliminate blank space)
+    # Canvas Scroll Area
     tab._canvas = PdfEditCanvas()
     canvas_scroll = QScrollArea()
     canvas_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -190,7 +193,7 @@ def setup_editor_ui(tab) -> None:
     canvas_scroll.horizontalScrollBar().valueChanged.connect(tab._on_canvas_scroll)
     tab._canvas_scroll = canvas_scroll
 
-    # ── Left Sidebar: TOC tree & Thumbnails ───────────────────────
+    # Left Sidebar: TOC tree & Thumbnails
     tab._toc_tree = QTreeWidget()
     tab._toc_tree.setObjectName("toc_tree")
     tab._toc_tree.setHeaderHidden(True)
@@ -235,7 +238,6 @@ def setup_editor_ui(tab) -> None:
     tab._pages_sidebar_collapsed = not initial_open
     tab._saved_sidebar_width = saved_w
 
-    # Splitter for left sidebar and center canvas
     tab._edit_splitter = QSplitter(Qt.Orientation.Horizontal)
     tab._edit_splitter.addWidget(tab._sidebar_panel)
     tab._edit_splitter.addWidget(canvas_scroll)
@@ -266,7 +268,6 @@ def setup_editor_ui(tab) -> None:
     cv.setContentsMargins(10, 10, 10, 10)
     cv.setSpacing(8)
 
-    # Banner header placed exclusively inside the right sidebar
     cv.addWidget(ToolHeader("fa5s.edit", t("edit.title"), t("edit.subtitle")))
 
     # 1. PDF File Group
@@ -291,7 +292,8 @@ def setup_editor_ui(tab) -> None:
     gp = QHBoxLayout(grp_page)
     gp.setSpacing(6)
     tab._btn_prev = QPushButton()
-    tab._btn_prev.setIcon(qta.icon("fa5s.chevron-left", color=TEXT_PRI))
+    tab._btn_prev.setIcon(svg_icon(SVG_CHEVRON_LEFT, color=TEXT_PRI, size=14))
+    tab._btn_prev.setIconSize(QSize(14, 14))
     tab._btn_prev.setFixedSize(28, 28)
     tab._btn_prev.setObjectName("viewer_nav_btn")
     tab._btn_prev.setToolTip(t("nav.prev_page"))
@@ -302,7 +304,8 @@ def setup_editor_ui(tab) -> None:
     tab._lbl_page.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
     tab._btn_next = QPushButton()
-    tab._btn_next.setIcon(qta.icon("fa5s.chevron-right", color=TEXT_PRI))
+    tab._btn_next.setIcon(svg_icon(SVG_CHEVRON_RIGHT, color=TEXT_PRI, size=14))
+    tab._btn_next.setIconSize(QSize(14, 14))
     tab._btn_next.setFixedSize(28, 28)
     tab._btn_next.setObjectName("viewer_nav_btn")
     tab._btn_next.setToolTip(t("nav.next_page"))
@@ -314,7 +317,7 @@ def setup_editor_ui(tab) -> None:
     gp.addWidget(tab._btn_next)
     cv.addWidget(grp_page)
 
-    # 3. Edit Modes Grid (5 columns x 2 rows = 10 buttons)
+    # 3. Edit Modes Grid
     grp_mode = QGroupBox(t("edit.mode"))
     gm = QGridLayout(grp_mode)
     gm.setSpacing(4)
@@ -323,7 +326,7 @@ def setup_editor_ui(tab) -> None:
     cols = 5
     for i, (label, icon_name) in enumerate(tab._MODE_DEFS):
         btn = QPushButton()
-        btn.setIcon(qta.icon(icon_name, color=TEXT_SEC))
+        btn.setIcon(svg_for_name(icon_name, color=TEXT_SEC, size=18))
         btn.setIconSize(QSize(18, 18))
         btn.setToolTip(label)
         btn.setCheckable(True)
@@ -355,14 +358,16 @@ def setup_editor_ui(tab) -> None:
     pend_btns = QHBoxLayout()
     pend_btns.setSpacing(4)
     tab._btn_undo = QPushButton()
-    tab._btn_undo.setIcon(qta.icon("fa5s.undo", color=TEXT_PRI))
+    tab._btn_undo.setIcon(svg_icon(SVG_ROTATE_LEFT, color=TEXT_PRI, size=14))
+    tab._btn_undo.setIconSize(QSize(14, 14))
     tab._btn_undo.setToolTip(t("edit.undo_tip"))
     tab._btn_undo.setAccessibleName(t("edit.undo_tip"))
     tab._btn_undo.setFixedSize(28, 28)
     tab._btn_undo.clicked.connect(tab._undo)
 
     tab._btn_redo = QPushButton()
-    tab._btn_redo.setIcon(qta.icon("fa5s.redo", color=TEXT_PRI))
+    tab._btn_redo.setIcon(svg_icon(SVG_ROTATE_RIGHT, color=TEXT_PRI, size=14))
+    tab._btn_redo.setIconSize(QSize(14, 14))
     tab._btn_redo.setToolTip(t("edit.redo_tip"))
     tab._btn_redo.setAccessibleName(t("edit.redo_tip"))
     tab._btn_redo.setFixedSize(28, 28)
@@ -380,11 +385,10 @@ def setup_editor_ui(tab) -> None:
     # 6. Save Group
     tab._grp_save = QGroupBox(t("edit.save_to"))
     gs = QVBoxLayout(tab._grp_save)
-    tab._drop_out = DropFileEdit("output_edited.pdf", save=True, default_name="output_edited.pdf")
+    tab._drop_out = DropFileEdit(save=True, default_name="result.pdf")
     gs.addWidget(tab._drop_out)
     cv.addWidget(tab._grp_save)
 
-    # 7. In-Panel Apply & Save Button (Placed directly inside the edit sidebar window)
     tab.action_btn = QPushButton(t("btn.apply_save"))
     tab.action_btn.setObjectName("btn_primary")
     tab.action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -407,7 +411,6 @@ def setup_editor_ui(tab) -> None:
 
     root.addWidget(body, 1)
 
-    # Hidden action bar instance retained for theme/progress compatibility without full-width banner
     tab._action_bar, _ = ActionBar(t("btn.apply_save"), tab._run)
     tab._action_bar.setVisible(False)
 
@@ -429,13 +432,17 @@ def _build_mode_options(tab) -> None:
 
     mode_btn_row = QHBoxLayout()
     mode_btn_row.setSpacing(4)
-    tab._btn_text_add = QPushButton("➕ " + t("Add Text", default="Add Text"))
+    tab._btn_text_add = QPushButton(t("Add Text", default="Add Text"))
+    tab._btn_text_add.setIcon(svg_icon(SVG_PLUS, color=TEXT_PRI, size=13))
+    tab._btn_text_add.setIconSize(QSize(13, 13))
     tab._btn_text_add.setCheckable(True)
     tab._btn_text_add.setChecked(True)
     tab._btn_text_add.setFixedHeight(28)
     tab._btn_text_add.setCursor(Qt.CursorShape.PointingHandCursor)
 
-    tab._btn_text_edit = QPushButton("✏ " + t("Edit Text", default="Edit Text"))
+    tab._btn_text_edit = QPushButton(t("Edit Text", default="Edit Text"))
+    tab._btn_text_edit.setIcon(svg_icon(SVG_EDIT, color=TEXT_PRI, size=13))
+    tab._btn_text_edit.setIconSize(QSize(13, 13))
     tab._btn_text_edit.setCheckable(True)
     tab._btn_text_edit.setChecked(False)
     tab._btn_text_edit.setFixedHeight(28)
@@ -467,12 +474,14 @@ def _build_mode_options(tab) -> None:
     tab._text_size.valueChanged.connect(tab._on_text_format_changed)
     row1.addWidget(tab._text_size)
 
-    tab._btn_bold = QPushButton(); tab._btn_bold.setIcon(qta.icon("fa5s.bold", color=TEXT_PRI))
+    tab._btn_bold = QPushButton(); tab._btn_bold.setIcon(svg_icon(SVG_BOLD, color=TEXT_PRI, size=14))
+    tab._btn_bold.setIconSize(QSize(14, 14))
     tab._btn_bold.setCheckable(True); tab._btn_bold.setFixedSize(32, 32); tab._btn_bold.setToolTip("Bold (Ctrl+B)")
     tab._btn_bold.toggled.connect(tab._on_text_format_changed)
     row1.addWidget(tab._btn_bold)
 
-    tab._btn_italic = QPushButton(); tab._btn_italic.setIcon(qta.icon("fa5s.italic", color=TEXT_PRI))
+    tab._btn_italic = QPushButton(); tab._btn_italic.setIcon(svg_icon(SVG_ITALIC, color=TEXT_PRI, size=14))
+    tab._btn_italic.setIconSize(QSize(14, 14))
     tab._btn_italic.setCheckable(True); tab._btn_italic.setFixedSize(32, 32); tab._btn_italic.setToolTip("Italic (Ctrl+I)")
     tab._btn_italic.toggled.connect(tab._on_text_format_changed)
     row1.addWidget(tab._btn_italic)
@@ -485,13 +494,14 @@ def _build_mode_options(tab) -> None:
     row_col.addWidget(tab._text_color); row_col.addStretch()
 
     tab._btn_del_text = QPushButton(t("btn.delete"))
-    tab._btn_del_text.setIcon(qta.icon("fa5s.trash-alt", color="#EF4444"))
+    tab._btn_del_text.setIcon(svg_icon(SVG_TRASH, color="#EF4444", size=14))
+    tab._btn_del_text.setIconSize(QSize(14, 14))
     tab._btn_del_text.setCursor(Qt.CursorShape.PointingHandCursor)
     tab._btn_del_text.clicked.connect(tab._delete_active_text)
     row_col.addWidget(tab._btn_del_text)
     v1.addLayout(row_col)
 
-    tab._text_hint = QLabel("💡 Click anywhere on the page to insert new text exactly where you click.")
+    tab._text_hint = QLabel("Click anywhere on the page to insert new text exactly where you click.")
     tab._text_hint.setWordWrap(True)
     tab._text_hint.setStyleSheet(f"color:{ACCENT}; font-size:11px;")
     v1.addWidget(tab._text_hint); v1.addStretch()
@@ -509,24 +519,24 @@ def _build_mode_options(tab) -> None:
     tab._hint_labels.append(hint2); v2.addWidget(hint2); v2.addStretch()
     tab._opt_stack.addWidget(w2)
 
-    # 3 - Highlight Text (snaps to words & lines)
+    # 3 - Highlight Text
     w3 = QWidget(); v3 = QVBoxLayout(w3); v3.setContentsMargins(0, 4, 0, 0); v3.setSpacing(4)
     v3.addWidget(QLabel(t("edit.color")))
     tab._hi_color = ColorPickerButton((1, 1, 0))
     tab._hi_color.color_changed.connect(lambda c: tab._canvas.set_highlight_mode(tab._mode_idx == 3, color=c, cursor_shape=Qt.CursorShape.IBeamCursor))
     v3.addWidget(tab._hi_color)
-    hint3 = QLabel(t("edit.hint.highlight", default="💡 Drag across text or click a word to highlight it (snaps to lines)."))
+    hint3 = QLabel(t("edit.hint.highlight", default="Drag across text or click a word to highlight it (snaps to lines)."))
     hint3.setStyleSheet(f"color:{TEXT_SEC}; font-size:11px;"); hint3.setWordWrap(True)
     tab._hint_labels.append(hint3); v3.addWidget(hint3); v3.addStretch()
     tab._opt_stack.addWidget(w3)
 
-    # 4 - Highlight Rectangle (area / box highlight)
+    # 4 - Highlight Rectangle
     w3_rect = QWidget(); v3_r = QVBoxLayout(w3_rect); v3_r.setContentsMargins(0, 4, 0, 0); v3_r.setSpacing(4)
     v3_r.addWidget(QLabel(t("edit.color")))
     tab._hi_rect_color = ColorPickerButton((1, 1, 0))
     tab._hi_rect_color.color_changed.connect(lambda c: tab._canvas.set_highlight_mode(tab._mode_idx == 4, color=c, cursor_shape=Qt.CursorShape.CrossCursor))
     v3_r.addWidget(tab._hi_rect_color)
-    hint3_r = QLabel(t("edit.hint.highlight_rect", default="💡 Drag across any area to draw a highlight rectangle box."))
+    hint3_r = QLabel(t("edit.hint.highlight_rect", default="Drag across any area to draw a highlight rectangle box."))
     hint3_r.setStyleSheet(f"color:{TEXT_SEC}; font-size:11px;"); hint3_r.setWordWrap(True)
     tab._hint_labels.append(hint3_r); v3_r.addWidget(hint3_r); v3_r.addStretch()
     tab._opt_stack.addWidget(w3_rect)
@@ -555,7 +565,7 @@ def _build_mode_options(tab) -> None:
     tab._hint_labels.append(tab._form_status); v5.addWidget(tab._form_status)
     tab._opt_stack.addWidget(w5)
 
-    # 7 - Fill & Sign (Vector Checkmarks, Crossmarks & Digital Signature)
+    # 7 - Fill & Sign
     w6 = QWidget(); v6s = QVBoxLayout(w6); v6s.setContentsMargins(0, 4, 0, 0); v6s.setSpacing(6)
     
     lbl_fill_title = QLabel("Form Stamps (Never stripped on save):")
@@ -564,16 +574,20 @@ def _build_mode_options(tab) -> None:
 
     stamp_btn_row = QHBoxLayout()
     stamp_btn_row.setSpacing(6)
-    tab._btn_stamp_check = QPushButton("✔ " + t("tool.stamp.check", default="Checkmark"))
+    tab._btn_stamp_check = QPushButton(t("tool.stamp.check", default="Checkmark"))
+    tab._btn_stamp_check.setIcon(svg_icon(SVG_CHECK, color="#FFFFFF", size=14))
+    tab._btn_stamp_check.setIconSize(QSize(14, 14))
     tab._btn_stamp_check.setStyleSheet(f"QPushButton {{ background: #264F78; border: 1.5px solid {ACCENT}; color: white; font-weight: bold; padding: 6px; border-radius: 4px; }} QPushButton:hover {{ background: #326496; }}")
     tab._btn_stamp_check.setCursor(Qt.CursorShape.PointingHandCursor)
-    tab._btn_stamp_check.setToolTip("Place a vector checkmark (✔) in form boxes or cells")
+    tab._btn_stamp_check.setToolTip("Place a vector checkmark in form boxes or cells")
     tab._btn_stamp_check.clicked.connect(tab._start_stamp_check)
 
-    tab._btn_stamp_cross = QPushButton("✖ " + t("tool.stamp.cross", default="Crossmark"))
+    tab._btn_stamp_cross = QPushButton(t("tool.stamp.cross", default="Crossmark"))
+    tab._btn_stamp_cross.setIcon(svg_icon(SVG_CLOSE, color="#FCA5A5", size=14))
+    tab._btn_stamp_cross.setIconSize(QSize(14, 14))
     tab._btn_stamp_cross.setStyleSheet("QPushButton { background: #452424; border: 1.5px solid #EF4444; color: #FCA5A5; font-weight: bold; padding: 6px; border-radius: 4px; } QPushButton:hover { background: #5E2F2F; color: white; }")
     tab._btn_stamp_cross.setCursor(Qt.CursorShape.PointingHandCursor)
-    tab._btn_stamp_cross.setToolTip("Place a vector crossmark (✖) in form boxes or cells")
+    tab._btn_stamp_cross.setToolTip("Place a vector crossmark in form boxes or cells")
     tab._btn_stamp_cross.clicked.connect(tab._start_stamp_cross)
 
     stamp_btn_row.addWidget(tab._btn_stamp_check)
@@ -593,7 +607,7 @@ def _build_mode_options(tab) -> None:
     stamp_opt_row.addWidget(tab._stamp_color)
     v6s.addLayout(stamp_opt_row)
 
-    hint_fill = QLabel("💡 Click Checkmark or Crossmark, then click directly inside any box on the page to stamp it.")
+    hint_fill = QLabel("Click Checkmark or Crossmark, then click directly inside any box on the page to stamp it.")
     hint_fill.setStyleSheet(f"color:{ACCENT}; font-size:11px;")
     hint_fill.setWordWrap(True)
     v6s.addWidget(hint_fill)
@@ -610,7 +624,8 @@ def _build_mode_options(tab) -> None:
     v6s.addWidget(tab._sig_preview)
 
     tab._sig_choose = QPushButton(t("edit.signature.choose"))
-    tab._sig_choose.setIcon(qta.icon("fa5s.signature", color=TEXT_PRI))
+    tab._sig_choose.setIcon(svg_icon(SVG_SIGNATURE, color=TEXT_PRI, size=15))
+    tab._sig_choose.setIconSize(QSize(15, 15))
     tab._sig_choose.clicked.connect(tab._pick_signature)
     v6s.addWidget(tab._sig_choose)
 
@@ -618,7 +633,7 @@ def _build_mode_options(tab) -> None:
     sig_clear.clicked.connect(tab._clear_signature)
     v6s.addWidget(sig_clear)
 
-    hint6s = QLabel("💡 Click placed signatures, checkmarks, or stamps to resize or move (Del to delete).")
+    hint6s = QLabel("Click placed signatures, checkmarks, or stamps to resize or move (Del to delete).")
     hint6s.setStyleSheet(f"color:{TEXT_SEC}; font-size:11px;"); hint6s.setWordWrap(True)
     tab._hint_labels.append(hint6s); v6s.addWidget(hint6s); v6s.addStretch()
     tab._opt_stack.addWidget(w6)
@@ -630,7 +645,7 @@ def _build_mode_options(tab) -> None:
         if not pix.isNull():
             tab._sig_preview.setPixmap(pix)
 
-    # 8 - Draw (freehand ink)
+    # 8 - Draw
     w_draw = QWidget(); v_d = QVBoxLayout(w_draw); v_d.setContentsMargins(0, 4, 0, 0); v_d.setSpacing(4)
     v_d.addWidget(QLabel(t("edit.color")))
     tab._draw_color_cb = ColorPickerButton((1, 0, 0))
@@ -647,9 +662,9 @@ def _build_mode_options(tab) -> None:
     tab._hint_labels.append(hint_d); v_d.addWidget(hint_d); v_d.addStretch()
     tab._opt_stack.addWidget(w_draw)
 
-    # 9 - Select / Copy / Edit / Delete text and elements (Foxit-style workflow)
+    # 9 - Select
     w8 = QWidget(); v8 = QVBoxLayout(w8); v8.setContentsMargins(0, 4, 0, 0); v8.setSpacing(6)
-    hint8 = QLabel(t("edit.hint.select", default="💡 Drag or click to select elements. Edit, delete, copy, or press Del key."))
+    hint8 = QLabel(t("edit.hint.select", default="Drag or click to select elements. Edit, delete, copy, or press Del key."))
     hint8.setStyleSheet(f"color:{TEXT_SEC}; font-size:11px;"); hint8.setWordWrap(True)
     tab._hint_labels.append(hint8)
 
@@ -663,12 +678,16 @@ def _build_mode_options(tab) -> None:
 
     sel_btn_row1 = QHBoxLayout()
     sel_btn_row1.setSpacing(4)
-    tab._btn_edit_sel = QPushButton("✏ " + t("tool.text.edit_mode", default="Edit Text"))
+    tab._btn_edit_sel = QPushButton(t("tool.text.edit_mode", default="Edit Text"))
+    tab._btn_edit_sel.setIcon(svg_icon(SVG_EDIT, color=TEXT_PRI, size=14))
+    tab._btn_edit_sel.setIconSize(QSize(14, 14))
     tab._btn_edit_sel.setToolTip("Edit selected text in-place on canvas")
     tab._btn_edit_sel.setCursor(Qt.CursorShape.PointingHandCursor)
     tab._btn_edit_sel.clicked.connect(tab._edit_selection)
 
-    tab._btn_apply_sel_edit = QPushButton("✔ " + t("btn.apply", default="Apply Edit"))
+    tab._btn_apply_sel_edit = QPushButton(t("btn.apply", default="Apply Edit"))
+    tab._btn_apply_sel_edit.setIcon(svg_icon(SVG_CHECK, color="#FFFFFF", size=14))
+    tab._btn_apply_sel_edit.setIconSize(QSize(14, 14))
     tab._btn_apply_sel_edit.setObjectName("btn_primary")
     tab._btn_apply_sel_edit.setToolTip("Replace selected text with the text typed above")
     tab._btn_apply_sel_edit.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -679,13 +698,15 @@ def _build_mode_options(tab) -> None:
     sel_btn_row2 = QHBoxLayout()
     sel_btn_row2.setSpacing(4)
     tab._btn_delete_sel = QPushButton(t("btn.delete", default="Delete"))
-    tab._btn_delete_sel.setIcon(qta.icon("fa5s.trash-alt", color="#EF4444"))
+    tab._btn_delete_sel.setIcon(svg_icon(SVG_TRASH, color="#EF4444", size=14))
+    tab._btn_delete_sel.setIconSize(QSize(14, 14))
     tab._btn_delete_sel.setToolTip("Delete selected element from page (Del)")
     tab._btn_delete_sel.setCursor(Qt.CursorShape.PointingHandCursor)
     tab._btn_delete_sel.clicked.connect(tab._delete_selection)
 
     tab._btn_copy = QPushButton(t("btn.copy", default="Copy"))
-    tab._btn_copy.setIcon(qta.icon("fa5s.copy", color=TEXT_PRI))
+    tab._btn_copy.setIcon(svg_icon(SVG_COPY, color=TEXT_PRI, size=14))
+    tab._btn_copy.setIconSize(QSize(14, 14))
     tab._btn_copy.setToolTip("Copy selected text to clipboard (Ctrl+C)")
     tab._btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
     tab._btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(tab._sel_result.toPlainText()))
@@ -695,13 +716,15 @@ def _build_mode_options(tab) -> None:
     sel_btn_row3 = QHBoxLayout()
     sel_btn_row3.setSpacing(4)
     tab._btn_highlight = QPushButton(t("edit.mode.highlight", default="Highlight"))
-    tab._btn_highlight.setIcon(qta.icon("fa5s.highlighter", color=ACCENT))
+    tab._btn_highlight.setIcon(svg_icon(SVG_HIGHLIGHTER, color=ACCENT, size=14))
+    tab._btn_highlight.setIconSize(QSize(14, 14))
     tab._btn_highlight.setToolTip("Highlight selected text")
     tab._btn_highlight.setCursor(Qt.CursorShape.PointingHandCursor)
     tab._btn_highlight.clicked.connect(tab._highlight_selection)
 
     tab._btn_redact_sel = QPushButton(t("edit.mode.redact", default="Redact"))
-    tab._btn_redact_sel.setIcon(qta.icon("fa5s.eraser", color="#EF4444"))
+    tab._btn_redact_sel.setIcon(svg_icon(SVG_ERASER, color="#EF4444", size=14))
+    tab._btn_redact_sel.setIconSize(QSize(14, 14))
     tab._btn_redact_sel.setToolTip("Redact and blackout selected area")
     tab._btn_redact_sel.setCursor(Qt.CursorShape.PointingHandCursor)
     tab._btn_redact_sel.clicked.connect(tab._redact_selection)
@@ -729,20 +752,30 @@ def update_tab_theme(tab, dark: bool) -> None:
     pri = TEXT_PRI if dark else _LP
     sec = TEXT_SEC if dark else _LQ
 
-    tab._btn_prev.setIcon(qta.icon("fa5s.chevron-left", color=pri))
-    tab._btn_next.setIcon(qta.icon("fa5s.chevron-right", color=pri))
-    tab._btn_undo.setIcon(qta.icon("fa5s.undo", color=pri))
-    tab._btn_redo.setIcon(qta.icon("fa5s.redo", color=pri))
-    tab._btn_copy.setIcon(qta.icon("fa5s.copy", color=pri))
+    tab._btn_prev.setIcon(svg_icon(SVG_CHEVRON_LEFT, color=pri, size=14))
+    tab._btn_next.setIcon(svg_icon(SVG_CHEVRON_RIGHT, color=pri, size=14))
+    tab._btn_undo.setIcon(svg_icon(SVG_ROTATE_LEFT, color=pri, size=14))
+    tab._btn_redo.setIcon(svg_icon(SVG_ROTATE_RIGHT, color=pri, size=14))
+    tab._btn_copy.setIcon(svg_icon(SVG_COPY, color=pri, size=14))
+    if hasattr(tab, "_btn_text_add"):
+        tab._btn_text_add.setIcon(svg_icon(SVG_PLUS, color=pri, size=13))
+    if hasattr(tab, "_btn_text_edit"):
+        tab._btn_text_edit.setIcon(svg_icon(SVG_EDIT, color=pri, size=13))
+    if hasattr(tab, "_btn_edit_sel"):
+        tab._btn_edit_sel.setIcon(svg_icon(SVG_EDIT, color=pri, size=14))
+    if hasattr(tab, "_btn_apply_sel_edit"):
+        tab._btn_apply_sel_edit.setIcon(svg_icon(SVG_CHECK, color="#FFFFFF", size=14))
     if hasattr(tab, "_btn_highlight"):
-        tab._btn_highlight.setIcon(qta.icon("fa5s.highlighter", color=ACCENT))
+        tab._btn_highlight.setIcon(svg_icon(SVG_HIGHLIGHTER, color=ACCENT, size=14))
     if hasattr(tab, "_btn_delete_sel"):
-        tab._btn_delete_sel.setIcon(qta.icon("fa5s.trash-alt", color="#EF4444" if dark else "#DC2626"))
+        tab._btn_delete_sel.setIcon(svg_icon(SVG_TRASH, color="#EF4444" if dark else "#DC2626", size=14))
+    if hasattr(tab, "_btn_del_text"):
+        tab._btn_del_text.setIcon(svg_icon(SVG_TRASH, color="#EF4444" if dark else "#DC2626", size=14))
     if hasattr(tab, "_btn_redact_sel"):
-        tab._btn_redact_sel.setIcon(qta.icon("fa5s.eraser", color="#EF4444" if dark else "#DC2626"))
-    tab._sig_choose.setIcon(qta.icon("fa5s.signature", color=pri))
-    tab._btn_bold.setIcon(qta.icon("fa5s.bold", color=pri))
-    tab._btn_italic.setIcon(qta.icon("fa5s.italic", color=pri))
+        tab._btn_redact_sel.setIcon(svg_icon(SVG_ERASER, color="#EF4444" if dark else "#DC2626", size=14))
+    tab._sig_choose.setIcon(svg_icon(SVG_SIGNATURE, color=pri, size=15))
+    tab._btn_bold.setIcon(svg_icon(SVG_BOLD, color=pri, size=14))
+    tab._btn_italic.setIcon(svg_icon(SVG_ITALIC, color=pri, size=14))
 
     for lbl in tab._hint_labels:
         try:
@@ -760,17 +793,18 @@ def update_tab_theme(tab, dark: bool) -> None:
         fn(dark)
 
     for i, b in enumerate(tab._mode_btns):
+        icon_name = tab._MODE_DEFS[i][1]
         if not b.isChecked():
-            b.setIcon(qta.icon(tab._MODE_DEFS[i][1], color=sec))
+            b.setIcon(svg_for_name(icon_name, color=sec, size=18))
             b.setStyleSheet(
                 "background:#333333; border:1px solid #444444; color:#CCCCCC; border-radius:6px;"
                 if dark else
                 "background:#FFFFFF; border:1px solid #D1D5DB; color:#555555; border-radius:6px;"
             )
         else:
+            b.setIcon(svg_for_name(icon_name, color=ACCENT, size=18))
             b.setStyleSheet(
                 f"background:#264F78; border:1px solid {ACCENT}; color:#FFFFFF; border-radius:6px;"
                 if dark else
                 f"background:#D6E8FA; border:1px solid #70A7DB; color:{ACCENT}; border-radius:6px;"
             )
-

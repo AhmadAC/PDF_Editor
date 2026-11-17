@@ -1,3 +1,4 @@
+
 # app/viewer/canvas_keystroke_exec.py
 """PDF_Editor – Keyboard navigation, shortcuts, undo/redo, page clipboard, and active item manipulation."""
 from __future__ import annotations
@@ -173,13 +174,17 @@ class CanvasKeystrokeHandler:
             elif key == Qt.Key.Key_Right:
                 c.page_action_requested.emit("rotate_right", [idx])
                 return True
-            elif key == Qt.Key.Key_C and c._sel_text:
-                QApplication.clipboard().setText(c._sel_text)
-                win: Any = c.window()
-                set_status = getattr(win, "_set_status", None)
-                if callable(set_status):
-                    set_status(f"Copied {len(c._sel_text):,} characters to clipboard")
-                return True
+            elif key == Qt.Key.Key_C:
+                if c._sel_text:
+                    QApplication.clipboard().setText(c._sel_text)
+                    win: Any = c.window()
+                    set_status = getattr(win, "_set_status", None)
+                    if callable(set_status):
+                        set_status(f"Copied {len(c._sel_text):,} characters to clipboard")
+                    return True
+                else:
+                    c.page_action_requested.emit("copy_pages", [idx])
+                    return True
             elif key == Qt.Key.Key_A:
                 select_all_fn()
                 return True
@@ -198,4 +203,3 @@ class CanvasKeystrokeHandler:
             return True
 
         return False
-

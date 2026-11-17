@@ -24,22 +24,23 @@ _INVALID_WIN_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def get_tab_disk_path(win: Any, viewer: PdfViewerPanel) -> str:
-    """Resolve the true on-disk path for a viewer tab (accounting for unsaved temp pipeline files)."""
+    """Resolve the intended on-disk path for a viewer tab (normalized for the current OS)."""
     ps_map = getattr(win, "_pipeline_state", {})
     ps = ps_map.get(id(viewer)) if isinstance(ps_map, dict) else None
-    if ps and ps.get("original_path") and os.path.exists(ps["original_path"]):
-        return ps["original_path"]
+    if ps and ps.get("original_path"):
+        return os.path.normpath(ps["original_path"])
     orig_path = getattr(viewer, "_original_doc_path", "")
-    if orig_path and os.path.exists(orig_path):
-        return orig_path
-    return viewer.current_path() or ""
+    if orig_path:
+        return os.path.normpath(orig_path)
+    curr = viewer.current_path() or ""
+    return os.path.normpath(curr) if curr else ""
 
 
 def _update_recent_files_path(old_path: str, new_path: str | None) -> None:
     """Replace or remove old_path in recent_files config."""
     try:
         from app.i18n import _update_config
-        old_norm = os.path.normcase(os.path.abspath(old_path))
+        old_norm = os.path.normcase(os.path.normpath(os.path.abspath(old_path)))
 
         def _mutate(cfg: dict) -> None:
             recents = cfg.get("recent_files", [])
@@ -49,11 +50,11 @@ def _update_recent_files_path(old_path: str, new_path: str | None) -> None:
             for r in recents:
                 if not isinstance(r, str):
                     continue
-                if os.path.normcase(os.path.abspath(r)) == old_norm:
+                if os.path.normcase(os.path.normpath(os.path.abspath(r))) == old_norm:
                     if new_path:
-                        updated.append(new_path)
+                        updated.append(os.path.normpath(new_path))
                 else:
-                    updated.append(r)
+                    updated.append(os.path.normpath(r))
             cfg["recent_files"] = updated
 
         _update_config(_mutate)
@@ -62,10 +63,10 @@ def _update_recent_files_path(old_path: str, new_path: str | None) -> None:
 
 
 def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> None:
-    """Prompt for a new filename and rename the tab's backing file on disk safely."""
+    """Prompt for a new filename and rename the tab's backing file on disk or rename an unsaved tab's target."""
     disk_path = get_tab_disk_path(win, viewer)
-    if not disk_path or not os.path.isfile(disk_path):
-        QMessageBox.warning(win, t("msg.warning"), "No backing file on disk to rename.")
+    if not disk_path:
+        QMessageBox.warning(win, t("msg.warning"), "No backing file to rename.")
         return
 
     parent_dir = os.path.dirname(disk_path)
@@ -97,15 +98,41 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
     if new_name == old_name:
         return
 
-    new_path = os.path.join(parent_dir, new_name)
+    new_path = os.path.normpath(os.path.join(parent_dir, new_name))
     is_case_only = os.path.normcase(os.path.abspath(new_path)) == os.path.normcase(os.path.abspath(disk_path))
-    if not is_case_only and os.path.exists(new_path):
+
+    file_exists_on_disk = os.path.isfile(disk_path)
+
+    if file_exists_on_disk and not is_case_only and os.path.exists(new_path):
         QMessageBox.warning(win, t("msg.warning"), f"A file named '{new_name}' already exists in this folder.")
         return
 
+    ps_map = getattr(win, "_pipeline_state", {})
+    ps = ps_map.get(id(viewer)) if isinstance(ps_map, dict) else None
+
+    # If the file hasn't been written to disk yet (e.g. freshly generated watermarked tab)
+    if not file_exists_on_disk:
+        if ps is not None:
+            ps["original_path"] = new_path
+        viewer._original_doc_path = new_path
+        viewer._name_lbl.setText(f"* {new_name}")
+        win._tab_bar.setTabText(tab_idx, f"* {new_name}")
+        win._tab_bar.setTabToolTip(tab_idx, f"{new_path} (unsaved)")
+        if hasattr(win, "_update_breadcrumb"):
+            win._update_breadcrumb()
+        if viewer is getattr(win, "_viewer", None) and hasattr(win, "setWindowTitle"):
+            win.setWindowTitle(f"{t('app.name')} - * {new_name}")
+        msg = f"Renamed to '{new_name}'"
+        if hasattr(win, "_set_status"):
+            win._set_status(msg)
+        elif hasattr(win, "_sb"):
+            win._sb.showMessage(msg)
+        return
+
+    # File exists on disk - perform full disk rename releasing locks
     curr_viewer_path = viewer.current_path()
     viewer_holds_disk_file = bool(
-        curr_viewer_path and os.path.abspath(curr_viewer_path) == os.path.abspath(disk_path)
+        curr_viewer_path and os.path.normcase(os.path.normpath(os.path.abspath(curr_viewer_path))) == os.path.normcase(os.path.normpath(os.path.abspath(disk_path)))
     )
     scroll_val = 0
     cur_page = 0
@@ -117,9 +144,11 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
 
     if viewer_holds_disk_file:
         viewer._canvas.close_doc()
-        if viewer._fitz_doc is not None:
+        doc = getattr(viewer, "_fitz_doc", None)
+        if doc is not None:
             with contextlib.suppress(Exception):
-                viewer._fitz_doc.close()
+                if not getattr(doc, "is_closed", False):
+                    doc.close()
             viewer._fitz_doc = None
         viewer._thumbnails._stop_all_workers()
 
@@ -128,7 +157,7 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
     edit_holds_disk_file = False
     if edit_w is not None and not getattr(edit_w, "_is_lazy_placeholder", False):
         cur_edit_path = getattr(edit_w, "_doc_path", None)
-        if cur_edit_path and os.path.abspath(cur_edit_path) == os.path.abspath(disk_path):
+        if cur_edit_path and os.path.normcase(os.path.normpath(os.path.abspath(cur_edit_path))) == os.path.normcase(os.path.normpath(os.path.abspath(disk_path))):
             edit_holds_disk_file = True
             edit_w._canvas.release_doc()
 
@@ -151,14 +180,12 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
         return
 
     viewer._original_doc_path = new_path
-    old_abs = os.path.abspath(disk_path)
+    old_abs = os.path.normcase(os.path.normpath(os.path.abspath(disk_path)))
     for stack_attr in ("_undo_stack", "_redo_stack"):
         for entry in getattr(viewer, stack_attr, []):
-            if isinstance(entry, dict) and entry.get("path") and os.path.abspath(entry["path"]) == old_abs:
+            if isinstance(entry, dict) and entry.get("path") and os.path.normcase(os.path.normpath(os.path.abspath(entry["path"]))) == old_abs:
                 entry["path"] = new_path
 
-    ps_map = getattr(win, "_pipeline_state", {})
-    ps = ps_map.get(id(viewer)) if isinstance(ps_map, dict) else None
     is_modified = bool(ps and ps.get("temp_path"))
 
     if is_modified and ps is not None:
@@ -177,7 +204,7 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
     if edit_w is not None and not getattr(edit_w, "_is_lazy_placeholder", False):
         doc_states = getattr(edit_w, "_doc_states", None)
         if isinstance(doc_states, dict) and old_abs in doc_states:
-            doc_states[os.path.abspath(new_path)] = doc_states.pop(old_abs)
+            doc_states[os.path.normcase(os.path.normpath(os.path.abspath(new_path)))] = doc_states.pop(old_abs)
         if edit_holds_disk_file:
             edit_w._doc_path = new_path
             edit_w._drop_in.blockSignals(True)
@@ -194,7 +221,7 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
 
     if hasattr(win, "_update_breadcrumb"):
         win._update_breadcrumb()
-    if viewer is win._viewer and hasattr(win, "setWindowTitle"):
+    if viewer is getattr(win, "_viewer", None) and hasattr(win, "setWindowTitle"):
         title_name = f"* {new_name}" if is_modified else new_name
         win.setWindowTitle(f"{t('app.name')} - {title_name}")
 
@@ -209,7 +236,7 @@ def delete_tab_file_from_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) ->
     """Confirm and permanently delete the tab's backing file from disk."""
     disk_path = get_tab_disk_path(win, viewer)
     curr_path = viewer.current_path() or ""
-    if not disk_path or not os.path.exists(disk_path):
+    if not disk_path:
         return
 
     filename = os.path.basename(disk_path)

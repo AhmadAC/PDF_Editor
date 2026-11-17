@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 else:
     _Base = object
 
-# Shared cross-tab clipboard for cut PDF pages
+# Shared cross-tab clipboard for cut/copied PDF pages
 _PAGE_CLIPBOARD: dict[str, Any] = {
     "temp_pdf": "",
     "count": 0,
@@ -53,7 +53,7 @@ _CLEANUP_HOOK_INSTALLED = False
 
 
 def has_cut_pages() -> bool:
-    """Return True if the page clipboard currently holds cut PDF pages."""
+    """Return True if the page clipboard currently holds cut/copied PDF pages."""
     p = _PAGE_CLIPBOARD.get("temp_pdf", "")
     return bool(p and os.path.isfile(p) and _PAGE_CLIPBOARD.get("count", 0) > 0)
 
@@ -255,7 +255,7 @@ class _PageTransitionsDialog(QDialog):
 
 
 class PanelPageOpsMixin(_Base):
-    """Mixin for page modification, clipboard cut/paste, duplicate, reordering, extraction, and insertion."""
+    """Mixin for page modification, clipboard cut/copy/paste, duplicate, reordering, extraction, and insertion."""
 
     if TYPE_CHECKING:
         _current_path: str
@@ -320,7 +320,8 @@ class PanelPageOpsMixin(_Base):
                 self._update_page_label()
             return
 
-        if not self._fitz_doc or not self._current_path:
+        doc = getattr(self, "_fitz_doc", None)
+        if doc is None or getattr(doc, "is_closed", False) or not self._current_path:
             return
 
         if action == "undo":
@@ -354,6 +355,8 @@ class PanelPageOpsMixin(_Base):
             self._delete_pages(pages)
         elif action == "cut":
             self._cut_pages(pages)
+        elif action == "copy_pages":
+            self._copy_pages(pages)
         elif action == "paste_pages":
             self._paste_pages(pages)
         elif action == "extract":
@@ -437,14 +440,15 @@ class PanelPageOpsMixin(_Base):
         return info
 
     def _page_transitions_dialog(self, pages: list[int]) -> None:
-        if not self._fitz_doc or not self._current_path:
+        doc = getattr(self, "_fitz_doc", None)
+        if doc is None or getattr(doc, "is_closed", False) or not self._current_path:
             return
-        total = self._fitz_doc.page_count
+        total = doc.page_count
         if total <= 0:
             return
 
         ref_page = pages[0] if pages else 0
-        current_info = self._get_page_transition_info(self._fitz_doc, ref_page)
+        current_info = self._get_page_transition_info(doc, ref_page)
 
         dlg = _PageTransitionsDialog(self, pages, total, current_info)
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -468,9 +472,9 @@ class PanelPageOpsMixin(_Base):
             return
 
         try:
-            doc = fitz.open(self._current_path)
-            if self._pdf_password and doc.needs_pass:
-                doc.authenticate(self._pdf_password)
+            doc_to_modify = fitz.open(self._current_path)
+            if self._pdf_password and doc_to_modify.needs_pass:
+                doc_to_modify.authenticate(self._pdf_password)
 
             effect = settings["effect"]
             duration = settings["duration"]
@@ -480,10 +484,10 @@ class PanelPageOpsMixin(_Base):
             auto_advance = settings["auto_advance"]
 
             for p_idx in target_pages:
-                if 0 <= p_idx < doc.page_count:
-                    page = doc[p_idx]
+                if 0 <= p_idx < doc_to_modify.page_count:
+                    page = doc_to_modify[p_idx]
                     if effect == "None":
-                        doc.xref_set_key(page.xref, "Trans", "null")
+                        doc_to_modify.xref_set_key(page.xref, "Trans", "null")
                     else:
                         parts = ["/Type /Trans", f"/S /{effect}", f"/D {duration:g}"]
                         if effect in ("Split", "Blinds"):
@@ -493,14 +497,14 @@ class PanelPageOpsMixin(_Base):
                         if effect in ("Wipe", "Glitter", "Push", "Cover", "Uncover"):
                             parts.append(f"/Di {direction}")
                         trans_dict = "<< " + " ".join(parts) + " >>"
-                        doc.xref_set_key(page.xref, "Trans", trans_dict)
+                        doc_to_modify.xref_set_key(page.xref, "Trans", trans_dict)
 
                     if auto_advance is not None and auto_advance > 0:
-                        doc.xref_set_key(page.xref, "Dur", f"{auto_advance:g}")
+                        doc_to_modify.xref_set_key(page.xref, "Dur", f"{auto_advance:g}")
                     else:
-                        doc.xref_set_key(page.xref, "Dur", "null")
+                        doc_to_modify.xref_set_key(page.xref, "Dur", "null")
 
-            self._save_and_reload(doc, target_page=target_pages[0], selected_pages=target_pages)
+            self._save_and_reload(doc_to_modify, target_page=target_pages[0], selected_pages=target_pages)
             win: Any = self.window()
             if win and hasattr(win, "_set_status"):
                 desc = "removed" if effect == "None" else f"'{effect}'"
@@ -552,20 +556,34 @@ class PanelPageOpsMixin(_Base):
             doc = fitz.open(self._current_path)
             if self._pdf_password and doc.needs_pass:
                 doc.authenticate(self._pdf_password)
-            if doc.page_count <= len(pages):
-                QMessageBox.warning(self, t("msg.warning"), "Cannot delete all pages in the document.")
+
+            valid_pages = sorted({p for p in pages if 0 <= p < doc.page_count})
+            if not valid_pages:
                 doc.close()
                 return
 
-            for p_idx in sorted(pages, reverse=True):
-                if 0 <= p_idx < doc.page_count:
-                    doc.delete_page(p_idx)
+            all_del = bool(doc.page_count <= len(valid_pages))
+            if all_del:
+                ans = QMessageBox.question(
+                    self, t("msg.confirm"),
+                    "Deleting all pages will reset the document to a single blank page. Continue?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if ans != QMessageBox.StandardButton.Yes:
+                    doc.close()
+                    return
+                ref_rect = doc[0].rect if doc.page_count > 0 else fitz.Rect(0, 0, 595, 842)
+                doc.new_page(pno=doc.page_count, width=ref_rect.width, height=ref_rect.height)
 
-            target = min(pages[0], doc.page_count - 1)
+            for p_idx in sorted(valid_pages, reverse=True):
+                doc.delete_page(p_idx)
+
+            target = 0 if all_del else min(valid_pages[0], doc.page_count - 1)
             self._save_and_reload(doc, target_page=target, selected_pages=[target])
             win: Any = self.window()
             if win and hasattr(win, "_set_status"):
-                win._set_status(f"Deleted {len(pages)} page(s) (Ctrl+Z to undo)")
+                win._set_status(f"Deleted {len(valid_pages)} page(s) (Ctrl+Z to undo)")
         except Exception as exc:
             show_error(self, exc)
 
@@ -582,15 +600,6 @@ class PanelPageOpsMixin(_Base):
             valid_pages = sorted({p for p in pages if 0 <= p < doc.page_count})
             if not valid_pages:
                 doc.close()
-                return
-
-            if doc.page_count <= len(valid_pages):
-                doc.close()
-                QMessageBox.warning(
-                    self,
-                    t("msg.warning"),
-                    "Cannot cut all pages in the document. At least one page must remain.",
-                )
                 return
 
             cut_doc = fitz.open()
@@ -613,21 +622,75 @@ class PanelPageOpsMixin(_Base):
                 getattr(self, "_original_doc_path", "") or self._current_path
             )
 
+            all_cut = bool(doc.page_count <= len(valid_pages))
+            if all_cut:
+                ref_rect = doc[0].rect if doc.page_count > 0 else fitz.Rect(0, 0, 595, 842)
+                doc.new_page(pno=doc.page_count, width=ref_rect.width, height=ref_rect.height)
+
             for p_idx in sorted(valid_pages, reverse=True):
                 doc.delete_page(p_idx)
 
-            target = min(valid_pages[0], doc.page_count - 1)
+            target = 0 if all_cut else min(valid_pages[0], doc.page_count - 1)
             self._save_and_reload(doc, target_page=target, selected_pages=[target])
             win: Any = self.window()
             if win and hasattr(win, "_set_status"):
+                if all_cut:
+                    win._set_status(
+                        f"Cut {len(valid_pages)} page(s) (document replaced with blank page) — press Ctrl+V in another open PDF tab to paste (Ctrl+Z to undo)"
+                    )
+                else:
+                    win._set_status(
+                        f"Cut {len(valid_pages)} page(s) — press Ctrl+V in any open PDF tab to paste (Ctrl+Z to undo)"
+                    )
+        except Exception as exc:
+            show_error(self, exc)
+
+    def _copy_pages(self, pages: list[int]) -> None:
+        """Copy selected pages into the shared page clipboard without removing them from this document."""
+        if not self._current_path or not os.path.isfile(self._current_path):
+            return
+        _ensure_clipboard_cleanup_hook()
+        try:
+            doc = fitz.open(self._current_path)
+            if self._pdf_password and doc.needs_pass:
+                doc.authenticate(self._pdf_password)
+
+            valid_pages = sorted({p for p in pages if 0 <= p < doc.page_count})
+            if not valid_pages:
+                doc.close()
+                return
+
+            copy_doc = fitz.open()
+            for p_idx in valid_pages:
+                copy_doc.insert_pdf(doc, from_page=p_idx, to_page=p_idx)
+            doc.close()
+
+            fd, tmp_copy = tempfile.mkstemp(prefix="PDF_Editor_copy_", suffix=".pdf")
+            os.close(fd)
+            atomic_pdf_write(
+                copy_doc,
+                tmp_copy,
+                save_opts={"garbage": 4, "deflate": True},
+                close_writer=True,
+            )
+
+            cleanup_page_clipboard()
+            _PAGE_CLIPBOARD["temp_pdf"] = tmp_copy
+            _PAGE_CLIPBOARD["count"] = len(valid_pages)
+            _PAGE_CLIPBOARD["source_name"] = os.path.basename(
+                getattr(self, "_original_doc_path", "") or self._current_path
+            )
+
+            win: Any = self.window()
+            if win and hasattr(win, "_set_status"):
                 win._set_status(
-                    f"Cut {len(valid_pages)} page(s) — press Ctrl+V in any open PDF tab to paste (Ctrl+Z to undo)"
+                    f"Copied {len(valid_pages)} page(s) — press Ctrl+V in any open PDF tab to paste"
                 )
         except Exception as exc:
             show_error(self, exc)
 
     def _paste_pages(self, pages: list[int]) -> None:
-        """Paste cut pages from the shared page clipboard after the selected/current page."""
+        """Paste cut/copied pages from the shared page clipboard after the selected/current page."""
         if not self._current_path or not os.path.isfile(self._current_path):
             return
         if not has_cut_pages():
@@ -649,7 +712,11 @@ class PanelPageOpsMixin(_Base):
                 return
 
             valid_pages = [p for p in pages if 0 <= p < doc.page_count]
-            insert_at = min(doc.page_count, (max(valid_pages) + 1) if valid_pages else doc.page_count)
+            if pages and pages[0] == -1:
+                insert_at = 0
+            else:
+                insert_at = min(doc.page_count, (max(valid_pages) + 1) if valid_pages else doc.page_count)
+
             doc.insert_pdf(src, start_at=insert_at)
             src.close()
 
@@ -785,7 +852,8 @@ class PanelPageOpsMixin(_Base):
             show_error(self, exc)
 
     def _swap_page_dialog(self, page_idx: int) -> None:
-        total = self._fitz_doc.page_count if self._fitz_doc else 1
+        doc = getattr(self, "_fitz_doc", None)
+        total = doc.page_count if (doc is not None and not getattr(doc, "is_closed", False)) else 1
         target, ok = QInputDialog.getInt(
             self, "Swap Pages",
             f"Swap page {page_idx + 1} with page (1-{total}):",
@@ -795,24 +863,25 @@ class PanelPageOpsMixin(_Base):
             return
         try:
             target_idx = target - 1
-            doc = fitz.open(self._current_path)
-            if self._pdf_password and doc.needs_pass:
-                doc.authenticate(self._pdf_password)
-            order = list(range(doc.page_count))
+            doc_to_mod = fitz.open(self._current_path)
+            if self._pdf_password and doc_to_mod.needs_pass:
+                doc_to_mod.authenticate(self._pdf_password)
+            order = list(range(doc_to_mod.page_count))
             order[page_idx], order[target_idx] = order[target_idx], order[page_idx]
             new_doc = fitz.open()
             for idx in order:
-                new_doc.insert_pdf(doc, from_page=idx, to_page=idx)
-            doc.close()
+                new_doc.insert_pdf(doc_to_mod, from_page=idx, to_page=idx)
+            doc_to_mod.close()
             self._save_and_reload(new_doc, target_page=target_idx, selected_pages=[target_idx])
         except Exception as exc:
             show_error(self, exc)
 
     def _move_pages_to(self, pages: list[int], target_index: int) -> None:
         """Move one or more pages to target_index using standard reordering logic."""
-        if not self._fitz_doc or not self._current_path:
+        doc_ref = getattr(self, "_fitz_doc", None)
+        if doc_ref is None or getattr(doc_ref, "is_closed", False) or not self._current_path:
             return
-        total = self._fitz_doc.page_count
+        total = doc_ref.page_count
         if total <= 1 or not pages:
             return
 
@@ -851,7 +920,8 @@ class PanelPageOpsMixin(_Base):
             show_error(self, exc)
 
     def _move_page_dialog(self, pages: list[int]) -> None:
-        total = self._fitz_doc.page_count if self._fitz_doc else 1
+        doc = getattr(self, "_fitz_doc", None)
+        total = doc.page_count if (doc is not None and not getattr(doc, "is_closed", False)) else 1
         page_str = ", ".join(str(p + 1) for p in pages)
         dest, ok = QInputDialog.getInt(
             self, "Move Pages",
@@ -907,12 +977,13 @@ class PanelPageOpsMixin(_Base):
             show_error(self, exc)
 
     def _copy_page_content(self, pages: list[int]) -> None:
-        if not self._fitz_doc:
+        doc = getattr(self, "_fitz_doc", None)
+        if doc is None or getattr(doc, "is_closed", False):
             return
         texts: list[str] = []
         for p_idx in pages:
-            if 0 <= p_idx < self._fitz_doc.page_count:
-                raw_text = self._fitz_doc[p_idx].get_text("text")
+            if 0 <= p_idx < doc.page_count:
+                raw_text = doc[p_idx].get_text("text")
                 t_str = raw_text.strip() if isinstance(raw_text, str) else str(raw_text).strip()
                 if t_str:
                     texts.append(t_str)
@@ -978,4 +1049,3 @@ class PanelPageOpsMixin(_Base):
         win: Any = self.window()
         if win and hasattr(win, "_open_tool_by_name"):
             win._open_tool_by_name(t("nav.split"))
-

@@ -1,4 +1,5 @@
 
+
 # app/viewer/panel.py
 """PDF_Editor – PdfViewerPanel: PDF viewer with drag & drop, text selection, SVG icons, signatures, and thumbnail multi-page actions."""
 import contextlib
@@ -343,9 +344,11 @@ class PdfViewerPanel(PanelHistoryMixin, PanelPageOpsMixin, PanelSearchPrintMixin
         self._cancel_print_job()
         if hasattr(self, "_canvas"):
             self._canvas.close_doc()
-        if self._fitz_doc is not None:
+        doc = getattr(self, "_fitz_doc", None)
+        if doc is not None:
             with contextlib.suppress(Exception):
-                self._fitz_doc.close()
+                if not getattr(doc, "is_closed", False):
+                    doc.close()
             self._fitz_doc = None
         if hasattr(self, "_thumbnails"):
             try:
@@ -402,4 +405,3 @@ class PdfViewerPanel(PanelHistoryMixin, PanelPageOpsMixin, PanelSearchPrintMixin
         except Exception:
             pass
         super().closeEvent(event)
-

@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 import fitz
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QPushButton, QWidget
-import qtawesome as qta
 
 from app.constants import ACCENT, TEXT_SEC, _LQ
 from app.editor.tab_constants import (
@@ -25,6 +24,7 @@ from app.editor.tab_constants import (
     _MODE_TEXT,
 )
 from app.i18n import t
+from app.utils import svg_for_name
 
 try:
     from app.editor.canvas_render1 import _get_icon_cursor
@@ -99,13 +99,13 @@ class TabActionsMixin(_Base):
         sz = float(self._stamp_size.value()) if hasattr(self, "_stamp_size") else 20.0
         col = self._stamp_color.color_tuple() if hasattr(self, "_stamp_color") else (0.0, 0.0, 0.0)
         self._canvas.begin_stamp_placement("check", color=col, size=sz)
-        self._status("✔ Click directly inside any box or cell to place the checkmark (Right-click to cancel).")
+        self._status("Click directly inside any box or cell to place the checkmark (Right-click to cancel).")
 
     def _start_stamp_cross(self):
         sz = float(self._stamp_size.value()) if hasattr(self, "_stamp_size") else 20.0
         col = self._stamp_color.color_tuple() if hasattr(self, "_stamp_color") else (0.0, 0.0, 0.0)
         self._canvas.begin_stamp_placement("cross", color=col, size=sz)
-        self._status("✖ Click directly inside any box or cell to place the crossmark (Right-click to cancel).")
+        self._status("Click directly inside any box or cell to place the crossmark (Right-click to cancel).")
 
     def _on_stamp_added(self, page_idx: int, rect, stamp_type: str):
         col = self._stamp_color.color_tuple() if hasattr(self, "_stamp_color") else (0.0, 0.0, 0.0)
@@ -125,7 +125,7 @@ class TabActionsMixin(_Base):
         for i, b in enumerate(self._mode_btns):
             active = b is btn
             b.setChecked(active)
-            b.setIcon(qta.icon(self._MODE_DEFS[i][1], color=ACCENT if active else sec))
+            b.setIcon(svg_for_name(self._MODE_DEFS[i][1], color=ACCENT if active else sec, size=18))
             if active:
                 b.setStyleSheet(
                     f"background:#264F78; border:1px solid {ACCENT}; color:#FFFFFF; border-radius:6px;"
@@ -197,9 +197,9 @@ class TabActionsMixin(_Base):
         self._update_text_submode_styles()
         if hasattr(self, "_text_hint"):
             if is_add:
-                self._text_hint.setText("💡 Click anywhere on the page to insert new text exactly where you click.")
+                self._text_hint.setText("Click anywhere on the page to insert new text exactly where you click.")
             else:
-                self._text_hint.setText("💡 Click or drag across any text on the page to edit it.")
+                self._text_hint.setText("Click or drag across any text on the page to edit it.")
 
     def _update_text_submode_styles(self):
         if not hasattr(self, "_btn_text_add") or not hasattr(self, "_btn_text_edit"):
@@ -320,7 +320,7 @@ class TabActionsMixin(_Base):
         if hasattr(self, "_sel_result"):
             self._sel_result.setPlainText("")
         self._canvas.update()
-        self._status("✔ Selected element deleted (Ctrl+Z to undo)")
+        self._status("Selected element deleted (Ctrl+Z to undo)")
 
     def _edit_selection(self):
         page_idx = getattr(self, "_last_selected_page", -1)
@@ -368,7 +368,7 @@ class TabActionsMixin(_Base):
                     ov["text"] = new_txt
                     self._canvas.overlay_changed.emit()
                     self._canvas.update()
-                    self._status("✔ Updated text applied (Ctrl+Z to undo)")
+                    self._status("Updated text applied (Ctrl+Z to undo)")
             return
         old_txt = getattr(self, "_last_selected_original_text", "")
         edit = {
@@ -391,7 +391,7 @@ class TabActionsMixin(_Base):
             self._canvas._active_sel_rect = None
         self._last_selected_rect = None
         self._canvas.update()
-        self._status("✔ Edited text applied (Ctrl+Z to undo)")
+        self._status("Edited text applied (Ctrl+Z to undo)")
 
     def _redact_selection(self):
         page_idx = getattr(self, "_last_selected_page", -1)
@@ -410,7 +410,7 @@ class TabActionsMixin(_Base):
         if hasattr(self, "_sel_result"):
             self._sel_result.setPlainText("")
         self._canvas.update()
-        self._status("✔ Selection redacted (Ctrl+Z to undo)")
+        self._status("Selection redacted (Ctrl+Z to undo)")
 
     def _highlight_selection(self):
         page_idx = getattr(self, "_last_selected_page", -1)
@@ -444,7 +444,7 @@ class TabActionsMixin(_Base):
             "rects": line_rects if line_rects else None,
             "color": hi_color
         })
-        self._status("✔ Highlight added to selection")
+        self._status("Highlight added to selection")
 
     def _on_rect(self, page_idx: int, pdf_rect):
         self._page_idx = page_idx
@@ -487,7 +487,7 @@ class TabActionsMixin(_Base):
                     "rect": pdf_rect,
                     "color": hi_color
                 })
-            self._status("✔ Highlight added (Ctrl+Z to undo)")
+            self._status("Highlight added (Ctrl+Z to undo)")
             return
 
         if mode == _MODE_SELECT:
@@ -535,7 +535,7 @@ class TabActionsMixin(_Base):
                                 matched_spans.append(span)
 
                 if not matched_spans:
-                    self._status("ℹ No text found in selected area to edit.")
+                    self._status("No text found in selected area to edit.")
                     return
 
                 if len(matched_spans) == 1:
@@ -624,7 +624,7 @@ class TabActionsMixin(_Base):
                     clipboard = QApplication.clipboard()
                     if clipboard:
                         clipboard.setText(txt)
-                self._status(f"✔ Selected: {txt[:30]}")
+                self._status(f"Selected: {txt[:30]}")
             else:
                 if hasattr(self._canvas, "_active_sel_rect"):
                     self._canvas._active_sel_rect = None
@@ -637,7 +637,7 @@ class TabActionsMixin(_Base):
                 if hit:
                     self._canvas.begin_inline_text_edit(hit, page_idx)
                     return
-                self._status("ℹ Click or drag across existing text to edit it.")
+                self._status("Click or drag across existing text to edit it.")
                 return
 
             size = float(self._text_size.value())
@@ -669,7 +669,7 @@ class TabActionsMixin(_Base):
                     "rect": bb,
                     "color": hi_col
                 })
-                self._status("✔ Word highlighted")
+                self._status("Word highlighted")
 
     def _on_text_edit_committed(self, page_idx: int, edit: dict):
         self._add(edit)

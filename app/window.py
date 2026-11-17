@@ -543,7 +543,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
 
         pipeline_save = getattr(w, "pipeline_save_requested", None)
         if pipeline_save is not None and hasattr(pipeline_save, "connect"):
-            pipeline_save.connect(self._save_pipeline)
+            pipeline_save.connect(lambda: self._save_pipeline(prompt_dialog=True))
 
         for sig_name, handler in (
             ("rotations_changed", self._on_rotations_changed),
@@ -569,7 +569,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
                     event.ignore()
                     return
                 if ans == QMessageBox.StandardButton.Save:
-                    self._save_pipeline()
+                    self._save_pipeline(prompt_dialog=False)
                 break
         edit_idx = self._edit_tool_idx()
         if edit_idx >= 0:
@@ -609,4 +609,3 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         except Exception:
             pass
         super().closeEvent(event)
-

@@ -1,3 +1,4 @@
+
 # app/tools/watermark_page.py
 """TabMarcaDagua page controller coordinating UI, open tabs, and background watermarking."""
 
@@ -137,7 +138,7 @@ class TabMarcaDagua(BasePage):
         # ── 4. In-Window Green Result Box ─────────────────────────────────
         self._result_box = _WatermarkResultBox()
         self._lbl_res_icon = self._result_box.lbl_icon
-        self._lbl_res_msg = self._result_box.lbl_msg
+        self._lbl_msg = self._result_box.lbl_msg
         self._btn_res_close = self._result_box.btn_close
         self._btn_res_save = self._result_box.btn_save
         self._btn_res_folder = self._result_box.btn_folder
@@ -324,7 +325,7 @@ class TabMarcaDagua(BasePage):
 
     def set_compact_mode(self, active: bool, path: str = "") -> None:
         if active and path:
-            self.auto_load(path)
+            self.auto_load(os.path.normpath(path))
         self._compact_active = active
         self._pipeline_active = False
         self._refresh_open_tabs()
@@ -340,7 +341,8 @@ class TabMarcaDagua(BasePage):
             curr_p = v.current_path() if hasattr(v, "current_path") else ""
             if not curr_p or not os.path.isfile(curr_p):
                 continue
-            orig_p = getattr(v, "_original_doc_path", "") or curr_p
+            curr_p = os.path.normpath(curr_p)
+            orig_p = os.path.normpath(getattr(v, "_original_doc_path", "") or curr_p)
             pwd = getattr(v, "_pdf_password", "") or ""
             bname = os.path.basename(orig_p)
             name_counts[bname] = name_counts.get(bname, 0) + 1
@@ -360,12 +362,12 @@ class TabMarcaDagua(BasePage):
         curr_p, orig_p, pwd = data
         if curr_p and os.path.isfile(curr_p):
             self._pdf_password = pwd or ""
-            self._base_orig_path = orig_p or curr_p
+            self._base_orig_path = os.path.normpath(orig_p or curr_p)
             self._load_input(curr_p, display_name=os.path.basename(self._base_orig_path))
 
     def _on_base_file_picked(self, path: str) -> None:
         if path and os.path.isfile(path):
-            self._base_orig_path = path
+            self._base_orig_path = os.path.normpath(path)
             self._load_input(path)
 
     def _on_base_cleared(self) -> None:
@@ -381,21 +383,22 @@ class TabMarcaDagua(BasePage):
         curr_p, orig_p, pwd = data
         if curr_p and os.path.isfile(curr_p):
             self._wm_password = pwd or ""
-            self._wm_orig_path = orig_p or curr_p
+            self._wm_orig_path = os.path.normpath(orig_p or curr_p)
             self._sync_wm_selection(curr_p, os.path.basename(self._wm_orig_path))
 
     def _on_wm_file_picked(self, path: str) -> None:
         if path and os.path.isfile(path):
-            self._wm_orig_path = path
+            self._wm_orig_path = os.path.normpath(path)
             self._wm_password = ""
             self._sync_wm_selection(path, "")
 
     def _sync_wm_selection(self, path: str, display_name: str) -> None:
-        self.wm_card.set_path(path, display_name=display_name)
+        norm_p = os.path.normpath(path) if path else ""
+        self.wm_card.set_path(norm_p, display_name=display_name)
         self.drop_wm.blockSignals(True)
-        self.drop_wm.set_path(path, display_name=display_name)
+        self.drop_wm.set_path(norm_p, display_name=display_name)
         self.drop_wm.blockSignals(False)
-        self._probe_wm_info(path)
+        self._probe_wm_info(norm_p)
         self._refresh_open_tabs()
 
     def _on_wm_cleared(self) -> None:
@@ -431,21 +434,22 @@ class TabMarcaDagua(BasePage):
         if not p:
             self._on_base_cleared()
             return
-        disp = display_name or os.path.basename(self._base_orig_path or p)
-        self.base_card.set_path(p, display_name=disp)
+        norm_p = os.path.normpath(p)
+        disp = display_name or os.path.basename(self._base_orig_path or norm_p)
+        self.base_card.set_path(norm_p, display_name=disp)
         self.drop_in.blockSignals(True)
-        self.drop_in.set_path(p, display_name=disp)
+        self.drop_in.set_path(norm_p, display_name=disp)
         self.drop_in.blockSignals(False)
-        if not self._maybe_prompt_password(p):
+        if not self._maybe_prompt_password(norm_p):
             self._on_base_cleared()
             return
         if not self._base_orig_path:
-            self._base_orig_path = p
+            self._base_orig_path = norm_p
         if not self.drop_out.path():
             base, ext = os.path.splitext(self._base_orig_path)
             self.drop_out.set_path(base + "_watermark" + ext)
         try:
-            r = self._open_reader(p)
+            r = self._open_reader(norm_p)
             self.base_card.set_info(t("edit.status.pages", n=len(r.pages)))
         except Exception as e:
             self.base_card.set_info(t("tool.split.error_info", e=e))
@@ -455,15 +459,16 @@ class TabMarcaDagua(BasePage):
         self._refresh_open_tabs()
         if not path or not os.path.isfile(path):
             return
-        if os.path.abspath(path) in self._generated_outputs:
+        norm_p = os.path.normpath(os.path.abspath(path))
+        if norm_p in self._generated_outputs:
             return
         if self.base_card.path() and os.path.isfile(self.base_card.path()):
             return
         win: Any = self.window()
         viewer = getattr(win, "_viewer", None)
-        orig_p = getattr(viewer, "_original_doc_path", "") if viewer else ""
-        self._base_orig_path = orig_p or path
-        self._load_input(path, display_name=os.path.basename(self._base_orig_path))
+        orig_p = os.path.normpath(getattr(viewer, "_original_doc_path", "") or norm_p) if viewer else norm_p
+        self._base_orig_path = orig_p
+        self._load_input(norm_p, display_name=os.path.basename(self._base_orig_path))
 
     def _prompt_watermark_password(self, wm_path: str) -> str | None:
         try:
@@ -493,11 +498,13 @@ class TabMarcaDagua(BasePage):
         if not src_temp or not os.path.isfile(src_temp):
             return
         suggested = self._last_suggested_path or os.path.join(DESKTOP, "watermarked.pdf")
+        suggested = os.path.normpath(suggested)
         chosen_path, _ = QFileDialog.getSaveFileName(
             self, t("widget.save_as"), suggested, t("file_filter.pdf")
         )
         if not chosen_path:
             return
+        chosen_path = os.path.normpath(chosen_path)
 
         win: Any = self.window()
         try:
@@ -515,6 +522,7 @@ class TabMarcaDagua(BasePage):
             with contextlib.suppress(Exception):
                 win._cleanup_pipeline(id(target_v))
                 target_v.load(chosen_path)
+                target_v._original_doc_path = chosen_path
                 tab_idx = win._viewers.index(target_v)
                 win._tab_bar.setTabText(tab_idx, os.path.basename(chosen_path))
                 win._tab_bar.setTabToolTip(tab_idx, chosen_path)
@@ -528,11 +536,10 @@ class TabMarcaDagua(BasePage):
         target = self._last_saved_path or self._last_output_temp
         if target and os.path.exists(target):
             if self._last_saved_path:
-                reveal_file(target)
+                reveal_file(os.path.normpath(target))
             else:
-                open_folder(
-                    os.path.dirname(self._last_suggested_path) if self._last_suggested_path else target
-                )
+                folder = os.path.dirname(self._last_suggested_path) if self._last_suggested_path else target
+                open_folder(os.path.normpath(folder))
 
     def cleanup_pipeline(self) -> None:
         super().cleanup_pipeline()
@@ -583,12 +590,15 @@ class TabMarcaDagua(BasePage):
             return
 
         base_orig = self._base_orig_path or pdf_path
+        if base_orig:
+            base_orig = os.path.normpath(base_orig)
         stem, _ = os.path.splitext(os.path.basename(base_orig))
         wm_filename = f"{stem}_watermarked.pdf"
         run_tmp_dir = tempfile.mkdtemp(prefix="PDF_Editor_wm_")
         self._wm_tmp_dirs.append(run_tmp_dir)
-        out_path = os.path.join(run_tmp_dir, wm_filename)
-        suggested_save_path = os.path.join(os.path.dirname(base_orig) or DESKTOP, wm_filename)
+        out_path = os.path.normpath(os.path.join(run_tmp_dir, wm_filename))
+        save_dir = os.path.dirname(base_orig) if base_orig else DESKTOP
+        suggested_save_path = os.path.normpath(os.path.join(save_dir, wm_filename))
 
         cfg = WatermarkJobConfig(
             pdf_path=pdf_path,
@@ -608,8 +618,9 @@ class TabMarcaDagua(BasePage):
         def on_done(saved):
             if not saved or not os.path.isfile(saved):
                 return
-            self._generated_outputs.add(os.path.abspath(saved))
-            self._last_output_temp = saved
+            saved_norm = os.path.normpath(saved)
+            self._generated_outputs.add(os.path.abspath(saved_norm))
+            self._last_output_temp = saved_norm
             self._last_suggested_path = suggested_save_path
             self._last_saved_path = ""
             self._last_output_viewer = None
@@ -617,26 +628,26 @@ class TabMarcaDagua(BasePage):
             if win and hasattr(win, "_add_viewer_tab"):
                 new_viewer = win._add_viewer_tab()
                 new_tab_idx = win._viewers.index(new_viewer)
-                new_viewer.load(saved, _is_history_step=True)
+                new_viewer.load(saved_norm, _is_history_step=True)
                 new_viewer._original_doc_path = suggested_save_path
                 win._pipeline_state[id(new_viewer)] = {
                     "original_path": suggested_save_path,
-                    "temp_path": saved,
+                    "temp_path": saved_norm,
                 }
                 disp_name = os.path.basename(suggested_save_path)
-                win._tab_bar.setTabText(new_tab_idx, disp_name)
+                win._tab_bar.setTabText(new_tab_idx, f"* {disp_name}")
                 win._tab_bar.setTabToolTip(new_tab_idx, f"{suggested_save_path} (unsaved watermarked PDF)")
-                new_viewer._name_lbl.setText(disp_name)
+                new_viewer._name_lbl.setText(f"* {disp_name}")
                 win._update_tab_bar_visibility()
                 win._update_breadcrumb()
                 win._update_page_nav()
                 self._last_output_viewer = new_viewer
                 self._refresh_open_tabs()
-                self._show_result_box("Opened watermarked PDF in a new tab — click Save As to keep.", can_save=True)
-                self._status(f"Opened {disp_name} in a new tab")
+                self._show_result_box("Opened watermarked PDF in a new tab — press Ctrl+S to save.", can_save=True)
+                self._status(f"Opened {disp_name} in a new tab (Press Ctrl+S to save)")
             else:
-                self._show_result_box(f"Created: {os.path.basename(saved)}", can_save=True)
-                self._status(t("tool.watermark.status.done", name=os.path.basename(saved)))
+                self._show_result_box(f"Created: {os.path.basename(saved_norm)}", can_save=True)
+                self._status(t("tool.watermark.status.done", name=os.path.basename(saved_norm)))
 
         self._run_background(
             lambda worker: execute_watermark(cfg, pf, worker),

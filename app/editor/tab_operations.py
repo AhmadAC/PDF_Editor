@@ -2,6 +2,7 @@
 """PDF_Editor – tab_operations: form operations and PDF saving logic for TabEditar."""
 
 import contextlib
+import io
 import logging
 import os
 import tempfile
@@ -89,16 +90,20 @@ def load_form_fields(tab, path: str) -> None:
 def invalidate_viewer_pipeline(tab, out_path: str) -> None:
     """Close reader handles in main viewer if the target output file is currently opened."""
     win = tab.window()
+    viewers = getattr(win, "_viewers", None) or []
     viewer = getattr(win, "_viewer", None)
-    if viewer and viewer.current_path() and os.path.abspath(viewer.current_path()) == os.path.abspath(out_path):
-        viewer._canvas.close_doc()
-        if viewer._fitz_doc:
-            with contextlib.suppress(Exception):
-                viewer._fitz_doc.close()
-            viewer._fitz_doc = None
-        viewer._thumbnails._stop_all_workers()
-        if win and hasattr(win, "_cleanup_pipeline"):
-            win._cleanup_pipeline(id(viewer))
+    if viewer and viewer not in viewers:
+        viewers.append(viewer)
+    for v in viewers:
+        if v and v.current_path() and os.path.abspath(v.current_path()) == os.path.abspath(out_path):
+            v._canvas.close_doc()
+            if v._fitz_doc:
+                with contextlib.suppress(Exception):
+                    v._fitz_doc.close()
+                v._fitz_doc = None
+            v._thumbnails._stop_all_workers()
+            if win and hasattr(win, "_cleanup_pipeline"):
+                win._cleanup_pipeline(id(v))
 
 
 def apply_form_fields_and_save(tab, out: str) -> None:
@@ -106,50 +111,51 @@ def apply_form_fields_and_save(tab, out: str) -> None:
     try:
         from pypdf import PdfWriter, PdfReader
         with open(tab._doc_path, "rb") as _src:
-            _r = PdfReader(_src)
-            was_encrypted = bool(_r.is_encrypted)
-            if was_encrypted and tab._pdf_password:
-                if decrypt_pypdf(_r, tab._pdf_password) is None:
-                    raise WrongPasswordError(t("tool.err.wrong_password"))
-            encrypt_choice = "plaintext"
-            if was_encrypted and tab._pdf_password:
-                encrypt_choice = prompt_encryption_choice(tab)
-                if encrypt_choice is None:
-                    return
-            writer = PdfWriter()
-            writer.append(_r)
-            fields = {
-                tab._form_table.item(r, 0).text():
-                (tab._form_table.item(r, 1).text() if tab._form_table.item(r, 1) else "")
-                for r in range(tab._form_table.rowCount())
-            }
-            if "/AcroForm" not in writer._root_object:
-                tab._status(t("editor.forms.no_fields"))
-                tab._form_status.setText(t("editor.forms.no_fields"))
+            doc_bytes = _src.read()
+        _r = PdfReader(io.BytesIO(doc_bytes))
+        was_encrypted = bool(_r.is_encrypted)
+        if was_encrypted and tab._pdf_password:
+            if decrypt_pypdf(_r, tab._pdf_password) is None:
+                raise WrongPasswordError(t("tool.err.wrong_password"))
+        encrypt_choice = "plaintext"
+        if was_encrypted and tab._pdf_password:
+            encrypt_choice = prompt_encryption_choice(tab)
+            if encrypt_choice is None:
                 return
-            try:
-                _w_fields = _r.get_fields() or {}
-            except Exception:
-                _w_fields = {}
-            if not _w_fields:
-                tab._status(t("editor.forms.no_fields"))
-                tab._form_status.setText(t("editor.forms.no_fields"))
-                return
-            for page in writer.pages:
-                writer.update_page_form_field_values(page, fields, auto_regenerate=True)
-            if encrypt_choice == "protect" and tab._pdf_password:
-                writer.encrypt(
-                    user_password=tab._pdf_password,
-                    owner_password=tab._pdf_password,
-                    algorithm="AES-256",
-                )
-                _log.info("Re-encrypted forms output with user password as owner")
+        writer = PdfWriter()
+        writer.append(_r)
+        fields = {
+            tab._form_table.item(r, 0).text():
+            (tab._form_table.item(r, 1).text() if tab._form_table.item(r, 1) else "")
+            for r in range(tab._form_table.rowCount())
+        }
+        if "/AcroForm" not in writer._root_object:
+            tab._status(t("editor.forms.no_fields"))
+            tab._form_status.setText(t("editor.forms.no_fields"))
+            return
+        try:
+            _w_fields = _r.get_fields() or {}
+        except Exception:
+            _w_fields = {}
+        if not _w_fields:
+            tab._status(t("editor.forms.no_fields"))
+            tab._form_status.setText(t("editor.forms.no_fields"))
+            return
+        for page in writer.pages:
+            writer.update_page_form_field_values(page, fields, auto_regenerate=True)
+        if encrypt_choice == "protect" and tab._pdf_password:
+            writer.encrypt(
+                user_password=tab._pdf_password,
+                owner_password=tab._pdf_password,
+                algorithm="AES-256",
+            )
+            _log.info("Re-encrypted forms output with user password as owner")
 
-            invalidate_viewer_pipeline(tab, out)
-            atomic_pdf_write(writer, out, sources=[tab._doc_path])
+        invalidate_viewer_pipeline(tab, out)
+        atomic_pdf_write(writer, out)
 
         tab._status(t("edit.status.form_saved", path=out))
-        QMessageBox.information(tab, t("msg.done"), t("msg.form_saved", path=out))
+        tab._load_pdf(out)
     except Exception as e:
         show_error(tab, e)
 
@@ -204,12 +210,17 @@ def apply_visual_edits_and_save(tab, out: str) -> None:
 
         tab._pending.clear()
         tab._pending_list.clear()
-        tab._status(t("edit.status.saved", path=out))
+
+        win = tab.window()
+        if win and hasattr(win, "_viewers"):
+            for v in win._viewers:
+                if v and (not v.current_path() or os.path.abspath(v.current_path()) == os.path.abspath(out)):
+                    v.load(out)
 
         if text_fit_warnings:
             QMessageBox.warning(tab, t("msg.warning"), t("msg.pdf_saved", path=out))
         else:
-            QMessageBox.information(tab, t("msg.done"), t("msg.pdf_saved", path=out))
+            tab._status(f"Saved: {os.path.basename(out)}")
         tab._load_pdf(out)
     except Exception as e:
         show_error(tab, e)

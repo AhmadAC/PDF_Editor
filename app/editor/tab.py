@@ -243,15 +243,16 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
         if not self._doc_path or not os.path.isfile(self._doc_path):
             QMessageBox.warning(self, t("msg.warning"), t("msg.open_pdf_first"))
             return
-        out = self._drop_out.path()
+
+        if hasattr(self, "_canvas") and hasattr(self._canvas, "_inline_edit"):
+            if self._canvas._inline_edit.isVisible():
+                self._canvas._commit_inline()
+
+        out = self._drop_out.path() if hasattr(self, "_drop_out") else ""
         if not out:
-            base, ext = os.path.splitext(os.path.basename(self._doc_path))
-            suggested = os.path.join(os.path.dirname(self._doc_path), base + "_edited" + ext)
-            from PySide6.QtWidgets import QFileDialog
-            out, _ = QFileDialog.getSaveFileName(self, t("btn.choose"), suggested, t("file_filter.pdf"))
-            if not out:
-                return
-            self._drop_out.set_path(out)
+            out = self._doc_path
+            if hasattr(self, "_drop_out"):
+                self._drop_out.set_path(out)
 
         if self._mode_idx == _MODE_FORMS:
             if self._user_pending:
@@ -267,7 +268,7 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
             return
 
         if not self._user_pending:
-            QMessageBox.warning(self, t("msg.warning"), t("msg.no_pending"))
+            self._status("No pending edits to save")
             return
 
         apply_visual_edits_and_save(self, out)

@@ -237,6 +237,9 @@ class ThumbnailPanel(QWidget):
         act_cut = menu.addAction(
             svg_icon(SVG_CUT, color=icon_color, size=15), f"Cut Pages{suffix}\tCtrl+X"
         )
+        act_copy_pages = menu.addAction(
+            svg_icon(SVG_COPY, color=icon_color, size=15), f"Copy Pages{suffix}\tCtrl+C"
+        )
         act_paste_pages = menu.addAction(
             svg_icon(SVG_PASTE, color=icon_color, size=15), "Paste Pages\tCtrl+V"
         )
@@ -372,6 +375,8 @@ class ThumbnailPanel(QWidget):
         # Action Router
         if selected_action == act_cut:
             self.action_requested.emit("cut", selected_pages)
+        elif selected_action == act_copy_pages:
+            self.action_requested.emit("copy_pages", selected_pages)
         elif selected_action == act_paste_pages:
             self.action_requested.emit("paste_pages", selected_pages)
         elif selected_action == act_copy:
@@ -856,4 +861,3 @@ class ThumbnailPanel(QWidget):
     def closeEvent(self, event):
         self._stop_all_workers()
         super().closeEvent(event)
-

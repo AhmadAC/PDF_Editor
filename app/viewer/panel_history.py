@@ -1,3 +1,4 @@
+
 # app/viewer/panel_history.py
 """PDF_Editor – Panel history, undo/redo state management, and temp pipeline persistence."""
 from __future__ import annotations
@@ -82,9 +83,11 @@ class PanelHistoryMixin:
         current_tab_widget = self._sidebar_tabs.currentWidget()
 
         self._canvas.close_doc()
-        if self._fitz_doc is not None:
+        doc = getattr(self, "_fitz_doc", None)
+        if doc is not None:
             with contextlib.suppress(Exception):
-                self._fitz_doc.close()
+                if not getattr(doc, "is_closed", False):
+                    doc.close()
             self._fitz_doc = None
         self._thumbnails._stop_all_workers()
 
@@ -164,9 +167,11 @@ class PanelHistoryMixin:
         current_tab_widget = self._sidebar_tabs.currentWidget()
 
         self._canvas.close_doc()
-        if self._fitz_doc is not None:
+        doc = getattr(self, "_fitz_doc", None)
+        if doc is not None:
             with contextlib.suppress(Exception):
-                self._fitz_doc.close()
+                if not getattr(doc, "is_closed", False):
+                    doc.close()
             self._fitz_doc = None
         self._thumbnails._stop_all_workers()
 
@@ -228,6 +233,7 @@ class PanelHistoryMixin:
             ps = getattr(win, "_pipeline_state", None)
 
             orig_path = getattr(self, "_original_doc_path", "") or getattr(self, "_current_path", "")
+            orig_path = os.path.normpath(orig_path) if orig_path else ""
 
             scroll_val = self._canvas_scroll.verticalScrollBar().value()
             viewed_page = self._canvas.page_at_y(scroll_val) if self._canvas.page_count() > 0 else 0
@@ -269,14 +275,17 @@ class PanelHistoryMixin:
                     thumb_scroll_val = sb.value()
 
             self._canvas.close_doc()
-            if self._fitz_doc is not None:
+            doc = getattr(self, "_fitz_doc", None)
+            if doc is not None:
                 with contextlib.suppress(Exception):
-                    self._fitz_doc.close()
+                    if not getattr(doc, "is_closed", False):
+                        doc.close()
                 self._fitz_doc = None
             self._thumbnails._stop_all_workers()
 
             fd, temp_path = tempfile.mkstemp(prefix="PDF_Editor_modified_", suffix=".pdf")
             os.close(fd)
+            temp_path = os.path.normpath(temp_path)
             self._history_temp_files.add(temp_path)
 
             atomic_pdf_write(

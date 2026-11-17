@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from app.base import BasePage
+from app.constants import DESKTOP
 from app.i18n import add_recent_file, t
 
 if TYPE_CHECKING:
@@ -125,12 +126,16 @@ class WindowPipelineMixin(_Base):
                 fn(temp_path)
 
     def _atomic_copy_file(self, src_path: str, dest_path: str) -> None:
+        dest_norm = os.path.normcase(os.path.normpath(os.path.abspath(dest_path)))
         for v in self._viewers:
-            if v.current_path() and os.path.abspath(v.current_path()) == os.path.abspath(dest_path):
+            cp = v.current_path()
+            if cp and os.path.normcase(os.path.normpath(os.path.abspath(cp))) == dest_norm:
                 v._canvas.close_doc()
-                if v._fitz_doc:
+                doc = getattr(v, "_fitz_doc", None)
+                if doc is not None:
                     with contextlib.suppress(Exception):
-                        v._fitz_doc.close()
+                        if not getattr(doc, "is_closed", False):
+                            doc.close()
                     v._fitz_doc = None
                 v._thumbnails._stop_all_workers()
 
@@ -148,7 +153,7 @@ class WindowPipelineMixin(_Base):
         except OSError:
             shutil.copy2(src_path, dest_path)
 
-    def _save_pipeline(self):
+    def _save_pipeline(self, prompt_dialog: bool = False):
         viewer = self._viewer
         if not viewer:
             return
@@ -157,41 +162,58 @@ class WindowPipelineMixin(_Base):
         if not ps or not ps.get("temp_path"):
             return
         orig = ps["original_path"]
-        base, ext = os.path.splitext(os.path.basename(orig))
-        default_name = f"{base}_edited.pdf" if ext.lower() == ".pdf" else f"{base}.pdf"
-        suggested = os.path.join(os.path.dirname(orig), default_name)
-        path, _ = QFileDialog.getSaveFileName(self, t("btn.choose"), suggested, t("file_filter.pdf"))
-        if not path:
-            return
+        if orig:
+            orig = os.path.normpath(orig)
+
+        if prompt_dialog or not orig:
+            base, ext = os.path.splitext(os.path.basename(orig)) if orig else ("document", ".pdf")
+            default_name = f"{base}{ext if ext.lower() == '.pdf' else '.pdf'}"
+            suggested = os.path.normpath(os.path.join(os.path.dirname(orig) if orig else DESKTOP, default_name))
+            path, _ = QFileDialog.getSaveFileName(self, t("btn.choose"), suggested, t("file_filter.pdf"))
+            if not path:
+                return
+            path = os.path.normpath(path)
+        else:
+            path = orig
+
         try:
             if os.path.lexists(path) and os.path.realpath(path) != os.path.abspath(path):
                 _log.warning("Pipeline save destination is a symlink: %s -> %s", path, os.path.realpath(path))
         except Exception:
             pass
 
+        scroll_val = viewer._canvas_scroll.verticalScrollBar().value() if hasattr(viewer, "_canvas_scroll") else 0
+        cur_page = viewer._canvas.page_at_y(scroll_val) if (hasattr(viewer, "_canvas") and viewer._canvas.page_count() > 0) else 0
+        cur_selected = viewer._thumbnails.selected_pages() if hasattr(viewer, "_thumbnails") else [cur_page]
+
         self._atomic_copy_file(ps["temp_path"], path)
         self._cleanup_pipeline(vid)
-        viewer.load(path)
+        viewer.load(path, target_page=cur_page, target_scroll=scroll_val, selected_pages=cur_selected, _is_history_step=True)
+        viewer._original_doc_path = path
         idx = self._viewer_stack.currentIndex()
-        self._tab_bar.setTabText(idx, os.path.basename(path))
+        base_name = os.path.basename(path)
+        self._tab_bar.setTabText(idx, base_name)
         self._tab_bar.setTabToolTip(idx, path)
+        if hasattr(self, "setWindowTitle"):
+            self.setWindowTitle(f"{t('app.name')} - {base_name}")
         add_recent_file(path)
-        self._sb.showMessage(t("pipeline.saved"))
+        self._sb.showMessage(f"Saved: {base_name}")
 
     def _save_as_current_doc(self):
         """Handle Ctrl+Shift+S (Save As) across Edit Mode and Normal Viewer."""
-        edit_idx = self._edit_tool_idx()
-        if self._current_tool == edit_idx:
+        edit_idx = self._edit_tool_idx() if hasattr(self, "_edit_tool_idx") else -1
+        if self._current_tool == edit_idx and edit_idx >= 0:
             edit_w: Any = self._get_or_create_tool(edit_idx)
             doc_path = getattr(edit_w, "_doc_path", None)
             if not doc_path or not os.path.isfile(doc_path):
                 QMessageBox.warning(self, t("msg.warning"), t("msg.open_pdf_first"))
                 return
             base, ext = os.path.splitext(os.path.basename(doc_path))
-            suggested = os.path.join(os.path.dirname(doc_path), f"{base}_edited{ext or '.pdf'}")
+            suggested = os.path.normpath(os.path.join(os.path.dirname(doc_path), f"{base}{ext or '.pdf'}"))
             out, _ = QFileDialog.getSaveFileName(self, t("widget.save_as"), suggested, t("file_filter.pdf"))
             if not out:
                 return
+            out = os.path.normpath(out)
             if getattr(edit_w, "_user_pending", None):
                 edit_w._drop_out.set_path(out)
                 from app.editor.tab_operations import apply_visual_edits_and_save
@@ -213,16 +235,18 @@ class WindowPipelineMixin(_Base):
         orig = (ps.get("original_path") if ps else None) or getattr(viewer, "_original_doc_path", "") or viewer.current_path()
 
         base, ext = os.path.splitext(os.path.basename(orig))
-        default_name = f"{base}_copy.pdf" if ext.lower() == ".pdf" else f"{base}.pdf"
-        suggested = os.path.join(os.path.dirname(orig), default_name)
+        default_name = f"{base}{ext if ext.lower() == '.pdf' else '.pdf'}"
+        suggested = os.path.normpath(os.path.join(os.path.dirname(orig) if orig else DESKTOP, default_name))
         out, _ = QFileDialog.getSaveFileName(self, t("widget.save_as"), suggested, t("file_filter.pdf"))
         if not out:
             return
+        out = os.path.normpath(out)
 
         try:
             self._atomic_copy_file(src_path, out)
             self._cleanup_pipeline(vid)
             viewer.load(out)
+            viewer._original_doc_path = out
             idx = self._viewers.index(viewer) if viewer in self._viewers else self._viewer_stack.currentIndex()
             self._tab_bar.setTabText(idx, os.path.basename(out))
             self._tab_bar.setTabToolTip(idx, out)
@@ -246,11 +270,12 @@ class WindowPipelineMixin(_Base):
         orig = (ps.get("original_path") if ps else None) or getattr(target_v, "_original_doc_path", "") or target_v.current_path()
 
         base, ext = os.path.splitext(os.path.basename(orig))
-        default_name = f"{base}_copy.pdf" if ext.lower() == ".pdf" else f"{base}.pdf"
-        suggested = os.path.join(os.path.dirname(orig), default_name)
+        default_name = f"{base}{ext if ext.lower() == '.pdf' else '.pdf'}"
+        suggested = os.path.normpath(os.path.join(os.path.dirname(orig) if orig else DESKTOP, default_name))
         out, _ = QFileDialog.getSaveFileName(self, "Save As Copy", suggested, t("file_filter.pdf"))
         if not out:
             return
+        out = os.path.normpath(out)
 
         try:
             self._atomic_copy_file(src_path, out)
@@ -281,18 +306,30 @@ class WindowPipelineMixin(_Base):
         return bool(ps and ps.get("temp_path"))
 
     def _save_current_tool(self):
+        edit_idx = self._edit_tool_idx() if hasattr(self, "_edit_tool_idx") else -1
+        in_edit_mode = (self._current_tool == edit_idx and edit_idx >= 0)
+
+        if in_edit_mode:
+            w = self._get_or_create_tool(edit_idx)
+            fn = getattr(w, "_run", None)
+            if callable(fn):
+                fn()
+            return
+
         viewer = self._viewer
         if not viewer:
             return
         vid = id(viewer)
         ps = self._pipeline_state.get(vid)
         if ps and ps.get("temp_path"):
-            self._save_pipeline()
+            self._save_pipeline(prompt_dialog=False)
         elif self._current_tool >= 0:
             w = self._get_or_create_tool(self._current_tool)
             fn = getattr(w, "_run", None)
             if callable(fn):
                 fn()
+        elif viewer.current_path():
+            self._sb.showMessage("Document already saved")
 
     @staticmethod
     def _wipe_password_holder(holder) -> None:

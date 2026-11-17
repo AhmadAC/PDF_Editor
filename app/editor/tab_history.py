@@ -1,5 +1,5 @@
 # app/editor/tab_history.py
-"""PDF_Editor – tab_history: history, undo/redo, and pending edits management."""
+"""PDF_Editor – tab_history: history, undo/redo, and pending edits management without emojis."""
 
 import contextlib
 import os
@@ -49,11 +49,11 @@ class TabHistoryManager:
                 "note":      lambda e: t("edit.label.note") + suffix,
                 "text_edit": lambda e: (
                     (t("edit.label.edit", old=(e.get("old_text") or "")[:12], new=(e.get("new_text") or "")[:12]) + suffix)
-                    if e.get("new_text") else (f"🗑 Text {suffix}")
+                    if e.get("new_text") else (f"Text (Deleted) {suffix}")
                 ),
                 "signature":    lambda e: t("edit.mode.signature") + suffix,
-                "check":        lambda e: "✔ " + t("tool.stamp.check", default="Checkmark") + suffix,
-                "cross":        lambda e: "✖ " + t("tool.stamp.cross", default="Crossmark") + suffix,
+                "check":        lambda e: t("tool.stamp.check", default="Checkmark") + suffix,
+                "cross":        lambda e: t("tool.stamp.cross", default="Crossmark") + suffix,
                 "draw":         lambda e: t("edit.mode.draw") + suffix,
                 "delete_annot": lambda e: t("edit.label.note_delete") + suffix,
             }
@@ -87,11 +87,11 @@ class TabHistoryManager:
             "note":      lambda e: t("edit.label.note") + suffix,
             "text_edit": lambda e: (
                 (t("edit.label.edit", old=e.get("old_text", "")[:12], new=e.get("new_text", "")[:12]) + suffix)
-                if e.get("new_text") else (f"🗑 Text {suffix}")
+                if e.get("new_text") else (f"Text (Deleted) {suffix}")
             ),
             "signature":    lambda e: t("edit.mode.signature") + suffix,
-            "check":        lambda e: "✔ " + t("tool.stamp.check", default="Checkmark") + suffix,
-            "cross":        lambda e: "✖ " + t("tool.stamp.cross", default="Crossmark") + suffix,
+            "check":        lambda e: t("tool.stamp.check", default="Checkmark") + suffix,
+            "cross":        lambda e: t("tool.stamp.cross", default="Crossmark") + suffix,
             "draw":         lambda e: t("edit.mode.draw") + suffix,
             "delete_annot": lambda e: t("edit.label.note_delete") + suffix,
         }
@@ -185,8 +185,8 @@ class TabHistoryManager:
             if edit not in self.pending:
                 self.pending.append(edit)
             suffix = t("edit.label.page_suffix", n=edit["page"] + 1)
-            self.tab._pending_list.addItem(f"🗑 {edit['type'].title()} {suffix}")
-        self.tab._status("✔ " + t("tool.deleted", default="Object deleted (Ctrl+Z to undo)"))
+            self.tab._pending_list.addItem(f"{edit['type'].title()} (Deleted) {suffix}")
+        self.tab._status(t("tool.deleted", default="Object deleted (Ctrl+Z to undo)"))
 
     def load_existing_annotations(self) -> None:
         try:

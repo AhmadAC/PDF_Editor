@@ -128,7 +128,7 @@ class TabDocumentMixin(_Base):
         self._drop_in.blockSignals(False)
 
         if saved:
-            self._drop_out.set_path(saved.get("drop_out") or (os.path.splitext(p)[0] + "_edited.pdf"))
+            self._drop_out.set_path(saved.get("drop_out") or p)
             self._pending = list(saved.get("pending", []))
             self._redo_stack = list(saved.get("redo_stack", []))
             self._page_idx = saved.get("page_idx", 0)
@@ -139,8 +139,7 @@ class TabDocumentMixin(_Base):
             self._history.rebuild_pending_list()
             target_zoom_factor = saved.get("zoom_factor", 1.0)
         else:
-            if not self._drop_out.path():
-                self._drop_out.set_path(os.path.splitext(p)[0] + "_edited.pdf")
+            self._drop_out.set_path(p)
             self._pending.clear()
             self._pending_list.clear() if hasattr(self, "_pending_list") else None
             self._page_idx = 0

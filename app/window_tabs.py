@@ -195,7 +195,7 @@ class WindowTabsMixin(_Base):
         def _update_page_nav(self) -> None: ...
         def _update_breadcrumb(self) -> None: ...
         def _viewer_has_unsaved(self, viewer: Any = ...) -> bool: ...
-        def _save_pipeline(self) -> None: ...
+        def _save_pipeline(self, prompt_dialog: bool = ...) -> None: ...
         def _save_as_copy_for_viewer(self, viewer: Any = ...) -> None: ...
         def _cleanup_pipeline(self, viewer_id: int) -> None: ...
         def _crop_tool_idx(self) -> int: ...
@@ -281,7 +281,7 @@ class WindowTabsMixin(_Base):
 
         closed_path = viewer.current_path()
         orig_path = getattr(viewer, "_original_doc_path", "")
-        closed_norm = {os.path.abspath(p) for p in (closed_path, orig_path) if p}
+        closed_norm = {os.path.normcase(os.path.normpath(os.path.abspath(p))) for p in (closed_path, orig_path) if p}
 
         edit_idx = self._edit_tool_idx() if hasattr(self, "_edit_tool_idx") else -1
         edit_w = self.stack.widget(edit_idx) if (0 <= edit_idx < self.stack.count()) else None
@@ -291,7 +291,7 @@ class WindowTabsMixin(_Base):
                 for p_norm in closed_norm:
                     doc_states.pop(p_norm, None)
             cur_edit_path = getattr(edit_w, "_doc_path", None)
-            if cur_edit_path and os.path.abspath(cur_edit_path) in closed_norm:
+            if cur_edit_path and os.path.normcase(os.path.normpath(os.path.abspath(cur_edit_path))) in closed_norm:
                 close_fn = getattr(edit_w, "_close_pdf", None)
                 if callable(close_fn):
                     close_fn()
@@ -404,7 +404,7 @@ class WindowTabsMixin(_Base):
         act_save_copy.setEnabled(bool(curr_path and os.path.exists(curr_path)))
 
         act_rename = menu.addAction(svg_icon(_SVG_RENAME, color=icon_color, size=15), "Rename File on Disk...")
-        act_rename.setEnabled(has_disk_file)
+        act_rename.setEnabled(bool(disk_path))
         menu.addSeparator()
 
         act_close = menu.addAction(svg_icon(SVG_CLOSE, color="#EF4444", size=15), "Close Tab")
@@ -415,7 +415,7 @@ class WindowTabsMixin(_Base):
         act_reveal = None
         act_copy_path = None
         act_delete_disk = None
-        if has_disk_file:
+        if disk_path:
             if sys.platform == "win32":
                 reveal_label = "Reveal in File Explorer"
             elif sys.platform == "darwin":
@@ -425,10 +425,13 @@ class WindowTabsMixin(_Base):
             else:
                 reveal_label = "Reveal in File Manager"
 
-            act_reveal = menu.addAction(svg_icon(SVG_FOLDER, color=icon_color, size=15), reveal_label)
+            if has_disk_file:
+                act_reveal = menu.addAction(svg_icon(SVG_FOLDER, color=icon_color, size=15), reveal_label)
+
             act_copy_path = menu.addAction(svg_icon(SVG_COPY, color=icon_color, size=15), "Copy Full Path")
             menu.addSeparator()
-            act_delete_disk = menu.addAction(svg_icon(SVG_TRASH, color="#EF4444", size=15), "Delete From Disk")
+            if has_disk_file:
+                act_delete_disk = menu.addAction(svg_icon(SVG_TRASH, color="#EF4444", size=15), "Delete From Disk")
 
         chosen = menu.exec(self._tab_bar.mapToGlobal(point))
         if act_paste_pages and chosen == act_paste_pages:
@@ -447,21 +450,21 @@ class WindowTabsMixin(_Base):
                 if i != tab_idx:
                     self._close_tab(i)
         elif act_reveal and chosen == act_reveal:
-            reveal_file(disk_path)
+            reveal_file(os.path.normpath(disk_path))
         elif act_copy_path and chosen == act_copy_path:
-            QApplication.clipboard().setText(disk_path)
+            QApplication.clipboard().setText(os.path.normpath(disk_path))
         elif act_delete_disk and chosen == act_delete_disk:
             delete_tab_file_from_disk(self, tab_idx, viewer)
 
     def _load_and_track(self, path: str) -> PdfViewerPanel | None:
         if not path or not os.path.isfile(path):
             return None
-        norm_path = os.path.abspath(path)
+        norm_path = os.path.normpath(os.path.abspath(path))
 
         for i, v in enumerate(self._viewers):
             orig_p = getattr(v, "_original_doc_path", "")
             curr_p = v.current_path()
-            if (orig_p and os.path.abspath(orig_p) == norm_path) or (curr_p and os.path.abspath(curr_p) == norm_path):
+            if (orig_p and os.path.normcase(os.path.normpath(os.path.abspath(orig_p))) == os.path.normcase(norm_path)) or (curr_p and os.path.normcase(os.path.normpath(os.path.abspath(curr_p))) == os.path.normcase(norm_path)):
                 self._tab_bar.setCurrentIndex(i)
                 self._viewer_stack.setCurrentIndex(i)
                 add_recent_file(norm_path)
@@ -494,7 +497,7 @@ class WindowTabsMixin(_Base):
                 if hasattr(self, "_set_status"):
                     self._set_status(f"Converting {os.path.basename(norm_path)} to PDF...")
                 temp_pdf = convert_file_to_pdf(norm_path)
-                target_load_path = temp_pdf
+                target_load_path = os.path.normpath(temp_pdf)
             except Exception as exc:
                 show_error(self, exc)
                 return None
@@ -509,11 +512,11 @@ class WindowTabsMixin(_Base):
 
         target_v._original_doc_path = norm_path
         if temp_pdf:
-            target_v._history_temp_files.add(temp_pdf)
+            target_v._history_temp_files.add(target_load_path)
             vid = id(target_v)
             ps = getattr(self, "_pipeline_state", None)
             if ps is not None:
-                ps[vid] = {"original_path": norm_path, "temp_path": temp_pdf}
+                ps[vid] = {"original_path": norm_path, "temp_path": target_load_path}
 
         target_v.load(target_load_path, _is_history_step=bool(temp_pdf))
         target_v._original_doc_path = norm_path
@@ -549,7 +552,7 @@ class WindowTabsMixin(_Base):
         self.activateWindow()
         for p in paths:
             if os.path.isfile(p):
-                self._load_and_track(p)
+                self._load_and_track(os.path.normpath(p))
 
     def _on_canvas_crop_selected(self, page_idx: int, rect: tuple) -> None:
         crop_idx = self._crop_tool_idx() if hasattr(self, "_crop_tool_idx") else -1
@@ -583,7 +586,7 @@ class WindowTabsMixin(_Base):
     def dropEvent(self, event: QDropEvent) -> None:
         urls = event.mimeData().urls()
         files = [
-            u.toLocalFile()
+            os.path.normpath(u.toLocalFile())
             for u in urls
             if u.toLocalFile() and os.path.isfile(u.toLocalFile())
         ]

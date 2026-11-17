@@ -154,7 +154,7 @@ class ThumbnailListView(QListView):
         if (
             not selected_pages
             or not self._panel._model
-            or self._panel._model.rowCount() <= 1
+            or self._panel._model.rowCount() <= 0
         ):
             return
 
@@ -231,7 +231,7 @@ class ThumbnailListView(QListView):
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat("application/x-PDF_Editor-thumbnail-pages"):
             m = self.model()
-            if not m or m.rowCount() <= 1:
+            if not m or m.rowCount() <= 0:
                 event.ignore()
                 return
             event.acceptProposedAction()
@@ -526,6 +526,12 @@ class ThumbnailListView(QListView):
                     self._panel.action_requested.emit("cut", selected_pages)
                 event.accept()
                 return
+            elif key == Qt.Key.Key_C:
+                selected_pages = self._panel.selected_pages()
+                if selected_pages:
+                    self._panel.action_requested.emit("copy_pages", selected_pages)
+                event.accept()
+                return
             elif key == Qt.Key.Key_V:
                 selected_pages = self._panel.selected_pages()
                 self._panel.action_requested.emit("paste_pages", selected_pages)
@@ -587,4 +593,3 @@ class ThumbnailListView(QListView):
 
 
 _ThumbnailListView = ThumbnailListView
-
