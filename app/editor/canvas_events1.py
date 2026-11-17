@@ -1,17 +1,33 @@
 # app/editor/canvas_events1.py
 
-"""Canvas interaction handler: mouse, drag handles, keyboard, stroke smoothing, vector stamps, and rich context menus."""
+"""Canvas interaction handler: mouse, drag handles, keyboard, stroke smoothing, vector stamps, and SVG context menus."""
 
 from __future__ import annotations
 
 import fitz
 from PySide6.QtCore import Qt, QRect, QPoint
-from PySide6.QtWidgets import QMenu, QMessageBox, QApplication, QColorDialog
+from PySide6.QtWidgets import QMenu, QApplication, QColorDialog
 from PySide6.QtGui import QColor
-import qtawesome as qta
 
 from app.constants import ACCENT
 from app.i18n import t
+from app.utils import (
+    SVG_CHECK,
+    SVG_CLONE,
+    SVG_CLOSE,
+    SVG_COPY,
+    SVG_EDIT,
+    SVG_ERASER,
+    SVG_FONT,
+    SVG_HIGHLIGHTER,
+    SVG_PEN,
+    SVG_SIGNATURE,
+    SVG_TRASH,
+    SVG_VECTOR_SQUARE,
+    SVG_ZOOM_IN,
+    SVG_ZOOM_OUT,
+    svg_icon,
+)
 from app.editor.canvas_overlay1 import CanvasOverlayManager
 from app.viewer.canvas_action_menus import (
     PRESET_COLORS,
@@ -610,32 +626,32 @@ class CanvasEventHandler:
         menu.setStyleSheet("QMenu { menu-scrollable: 1; }")
 
         if c._selected_overlay_idx >= 0 and c._overlay_mgr.is_pos_inside_overlay(c._selected_overlay_idx, pos):
-            act_inc = menu.addAction(qta.icon("fa5s.search-plus", color=ACCENT), "Increase Size (Ctrl+)")
+            act_inc = menu.addAction(svg_icon(SVG_ZOOM_IN, color=ACCENT, size=15), "Increase Size (Ctrl+)")
             act_inc.triggered.connect(lambda _=False: c.scale_selected_overlay(1.10))
-            act_dec = menu.addAction(qta.icon("fa5s.search-minus", color=ACCENT), "Decrease Size (Ctrl-)")
+            act_dec = menu.addAction(svg_icon(SVG_ZOOM_OUT, color=ACCENT, size=15), "Decrease Size (Ctrl-)")
             act_dec.triggered.connect(lambda _=False: c.scale_selected_overlay(0.90))
             menu.addSeparator()
-            act_del = menu.addAction(qta.icon("fa5s.trash-alt", color="#EF4444"), t("btn.delete"))
+            act_del = menu.addAction(svg_icon(SVG_TRASH, color="#EF4444", size=15), t("btn.delete"))
             act_del.triggered.connect(lambda _=False: c.delete_selected_overlay())
-            act_dup = menu.addAction(qta.icon("fa5s.clone", color=ACCENT), t("Duplicate", default="Duplicate"))
+            act_dup = menu.addAction(svg_icon(SVG_CLONE, color=ACCENT, size=15), t("Duplicate", default="Duplicate"))
             act_dup.triggered.connect(lambda _=False: c.duplicate_selected_overlay())
             menu.exec(e.globalPos())
             return
 
         if getattr(c, "_select_mode", False) and (getattr(c, "_active_sel_rect", None) or self._is_pos_inside_active_sel(pos)):
-            act_edit = menu.addAction(qta.icon("fa5s.edit", color=ACCENT), "Edit Text")
+            act_edit = menu.addAction(svg_icon(SVG_EDIT, color=ACCENT, size=15), "Edit Text")
             act_edit.triggered.connect(lambda _=False: c.edit_selection_requested.emit())
-            act_del = menu.addAction(qta.icon("fa5s.trash-alt", color="#EF4444"), "Delete (Del)")
+            act_del = menu.addAction(svg_icon(SVG_TRASH, color="#EF4444", size=15), "Delete (Del)")
             act_del.triggered.connect(lambda _=False: c.delete_active_selection())
             menu.addSeparator()
 
-            act_copy = menu.addAction(qta.icon("fa5s.copy", color=ACCENT), t("btn.copy", default="Copy"))
+            act_copy = menu.addAction(svg_icon(SVG_COPY, color=ACCENT, size=15), t("btn.copy", default="Copy"))
             act_copy.triggered.connect(lambda _=False: QApplication.clipboard().setText(c._sel_text if hasattr(c, "_sel_text") else ""))
 
-            act_hi = menu.addAction(qta.icon("fa5s.highlighter", color=ACCENT), "Highlight Selection")
+            act_hi = menu.addAction(svg_icon(SVG_HIGHLIGHTER, color=ACCENT, size=15), "Highlight Selection")
             act_hi.triggered.connect(lambda _=False: c.highlight_selection_requested.emit())
 
-            act_redact = menu.addAction(qta.icon("fa5s.eraser", color="#EF4444"), "Redact Selection")
+            act_redact = menu.addAction(svg_icon(SVG_ERASER, color="#EF4444", size=15), "Redact Selection")
             act_redact.triggered.connect(lambda _=False: c.redact_selection_requested.emit())
             menu.addSeparator()
 
@@ -651,7 +667,7 @@ class CanvasEventHandler:
             else:
                 c.mode_change_requested.emit(m_idx)
 
-        act_add_text = menu.addAction(qta.icon("fa5s.font", color=ACCENT), "Add Text")
+        act_add_text = menu.addAction(svg_icon(SVG_FONT, color=ACCENT, size=15), "Add Text")
         act_add_text.triggered.connect(
             lambda _=False, p=page_idx, pt=pdf_pt: (
                 _activate_mode(1, "add"),
@@ -659,7 +675,7 @@ class CanvasEventHandler:
             )
         )
 
-        act_edit_text = menu.addAction(qta.icon("fa5s.edit", color=ACCENT), "Edit Text")
+        act_edit_text = menu.addAction(svg_icon(SVG_EDIT, color=ACCENT, size=15), "Edit Text")
         if span:
             act_edit_text.triggered.connect(
                 lambda _=False, s=span, p=page_idx: (
@@ -672,7 +688,7 @@ class CanvasEventHandler:
 
         menu.addSeparator()
 
-        act_draw_pen = menu.addAction(qta.icon("fa5s.pen", color=ACCENT), "Draw (Freehand Pen)")
+        act_draw_pen = menu.addAction(svg_icon(SVG_PEN, color=ACCENT, size=15), "Draw (Freehand Pen)")
         act_draw_pen.triggered.connect(
             lambda _=False: (
                 _activate_mode(8),
@@ -680,7 +696,7 @@ class CanvasEventHandler:
             )
         )
 
-        act_draw_hi_rect = menu.addAction(qta.icon("fa5s.vector-square", color=ACCENT), "Draw Highlight (Rectangle)")
+        act_draw_hi_rect = menu.addAction(svg_icon(SVG_VECTOR_SQUARE, color=ACCENT, size=15), "Draw Highlight (Rectangle)")
         act_draw_hi_rect.triggered.connect(
             lambda _=False: (
                 _activate_mode(4),
@@ -688,7 +704,7 @@ class CanvasEventHandler:
             )
         )
 
-        act_hi_text = menu.addAction(qta.icon("fa5s.highlighter", color=ACCENT), "Highlight Text")
+        act_hi_text = menu.addAction(svg_icon(SVG_HIGHLIGHTER, color=ACCENT, size=15), "Highlight Text")
         act_hi_text.triggered.connect(
             lambda _=False: (
                 _activate_mode(3),
@@ -728,13 +744,12 @@ class CanvasEventHandler:
             act_c.triggered.connect(lambda _=False, rgb=rgb_tuple: _apply_chosen_color(rgb))
 
         menu.addSeparator()
-        act_add_check = menu.addAction(qta.icon("fa5s.check", color=ACCENT), "Add Checkmark (✔)")
+        act_add_check = menu.addAction(svg_icon(SVG_CHECK, color=ACCENT, size=15), "Add Checkmark")
         act_add_check.triggered.connect(lambda _=False: c.begin_stamp_placement("check"))
-        act_add_cross = menu.addAction(qta.icon("fa5s.times", color="#EF4444"), "Add Crossmark (✖)")
+        act_add_cross = menu.addAction(svg_icon(SVG_CLOSE, color="#EF4444", size=15), "Add Crossmark")
         act_add_cross.triggered.connect(lambda _=False: c.begin_stamp_placement("cross"))
         menu.addSeparator()
-        act_add_sig = menu.addAction(qta.icon("fa5s.signature", color=ACCENT), t("viewer.add_signature"))
+        act_add_sig = menu.addAction(svg_icon(SVG_SIGNATURE, color=ACCENT, size=15), t("viewer.add_signature"))
         act_add_sig.triggered.connect(lambda _=False: c.start_add_signature_flow(pos))
 
         menu.exec(e.globalPos())
-

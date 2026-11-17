@@ -1,6 +1,6 @@
 # app/editor/canvas_render1.py
 
-"""PDF canvas rendering worker, icon cursors, and pixmap caching."""
+"""PDF canvas rendering worker, SVG icon cursors, and pixmap caching."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from typing import Any
 import fitz
 from PySide6.QtCore import Qt, Signal, QObject, QRunnable
 from PySide6.QtGui import QPixmap, QPainter, QCursor
-import qtawesome as qta
+
+from app.utils import ICON_SVGS, SVG_FILE_PDF, svg_pixmap
 
 _NOTE_ICON_SIZE = 22
 _PAGE_GAP = 4
@@ -58,15 +59,15 @@ def _get_icon_cursor(icon_name: str, hx: int, hy: int,
     cur = _ICON_CURSORS.get(key)
     if cur is not None:
         return cur
+    svg_src = ICON_SVGS.get(icon_name, SVG_FILE_PDF)
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
     pad = (size - 24) // 2
-    extra = {"rotated": rotate} if rotate else {}
-    halo = qta.icon(icon_name, color="white", **extra).pixmap(24, 24)
+    halo = svg_pixmap(svg_src, color="white", size=24, dpr=1.0, rotate=rotate)
     for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
         p.drawPixmap(pad + dx, pad + dy, halo)
-    body = qta.icon(icon_name, color="black", **extra).pixmap(24, 24)
+    body = svg_pixmap(svg_src, color="black", size=24, dpr=1.0, rotate=rotate)
     p.drawPixmap(pad, pad, body)
     p.end()
     cur = QCursor(pix, hx, hy)

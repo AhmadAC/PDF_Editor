@@ -404,7 +404,7 @@ class CanvasActionMenuBuilder:
         act_hi_text.triggered.connect(lambda _=False: self._route_to_edit_tool("highlight_text", pos))
         menu.addSeparator()
 
-        color_menu = menu.addMenu(make_rainbow_wheel_icon(18), "Highlight & Pen Color")
+        color_menu = menu.addMenu(make_rainbow_wheel_icon(18), "Highlight and Pen Color")
         act_custom = color_menu.addAction(make_rainbow_wheel_icon(16), "Custom Color...")
 
         def _on_custom_chosen():

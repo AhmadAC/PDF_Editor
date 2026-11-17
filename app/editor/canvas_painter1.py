@@ -47,7 +47,7 @@ class CanvasPainter:
             else:
                 p.setPen(QColor(TEXT_SEC))
                 f = QFont(); f.setPointSize(9); p.setFont(f)
-                p.drawText(page_r, Qt.AlignmentFlag.AlignCenter, f"⏳ {i+1}")
+                p.drawText(page_r, Qt.AlignmentFlag.AlignCenter, f"Page {i+1}")
 
             p.setPen(QColor("#E0E0E0"))
             p.drawRect(QRect(0, yo, pw - 1, ph - 1))
@@ -283,7 +283,7 @@ class CanvasPainter:
                 p.setBrush(QColor("#FBBF24")); p.setPen(QPen(QColor("#D97706"), 1))
                 p.drawRoundedRect(icon_r, 4, 4)
                 fi = QFont(); fi.setPointSize(10); fi.setBold(True); p.setFont(fi)
-                p.setPen(QColor("#1C1917")); p.drawText(icon_r, Qt.AlignmentFlag.AlignCenter, "\u270e")
+                p.setPen(QColor("#1C1917")); p.drawText(icon_r, Qt.AlignmentFlag.AlignCenter, "N")
                 if canvas._open_note == note_idx:
                     bx = px + _NOTE_ICON_SIZE + 6
                     by = py - _NOTE_ICON_SIZE - 4
@@ -421,7 +421,7 @@ class CanvasPainter:
                 p.setBrush(QColor(239, 68, 68, 50))
                 p.drawRect(canvas._drag_rect)
 
-        # 7. Active persistent selection rectangle in Select mode (Foxit style)
+        # 7. Active persistent selection rectangle in Select mode
         if getattr(canvas, "_select_mode", False) and getattr(canvas, "_active_sel_rect", None) and not canvas._drag_rect:
             sel_r = canvas._active_sel_rect
             sel_pg = getattr(canvas, "_active_sel_page", 0)
