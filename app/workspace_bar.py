@@ -62,7 +62,7 @@ class ElidedLabel(QLabel):
 
 
 class WorkspaceBar(QWidget):
-    """Top bar containing sidebar toggle, breadcrumb, viewer tools, zoom and page navigation."""
+    """Top bar containing sidebar toggle, full-path title, viewer tools, zoom and page navigation."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -97,7 +97,7 @@ class WorkspaceBar(QWidget):
         _a11y(self._pages_toggle_btn, t("viewer.sidebar.pages"))
         layout.addWidget(self._pages_toggle_btn)
 
-        self._breadcrumb = ElidedLabel(t("workspace.title"))
+        self._breadcrumb = ElidedLabel("")
         self._breadcrumb.setObjectName("workspace_title")
         layout.addWidget(self._breadcrumb, 1)
 
@@ -340,4 +340,3 @@ class WorkspaceBar(QWidget):
         self._last_pg_btn.setIcon(svg_icon(SVG_DOUBLE_RIGHT, color=bar_color, size=15))
 
         self._theme_btn.setIcon(svg_icon(SVG_SUN if dark else SVG_MOON, color="#FBBF24" if dark else ACCENT, size=15))
-

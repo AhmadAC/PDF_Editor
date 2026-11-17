@@ -67,6 +67,7 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
         _undo_top_btn: QPushButton
         _redo_top_btn: QPushButton
         _tool_usage: dict[str, int]
+        _pipeline_state: dict[int, dict[str, Any]]
         _zoom_widget: QWidget
         _zm_btn: QPushButton
         _zp_btn: QPushButton
@@ -206,24 +207,37 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
             self._splitter.setSizes([max(260, total - tool_w), tool_w])
 
     def _update_breadcrumb(self):
-        cur_file = ""
+        full_path = ""
         viewer = self._viewer
         if viewer and viewer.current_path():
-            cur_file = os.path.basename(viewer._original_doc_path or viewer.current_path())
+            ps_map = getattr(self, "_pipeline_state", {})
+            ps = ps_map.get(id(viewer)) if isinstance(ps_map, dict) else None
+            if ps and ps.get("original_path"):
+                raw_path = ps["original_path"]
+            else:
+                raw_path = getattr(viewer, "_original_doc_path", "") or viewer.current_path()
+            full_path = os.path.normpath(raw_path) if raw_path else ""
 
-        file_part = f"  >  {cur_file}" if cur_file else ""
+        edit_idx = self._edit_tool_idx() if hasattr(self, "_edit_tool_idx") else -1
+        if getattr(self, "_current_tool", -1) == edit_idx and edit_idx >= 0:
+            edit_w = self.stack.widget(edit_idx)
+            if edit_w and not getattr(edit_w, "_is_lazy_placeholder", False):
+                edit_path = getattr(edit_w, "_doc_path", None)
+                if edit_path:
+                    full_path = os.path.normpath(edit_path)
+
         if getattr(self, "_current_tool", -1) >= 0 and self._current_tool < len(NAV_ITEMS):
             tool_name = NAV_ITEMS[self._current_tool][0]
-            self._breadcrumb.setText(f"{t('workspace.title')}{file_part}  >  {tool_name}")
-        elif cur_file:
-            self._breadcrumb.setText(f"{t('workspace.title')}{file_part}")
+            if full_path:
+                self._breadcrumb.setText(f"{full_path}  >  {tool_name}")
+            else:
+                self._breadcrumb.setText(tool_name)
+        elif full_path:
+            self._breadcrumb.setText(full_path)
         else:
-            self._breadcrumb.setText(t("workspace.title"))
+            self._breadcrumb.setText("")
 
-        if viewer and viewer.current_path():
-            self._breadcrumb.setToolTip(viewer._original_doc_path or viewer.current_path())
-        else:
-            self._breadcrumb.setToolTip("")
+        self._breadcrumb.setToolTip(full_path)
 
     def _update_undo_redo_buttons(self):
         if not hasattr(self, "_undo_top_btn") or not hasattr(self, "_redo_top_btn"):

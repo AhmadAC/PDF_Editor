@@ -8,7 +8,9 @@ import logging
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import (
+    QItemSelectionModel,
     QMimeData,
+    QModelIndex,
     QPoint,
     QRect,
     Qt,
@@ -23,6 +25,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QListView,
 )
 
@@ -43,6 +46,9 @@ class ThumbnailListView(QListView):
         self._drop_target_row: int = -1
         self._auto_scroll_delta: int = 0
         self._last_drag_pos: QPoint = QPoint()
+        self._drag_start_pos: QPoint = QPoint()
+        self._pending_deselect_others: bool = False
+        self._pending_clicked_idx: QModelIndex = QModelIndex()
 
         self._is_dragging_viewport: bool = False
         self._drag_start_mouse: QPoint = QPoint()
@@ -365,38 +371,39 @@ class ThumbnailListView(QListView):
             else event.pos()
         )
         if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = pos
             idx = self.indexAt(pos)
+
+            # Viewport dragging: only if explicitly clicking inside the small red box
             curr_page = self._panel._delegate._current_page
             if idx.isValid() and idx.row() == curr_page:
                 rect = self.visualRect(idx)
-                pix_rect = self._panel._delegate.get_thumbnail_pixmap_rect(rect, curr_page)
-                if pix_rect.contains(pos):
-                    red_box = self._panel._delegate.get_red_box_rect(rect, curr_page)
+                red_box = self._panel._delegate.get_red_box_rect(rect, curr_page)
+                if red_box and red_box.contains(pos):
+                    pix_rect = self._panel._delegate.get_thumbnail_pixmap_rect(rect, curr_page)
                     v_rect = self._panel._delegate._viewport_rect or (0.0, 0.0, 1.0, 1.0)
-                    norm_w = v_rect[2]
-                    norm_h = v_rect[3]
-                    lw = max(1, pix_rect.width())
-                    lh = max(1, pix_rect.height())
-
                     self._is_dragging_viewport = True
                     self._drag_start_mouse = pos
                     self._drag_page_idx = curr_page
                     self._drag_pix_rect = pix_rect
-
-                    if red_box and red_box.contains(pos):
-                        self._drag_start_viewport = v_rect
-                    else:
-                        click_norm_x = (pos.x() - pix_rect.x()) / float(lw)
-                        click_norm_y = (pos.y() - pix_rect.y()) / float(lh)
-                        new_vx = max(0.0, min(1.0 - norm_w, click_norm_x - norm_w / 2.0))
-                        new_vy = max(0.0, min(1.0 - norm_h, click_norm_y - norm_h / 2.0))
-                        self._drag_start_viewport = (new_vx, new_vy, norm_w, norm_h)
-                        self._panel.viewport_scroll_requested.emit(curr_page, new_vx, new_vy)
-
+                    self._drag_start_viewport = v_rect
                     self.setCursor(Qt.CursorShape.ClosedHandCursor)
                     event.accept()
                     return
 
+            # Multi-selection dragging: if user clicks on an already selected item without modifier,
+            # don't clear the selection on press so they can drag all selected thumbnails together.
+            modifiers = event.modifiers()
+            has_mod = bool(modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier))
+            if idx.isValid() and not has_mod:
+                selected_pages = self._panel.selected_pages()
+                if idx.row() in selected_pages and len(selected_pages) > 1:
+                    self._pending_deselect_others = True
+                    self._pending_clicked_idx = idx
+                    event.accept()
+                    return
+
+        self._pending_deselect_others = False
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -419,6 +426,14 @@ class ThumbnailListView(QListView):
             event.accept()
             return
 
+        if (event.buttons() & Qt.MouseButton.LeftButton) and hasattr(self, "_drag_start_pos"):
+            dist = (pos - self._drag_start_pos).manhattanLength()
+            if dist >= QApplication.startDragDistance():
+                self._pending_deselect_others = False
+                self.startDrag(Qt.DropAction.MoveAction)
+                event.accept()
+                return
+
         super().mouseMoveEvent(event)
 
         if not (event.buttons() & Qt.MouseButton.LeftButton):
@@ -430,10 +445,6 @@ class ThumbnailListView(QListView):
                 if red_box and red_box.contains(pos):
                     self.setCursor(Qt.CursorShape.SizeAllCursor)
                     return
-                pix_rect = self._panel._delegate.get_thumbnail_pixmap_rect(rect, curr_page)
-                if pix_rect.contains(pos):
-                    self.setCursor(Qt.CursorShape.PointingHandCursor)
-                    return
             self.unsetCursor()
 
     def mouseReleaseEvent(self, event):
@@ -442,6 +453,19 @@ class ThumbnailListView(QListView):
             self.unsetCursor()
             event.accept()
             return
+
+        if getattr(self, "_pending_deselect_others", False):
+            self._pending_deselect_others = False
+            clicked_idx = getattr(self, "_pending_clicked_idx", None)
+            if clicked_idx and clicked_idx.isValid():
+                self.setCurrentIndex(clicked_idx)
+                sm = self.selectionModel()
+                if sm is not None:
+                    sm.select(clicked_idx, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+                self._panel._on_activated(clicked_idx)
+            event.accept()
+            return
+
         super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event):

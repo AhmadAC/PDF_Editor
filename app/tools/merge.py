@@ -1,5 +1,5 @@
 # app/tools/merge.py
-"""PDF_Editor – TabJuntar: merge PDFs tool with SVG icons."""
+"""PDF_Editor – TabJuntar: merge PDFs tool with in-pane action button and SVG icons."""
 
 import contextlib
 import os
@@ -41,7 +41,8 @@ class TabJuntar(BasePage):
         f = self._form
 
         grp = QGroupBox(t("tool.merge.list"))
-        vl  = QVBoxLayout(grp); vl.setSpacing(8)
+        vl  = QVBoxLayout(grp)
+        vl.setSpacing(8)
         self.drop_multi = MultiDropWidget(self._on_drop)
         self.drop_multi.btn.clicked.connect(self._add_files)
         vl.addWidget(self.drop_multi)
@@ -85,13 +86,32 @@ class TabJuntar(BasePage):
 
         for btn in (self._btn_up, self._btn_dn, self._btn_rem, self._btn_clr):
             hb.addWidget(btn)
-        hb.addStretch(); vl.addLayout(hb)
+        hb.addStretch()
+        vl.addLayout(hb)
         f.addWidget(grp)
 
         f.addWidget(section(t("tool.merge.output")))
         self.drop_out = DropFileEdit(save=True, default_name="merged.pdf")
         f.addWidget(self.drop_out)
+
+        # In-pane action button placed directly inside the form layout
+        btn_merge_row = QHBoxLayout()
+        btn_merge_row.setContentsMargins(0, 10, 0, 0)
+        btn_merge_row.addStretch()
+        self.btn_merge = QPushButton(t("tool.merge.btn"))
+        self.btn_merge.setObjectName("btn_action_small")
+        self.btn_merge.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_merge.setFixedHeight(32)
+        self.btn_merge.setMinimumWidth(110)
+        self.btn_merge.clicked.connect(self._run)
+        btn_merge_row.addWidget(self.btn_merge)
+        f.addLayout(btn_merge_row)
+        self.action_btn = self.btn_merge
+
         f.addStretch()
+
+        # Hide the bottom pinned banner
+        self._action_bar.setVisible(False)
 
     def update_theme(self, dark: bool) -> None:
         super().update_theme(dark)
@@ -107,6 +127,9 @@ class TabJuntar(BasePage):
             return False
         self._pwd_map[p] = self._pdf_password
         self.lst.addItem(QListWidgetItem(p))
+        if not self.drop_out.path():
+            base, ext = os.path.splitext(p)
+            self.drop_out.set_path(os.path.normpath(base + "_merged" + ext))
         return True
 
     def _on_drop(self, paths: list):
@@ -120,14 +143,16 @@ class TabJuntar(BasePage):
     def _up(self):
         r = self.lst.currentRow()
         if r > 0:
-            item = self.lst.takeItem(r); self.lst.insertItem(r-1, item)
-            self.lst.setCurrentRow(r-1)
+            item = self.lst.takeItem(r)
+            self.lst.insertItem(r - 1, item)
+            self.lst.setCurrentRow(r - 1)
 
     def _dn(self):
         r = self.lst.currentRow()
-        if r < self.lst.count()-1:
-            item = self.lst.takeItem(r); self.lst.insertItem(r+1, item)
-            self.lst.setCurrentRow(r+1)
+        if r < self.lst.count() - 1:
+            item = self.lst.takeItem(r)
+            self.lst.insertItem(r + 1, item)
+            self.lst.setCurrentRow(r + 1)
 
     def _remove(self):
         r = self.lst.currentRow()
@@ -140,7 +165,8 @@ class TabJuntar(BasePage):
         self._pwd_map.clear()
 
     def auto_load(self, path: str):
-        if not path: return
+        if not path:
+            return
         existing = [self.lst.item(i).text() for i in range(self.lst.count())]
         if path not in existing:
             self._add_path(path)
@@ -148,22 +174,26 @@ class TabJuntar(BasePage):
     def _run(self):
         paths = [self.lst.item(i).text() for i in range(self.lst.count())]
         if len(paths) < 2:
-            QMessageBox.warning(self, t("msg.warning"), t("tool.merge.min2")); return
+            QMessageBox.warning(self, t("msg.warning"), t("tool.merge.min2"))
+            return
         missing = [p for p in paths if not os.path.isfile(p)]
         if missing:
             QMessageBox.critical(self, t("msg.error"),
                                  t("tool.merge.missing_files", files="\n".join(missing)))
             return
 
-        default_name = "merged.pdf"
-        if paths:
-            base, ext = os.path.splitext(os.path.basename(paths[0]))
-            default_name = f"{base}_merged{ext}"
-        start_dir = os.path.dirname(paths[0]) if paths else ""
-        out_path = self._prompt_save_as(default_name, start_dir)
+        out_path = self.drop_out.path()
         if not out_path:
-            return
-        self.drop_out.set_path(out_path)
+            default_name = "merged.pdf"
+            if paths:
+                base, ext = os.path.splitext(os.path.basename(paths[0]))
+                default_name = f"{base}_merged{ext}"
+            start_dir = os.path.dirname(paths[0]) if paths else ""
+            out_path = self._prompt_save_as(default_name, start_dir)
+            if not out_path:
+                return
+            self.drop_out.set_path(out_path)
+        out_path = os.path.normpath(out_path)
 
         win: Any = self.window()
         viewer = getattr(win, "_viewer", None)
@@ -182,9 +212,11 @@ class TabJuntar(BasePage):
 
             if viewer and viewer.current_path() and os.path.abspath(viewer.current_path()) == os.path.abspath(out_path):
                 viewer._canvas.close_doc()
-                if viewer._fitz_doc:
+                doc = getattr(viewer, "_fitz_doc", None)
+                if doc is not None:
                     with contextlib.suppress(Exception):
-                        viewer._fitz_doc.close()
+                        if not getattr(doc, "is_closed", False):
+                            doc.close()
                     viewer._fitz_doc = None
                 viewer._thumbnails._stop_all_workers()
 
@@ -201,4 +233,5 @@ class TabJuntar(BasePage):
                 viewer.load(out_path)
 
             QMessageBox.information(self, t("msg.done"), msg)
-        except Exception as e: show_error(self, e)
+        except Exception as e:
+            show_error(self, e)

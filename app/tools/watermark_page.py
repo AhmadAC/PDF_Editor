@@ -1,13 +1,14 @@
-
 # app/tools/watermark_page.py
-"""TabMarcaDagua page controller coordinating UI, open tabs, and background watermarking."""
+"""TabMarcaDagua page controller coordinating UI, open tabs, background watermarking, and JSON settings persistence."""
 
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import shutil
+import sys
 import tempfile
 import traceback
 from typing import Any
@@ -71,6 +72,16 @@ from app.widgets import DropFileEdit, FocusComboBox, FocusSpinBox
 _log = logging.getLogger(__name__)
 
 
+def _watermark_config_file() -> str:
+    """Resolve destination path for watermark_settings.json."""
+    if sys.platform in ("win32", "darwin"):
+        return os.path.normpath(os.path.join(os.path.expanduser("~"), ".PDF_Editor_watermark_settings.json"))
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    d = os.path.join(xdg, "PDF_Editor")
+    os.makedirs(d, exist_ok=True)
+    return os.path.normpath(os.path.join(d, "watermark_settings.json"))
+
+
 class TabMarcaDagua(BasePage):
     def __init__(self, status_fn):
         super().__init__(
@@ -90,6 +101,7 @@ class TabMarcaDagua(BasePage):
         self._last_suggested_path: str = ""
         self._last_saved_path: str = ""
         self._last_output_viewer: Any = None
+        self._loading_settings: bool = False
 
         self._header.setFixedHeight(44)
         hdr_lay = self._header.layout()
@@ -175,6 +187,7 @@ class TabMarcaDagua(BasePage):
 
         self._compact_hidden = []
         self._apply_local_theme(is_dark())
+        self._load_settings()
         self._refresh_open_tabs()
 
     def _build_options_card(self, parent_layout) -> None:
@@ -257,6 +270,16 @@ class TabMarcaDagua(BasePage):
         form.addRow("", tip_row)
         parent_layout.addWidget(self._options_card)
 
+        # Connect controls to automatically save preferences on any change
+        self.edit_pages.textChanged.connect(self._save_settings)
+        self.chk_include_omitted_wm.toggled.connect(self._save_settings)
+        self.chk_match_pages.toggled.connect(self._save_settings)
+        self.spin_wm_page.valueChanged.connect(self._save_settings)
+        self.cmb_layer.currentIndexChanged.connect(self._save_settings)
+        self.spin_base_opacity.valueChanged.connect(self._save_settings)
+        self.spin_opacity.valueChanged.connect(self._save_settings)
+        self.chk_transparent_white.toggled.connect(self._save_settings)
+
     def _make_opacity_row(self, form: QFormLayout, label: str, on_slider, on_spin):
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -281,15 +304,105 @@ class TabMarcaDagua(BasePage):
 
     def _sync_base_opacity_from_slider(self, value: int) -> None:
         self._sync_paired(self.spin_base_opacity, value)
+        self._save_settings()
 
     def _sync_base_opacity_from_spin(self, value: int) -> None:
         self._sync_paired(self.slider_base_opacity, value)
+        self._save_settings()
 
     def _sync_stamp_opacity_from_slider(self, value: int) -> None:
         self._sync_paired(self.spin_opacity, value)
+        self._save_settings()
 
     def _sync_stamp_opacity_from_spin(self, value: int) -> None:
         self._sync_paired(self.slider_opacity, value)
+        self._save_settings()
+
+    def _save_settings(self) -> None:
+        """Persist all watermark settings to watermark_settings.json."""
+        if getattr(self, "_loading_settings", False):
+            return
+        data = {
+            "pages": self.edit_pages.text().strip(),
+            "include_omitted_wm": self.chk_include_omitted_wm.isChecked(),
+            "match_pages": self.chk_match_pages.isChecked(),
+            "stamp_page": self.spin_wm_page.value(),
+            "position": self.cmb_layer.currentText(),
+            "layer_index": self.cmb_layer.currentIndex(),
+            "base_opacity": self.spin_base_opacity.value(),
+            "stamp_opacity": self.spin_opacity.value(),
+            "transparent_white": self.chk_transparent_white.isChecked(),
+        }
+        cfg_file = _watermark_config_file()
+        try:
+            os.makedirs(os.path.dirname(cfg_file), exist_ok=True)
+            with open(cfg_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+        except Exception as exc:
+            _log.warning("Could not save watermark settings to %s: %s", cfg_file, exc)
+
+        with contextlib.suppress(Exception):
+            from app.i18n import _update_config
+            _update_config(lambda cfg: cfg.__setitem__("watermark_settings", data))
+
+    def _load_settings(self) -> None:
+        """Load and apply watermark settings from watermark_settings.json."""
+        data: dict[str, Any] = {}
+        cfg_file = _watermark_config_file()
+        if os.path.isfile(cfg_file):
+            try:
+                with open(cfg_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception as exc:
+                _log.warning("Could not parse %s: %s", cfg_file, exc)
+
+        if not data:
+            try:
+                from app.i18n import _CONFIG_PATH
+                if os.path.isfile(_CONFIG_PATH):
+                    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+                        cfg = json.load(f)
+                        data = cfg.get("watermark_settings", {})
+            except Exception:
+                pass
+
+        if not isinstance(data, dict) or not data:
+            return
+
+        self._loading_settings = True
+        try:
+            if "pages" in data:
+                self.edit_pages.setText(str(data["pages"]))
+            if "include_omitted_wm" in data:
+                self.chk_include_omitted_wm.setChecked(bool(data["include_omitted_wm"]))
+            if "match_pages" in data:
+                m_val = bool(data["match_pages"])
+                self.chk_match_pages.setChecked(m_val)
+                self.spin_wm_page.setEnabled(not m_val)
+            if "stamp_page" in data:
+                with contextlib.suppress(Exception):
+                    self.spin_wm_page.setValue(int(data["stamp_page"]))
+            if "layer_index" in data:
+                with contextlib.suppress(Exception):
+                    idx = int(data["layer_index"])
+                    if 0 <= idx < self.cmb_layer.count():
+                        self.cmb_layer.setCurrentIndex(idx)
+            elif "position" in data:
+                idx = self.cmb_layer.findText(str(data["position"]), Qt.MatchFlag.MatchContains)
+                if idx >= 0:
+                    self.cmb_layer.setCurrentIndex(idx)
+            if "base_opacity" in data:
+                with contextlib.suppress(Exception):
+                    bo = max(0, min(100, int(data["base_opacity"])))
+                    self._sync_base_opacity_from_spin(bo)
+            if "stamp_opacity" in data:
+                with contextlib.suppress(Exception):
+                    so = max(0, min(100, int(data["stamp_opacity"])))
+                    self._sync_stamp_opacity_from_spin(so)
+            if "transparent_white" in data:
+                self.chk_transparent_white.setChecked(bool(data["transparent_white"]))
+        finally:
+            self._loading_settings = False
 
     def _apply_local_theme(self, dark: bool) -> None:
         bg_card = BG_CARD if dark else _LC
@@ -412,6 +525,7 @@ class TabMarcaDagua(BasePage):
 
     def _on_match_toggled(self, checked: bool) -> None:
         self.spin_wm_page.setEnabled(not checked)
+        self._save_settings()
 
     def _probe_wm_info(self, wm_path: str) -> None:
         if not wm_path or not os.path.isfile(wm_path):
@@ -548,7 +662,12 @@ class TabMarcaDagua(BasePage):
                 shutil.rmtree(d, ignore_errors=True)
         self._wm_tmp_dirs.clear()
 
+    def closeEvent(self, event) -> None:
+        self._save_settings()
+        super().closeEvent(event)
+
     def _run(self) -> None:
+        self._save_settings()
         pdf_path = self.base_card.path() or self.drop_in.path()
         win: Any = self.window()
         viewer = getattr(win, "_viewer", None)
@@ -579,7 +698,7 @@ class TabMarcaDagua(BasePage):
                 pages_text=self.edit_pages.text(),
                 match_pages=match_pages,
                 include_omitted_wm=include_omitted_wm,
-                open_base_fitz=self._open_fitz,
+                open_base_fitz=self._open_base_fitz,
             )
         except EmptyPdfError as e:
             QMessageBox.warning(self, t("msg.warning"), str(e))

@@ -1,5 +1,5 @@
 # app/viewer/panel_page_ops.py
-"""PDF_Editor – Multi-page operations, page clipboard (cut/paste/duplicate), drag/drop reordering, and thumbnail action handlers."""
+"""PDF_Editor – Multi-page operations, page clipboard (cut/copy/paste), drag/drop reordering, and thumbnail action handlers."""
 from __future__ import annotations
 
 import contextlib
@@ -338,7 +338,17 @@ class PanelPageOpsMixin(_Base):
                     self._move_pages_to(sorted(list(pages_to_move)), int(target_index))
                     return
 
-        if isinstance(pages_arg, int):
+        count = 1
+        if isinstance(pages_arg, dict):
+            count = max(1, int(pages_arg.get("count", 1)))
+            raw_pages = pages_arg.get("pages", [0])
+            if isinstance(raw_pages, int):
+                pages = [raw_pages]
+            elif isinstance(raw_pages, (list, tuple, set)):
+                pages = sorted(list(raw_pages))
+            else:
+                pages = [0]
+        elif isinstance(pages_arg, int):
             pages = [pages_arg]
         elif isinstance(pages_arg, (list, tuple, set)):
             pages = sorted(list(pages_arg))
@@ -362,11 +372,11 @@ class PanelPageOpsMixin(_Base):
         elif action == "extract":
             self._extract_pages(pages)
         elif action == "insert_blank":
-            self._insert_blank_page(pages[-1])
+            self._insert_blank_page(pages[-1], count=count)
         elif action == "insert_file":
-            self._insert_pages_from_file(pages[-1])
+            self._insert_pages_from_file(pages[-1], count=count)
         elif action == "duplicate":
-            self._duplicate_pages(pages)
+            self._duplicate_pages(pages, count=count)
         elif action == "reverse":
             self._reverse_pages(pages)
         elif action == "swap":
@@ -690,7 +700,8 @@ class PanelPageOpsMixin(_Base):
             show_error(self, exc)
 
     def _paste_pages(self, pages: list[int]) -> None:
-        """Paste cut/copied pages from the shared page clipboard after the selected/current page."""
+        """Paste cut/copied pages from the shared page clipboard.
+        If the first page is selected (page 0), inserts before it at position 0."""
         if not self._current_path or not os.path.isfile(self._current_path):
             return
         if not has_cut_pages():
@@ -712,10 +723,10 @@ class PanelPageOpsMixin(_Base):
                 return
 
             valid_pages = [p for p in pages if 0 <= p < doc.page_count]
-            if pages and pages[0] == -1:
+            if not valid_pages or valid_pages == [0] or (pages and pages[0] == -1):
                 insert_at = 0
             else:
-                insert_at = min(doc.page_count, (max(valid_pages) + 1) if valid_pages else doc.page_count)
+                insert_at = min(doc.page_count, max(valid_pages) + 1)
 
             doc.insert_pdf(src, start_at=insert_at)
             src.close()
@@ -729,8 +740,9 @@ class PanelPageOpsMixin(_Base):
             )
             win = self.window()
             if win and hasattr(win, "_set_status"):
+                pos_desc = "before page 1" if insert_at == 0 else f"at page {insert_at + 1}"
                 win._set_status(
-                    f"Pasted {n_inserted} page(s) at page {insert_at + 1} (Ctrl+Z to undo, Ctrl+S to save)"
+                    f"Pasted {n_inserted} page(s) {pos_desc} (Ctrl+Z to undo, Ctrl+S to save)"
                 )
         except Exception as exc:
             show_error(self, exc)
@@ -779,18 +791,27 @@ class PanelPageOpsMixin(_Base):
         except Exception as exc:
             show_error(self, exc)
 
-    def _insert_blank_page(self, page_idx: int) -> None:
+    def _insert_blank_page(self, page_idx: int, count: int = 1) -> None:
+        count = max(1, int(count))
         try:
             doc = fitz.open(self._current_path)
             if self._pdf_password and doc.needs_pass:
                 doc.authenticate(self._pdf_password)
             ref_rect = doc[page_idx].rect if 0 <= page_idx < doc.page_count else fitz.Rect(0, 0, 595, 842)
-            doc.new_page(pno=page_idx + 1, width=ref_rect.width, height=ref_rect.height)
-            self._save_and_reload(doc, target_page=page_idx + 1, selected_pages=[page_idx + 1])
+            insert_at = min(doc.page_count, max(0, page_idx + 1))
+            new_selected: list[int] = []
+            for offset in range(count):
+                doc.new_page(pno=insert_at + offset, width=ref_rect.width, height=ref_rect.height)
+                new_selected.append(insert_at + offset)
+            self._save_and_reload(doc, target_page=insert_at, selected_pages=new_selected, scroll_to_target=True)
+            win: Any = self.window()
+            if win and hasattr(win, "_set_status"):
+                win._set_status(f"Inserted {count} blank page(s) (Ctrl+Z to undo, Ctrl+S to save)")
         except Exception as exc:
             show_error(self, exc)
 
-    def _insert_pages_from_file(self, page_idx: int) -> None:
+    def _insert_pages_from_file(self, page_idx: int, count: int = 1) -> None:
+        count = max(1, int(count))
         p, _ = QFileDialog.getOpenFileName(self, "Insert Pages from PDF", DESKTOP, t("file_filter.pdf"))
         if not p or not os.path.isfile(p):
             return
@@ -799,13 +820,36 @@ class PanelPageOpsMixin(_Base):
             if self._pdf_password and doc.needs_pass:
                 doc.authenticate(self._pdf_password)
             src = fitz.open(p)
-            doc.insert_pdf(src, start_at=page_idx + 1)
+            if src.needs_pass:
+                from app.utils import prompt_pdf_password
+                ok, src_pwd = prompt_pdf_password(p, self)
+                if not ok:
+                    src.close()
+                    doc.close()
+                    return
+                src.authenticate(src_pwd)
+            src_count = src.page_count
+            if src_count <= 0:
+                src.close()
+                doc.close()
+                return
+            insert_at = min(doc.page_count, max(0, page_idx + 1))
+            for i in range(count):
+                doc.insert_pdf(src, start_at=insert_at + i * src_count)
             src.close()
-            self._save_and_reload(doc, target_page=page_idx + 1, selected_pages=[page_idx + 1])
+            total_inserted = count * src_count
+            new_selected = list(range(insert_at, insert_at + total_inserted))
+            self._save_and_reload(doc, target_page=insert_at, selected_pages=new_selected, scroll_to_target=True)
+            win: Any = self.window()
+            if win and hasattr(win, "_set_status"):
+                win._set_status(
+                    f"Inserted {total_inserted} page(s) ({count}x from {os.path.basename(p)}) (Ctrl+Z to undo, Ctrl+S to save)"
+                )
         except Exception as exc:
             show_error(self, exc)
 
-    def _duplicate_pages(self, pages: list[int]) -> None:
+    def _duplicate_pages(self, pages: list[int], count: int = 1) -> None:
+        count = max(1, int(count))
         try:
             doc = fitz.open(self._current_path)
             if self._pdf_password and doc.needs_pass:
@@ -816,14 +860,17 @@ class PanelPageOpsMixin(_Base):
             for p_idx in range(doc.page_count):
                 new_doc.insert_pdf(doc, from_page=p_idx, to_page=p_idx)
                 if p_idx in pages_set:
-                    new_doc.insert_pdf(doc, from_page=p_idx, to_page=p_idx)
-                    new_selected.append(new_doc.page_count - 1)
+                    for _ in range(count):
+                        new_doc.insert_pdf(doc, from_page=p_idx, to_page=p_idx)
+                        new_selected.append(new_doc.page_count - 1)
             doc.close()
             target_pg = new_selected[0] if new_selected else 0
             self._save_and_reload(new_doc, target_page=target_pg, selected_pages=new_selected)
             win: Any = self.window()
             if win and hasattr(win, "_set_status"):
-                win._set_status(f"Duplicated {len(pages_set)} page(s) (Ctrl+Z to undo, Ctrl+S to save)")
+                win._set_status(
+                    f"Duplicated {len(pages_set)} page(s) × {count} (Ctrl+Z to undo, Ctrl+S to save)"
+                )
         except Exception as exc:
             show_error(self, exc)
 

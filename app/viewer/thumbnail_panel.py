@@ -1,5 +1,5 @@
 # app/viewer/thumbnail_panel.py
-"""Thumbnail panel container widget with Foxit-style actions, responsive multi-column layout, SVG icons, and worker orchestration."""
+"""Thumbnail panel container widget with Foxit-style actions, inline repeat counts, responsive multi-column layout, SVG icons, and worker orchestration."""
 
 from __future__ import annotations
 
@@ -9,9 +9,11 @@ import logging
 import os
 
 from PySide6.QtCore import (
+    QEvent,
     QItemSelection,
     QItemSelectionModel,
     QModelIndex,
+    QObject,
     QPoint,
     QSize,
     Qt,
@@ -22,15 +24,20 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QHBoxLayout,
+    QLabel,
     QListView,
     QMenu,
     QProxyStyle,
+    QPushButton,
+    QSpinBox,
     QStyle,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
-from app.constants import TEXT_PRI, _LQ
+from app.constants import ACCENT, TEXT_PRI, _LQ
 from app.i18n import _CONFIG_PATH, _update_config
 from app.utils import (
     SVG_ARROWS_H,
@@ -87,11 +94,28 @@ class _ScrollableMenuStyle(QProxyStyle):
         return super().styleHint(hint, option, widget, returnData)
 
 
+class _SpinEnterFilter(QObject):
+    """Trigger the menu row action when Enter/Return is pressed inside its spinbox."""
+
+    def __init__(self, callback, parent=None) -> None:
+        super().__init__(parent)
+        self._cb = callback
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.KeyPress and event.key() in (
+            Qt.Key.Key_Return,
+            Qt.Key.Key_Enter,
+        ):
+            self._cb()
+            return True
+        return super().eventFilter(obj, event)
+
+
 class ThumbnailPanel(QWidget):
     """Sidebar container hosting the QListView of thumbnails with responsive multi-column grid support."""
 
     page_requested = Signal(int)
-    action_requested = Signal(str, object)  # (action_name, list[int] | tuple)
+    action_requested = Signal(str, object)  # (action_name, list[int] | dict | tuple)
     viewport_scroll_requested = Signal(int, float, float)  # (page_idx, norm_x, norm_y)
 
     _thumb_scale_pref: float | None = None
@@ -213,7 +237,7 @@ class ThumbnailPanel(QWidget):
         self._delegate.set_cell_width(cell_w)
         self._view.setGridSize(QSize(cell_w, cell_h))
 
-    # ── Context Menu (Single-Column Scrollable Pane with SVGs) ────
+    # ── Context Menu (Single-Column Scrollable Pane with SVGs & Inline Counters) ────
 
     def _show_context_menu(
         self, global_pos: QPoint, selected_pages: list[int]
@@ -233,6 +257,83 @@ class ThumbnailPanel(QWidget):
         menu.setStyle(self._menu_style)
         menu.setStyleSheet("QMenu { menu-scrollable: 1; }")
 
+        def _add_counted_action(
+            target_menu: QMenu,
+            icon_svg: str,
+            icon_col: str,
+            label_text: str,
+            shortcut_text: str = "",
+            tooltip: str = "Number of copies/pages (1–999)",
+        ):
+            wa = QWidgetAction(target_menu)
+            row_w = QWidget(target_menu)
+            row_w.setObjectName("menu_count_row")
+            h = QHBoxLayout(row_w)
+            h.setContentsMargins(4, 2, 6, 2)
+            h.setSpacing(6)
+
+            fg = TEXT_PRI if dark else "#1A2B28"
+            brd = "#444444" if dark else "#D1D5DB"
+            inp_bg = "#1E1E1E" if dark else "#FFFFFF"
+            sec_fg = "#9CA3AF" if dark else "#6B7280"
+
+            btn = QPushButton(label_text, row_w)
+            btn.setIcon(svg_icon(icon_svg, color=icon_col, size=15))
+            btn.setIconSize(QSize(15, 15))
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFlat(True)
+            btn.setStyleSheet(
+                f"QPushButton {{ text-align: left; padding: 4px 10px 4px 8px;"
+                f" border: none; border-radius: 4px; background: transparent;"
+                f" color: {fg}; font-size: 10.5pt; }}"
+                f"QPushButton:hover {{ background: {ACCENT}; color: #FFFFFF; }}"
+            )
+
+            spin = QSpinBox(row_w)
+            spin.setRange(1, 999)
+            spin.setValue(1)
+            spin.setToolTip(tooltip)
+            spin.setFixedWidth(54)
+            spin.setFixedHeight(22)
+            spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            spin.setStyleSheet(
+                f"QSpinBox {{ background: {inp_bg}; color: {fg};"
+                f" border: 1px solid {brd}; border-radius: 4px;"
+                f" padding: 0px 2px; font-size: 9.5pt; }}"
+                f"QSpinBox:focus {{ border: 1px solid {ACCENT}; }}"
+            )
+
+            h.addWidget(btn, 1)
+            if shortcut_text:
+                sc_lbl = QLabel(shortcut_text, row_w)
+                sc_lbl.setStyleSheet(
+                    f"color: {sec_fg}; font-size: 9.5pt; background: transparent; padding-right: 4px;"
+                )
+                h.addWidget(sc_lbl)
+            h.addWidget(spin)
+
+            chosen_result = {"triggered": False, "count": 1}
+
+            def _trigger():
+                with contextlib.suppress(Exception):
+                    spin.interpretText()
+                chosen_result["triggered"] = True
+                chosen_result["count"] = spin.value()
+                if target_menu is not menu:
+                    target_menu.close()
+                menu.close()
+
+            btn.clicked.connect(_trigger)
+            le = spin.lineEdit()
+            flt = _SpinEnterFilter(_trigger, spin)
+            spin.installEventFilter(flt)
+            if le is not None:
+                le.installEventFilter(flt)
+
+            wa.setDefaultWidget(row_w)
+            target_menu.addAction(wa)
+            return wa, spin, chosen_result
+
         # 1. Page & Text Clipboard
         act_cut = menu.addAction(
             svg_icon(SVG_CUT, color=icon_color, size=15), f"Cut Pages{suffix}\tCtrl+X"
@@ -240,10 +341,19 @@ class ThumbnailPanel(QWidget):
         act_copy_pages = menu.addAction(
             svg_icon(SVG_COPY, color=icon_color, size=15), f"Copy Pages{suffix}\tCtrl+C"
         )
+
+        if selected_pages == [0]:
+            paste_title = "Paste Pages (Before Page 1)\tCtrl+V"
+        elif selected_pages:
+            paste_title = f"Paste Pages (After Page {max(selected_pages) + 1})\tCtrl+V"
+        else:
+            paste_title = "Paste Pages\tCtrl+V"
+
         act_paste_pages = menu.addAction(
-            svg_icon(SVG_PASTE, color=icon_color, size=15), "Paste Pages\tCtrl+V"
+            svg_icon(SVG_PASTE, color=icon_color, size=15), paste_title
         )
         act_paste_pages.setEnabled(has_cut_pages())
+
         act_copy = menu.addAction(
             svg_icon(SVG_COPY, color=icon_color, size=15), f"Copy Text{suffix}"
         )
@@ -282,15 +392,23 @@ class ThumbnailPanel(QWidget):
         )
         menu.addSeparator()
 
-        # 4. Insert submenu
+        # 4. Insert submenu with inline page count inputs
         insert_menu = menu.addMenu(
             svg_icon(SVG_FILE_PLUS, color=icon_color, size=15), "Insert Pages..."
         )
-        act_ins_blank = insert_menu.addAction(
-            svg_icon(SVG_FILE, color=icon_color, size=15), "Blank Page..."
+        _, _, ins_blank_res = _add_counted_action(
+            insert_menu,
+            SVG_FILE,
+            icon_color,
+            "Blank Page(s)...",
+            tooltip="Number of blank pages to insert (1–999)",
         )
-        act_ins_file = insert_menu.addAction(
-            svg_icon(SVG_FOLDER, color=icon_color, size=15), "From File..."
+        _, _, ins_file_res = _add_counted_action(
+            insert_menu,
+            SVG_FOLDER,
+            icon_color,
+            "From File...",
+            tooltip="Number of times to insert the selected PDF (1–999)",
         )
 
         # 5. Core Page Manipulations
@@ -312,9 +430,13 @@ class ThumbnailPanel(QWidget):
         act_swap = menu.addAction(
             svg_icon(SVG_SWAP, color=icon_color, size=15), "Swap Pages..."
         )
-        act_duplicate = menu.addAction(
-            svg_icon(SVG_CLONE, color=icon_color, size=15),
-            f"Duplicate Pages{suffix}\tCtrl+D",
+        _, _, dup_res = _add_counted_action(
+            menu,
+            SVG_CLONE,
+            icon_color,
+            f"Duplicate Pages{suffix}",
+            shortcut_text="Ctrl+D",
+            tooltip="Number of duplicate copies to insert (1–999)",
         )
         act_move = menu.addAction(
             svg_icon(SVG_MOVE, color=icon_color, size=15),
@@ -369,10 +491,28 @@ class ThumbnailPanel(QWidget):
         )
 
         selected_action = menu.exec(global_pos)
+
+        # Inline QWidgetAction handlers
+        if dup_res["triggered"]:
+            self.action_requested.emit(
+                "duplicate", {"pages": selected_pages, "count": dup_res["count"]}
+            )
+            return
+        if ins_blank_res["triggered"]:
+            self.action_requested.emit(
+                "insert_blank", {"pages": selected_pages, "count": ins_blank_res["count"]}
+            )
+            return
+        if ins_file_res["triggered"]:
+            self.action_requested.emit(
+                "insert_file", {"pages": selected_pages, "count": ins_file_res["count"]}
+            )
+            return
+
         if not selected_action:
             return
 
-        # Action Router
+        # Standard Action Router
         if selected_action == act_cut:
             self.action_requested.emit("cut", selected_pages)
         elif selected_action == act_copy_pages:
@@ -395,10 +535,6 @@ class ThumbnailPanel(QWidget):
             self.action_requested.emit("embed_thumbnails", selected_pages)
         elif selected_action == act_rem_embed:
             self.action_requested.emit("remove_thumbnails", selected_pages)
-        elif selected_action == act_ins_blank:
-            self.action_requested.emit("insert_blank", selected_pages)
-        elif selected_action == act_ins_file:
-            self.action_requested.emit("insert_file", selected_pages)
         elif selected_action == act_delete:
             self.action_requested.emit("delete", selected_pages)
         elif selected_action == act_extract:
@@ -409,8 +545,6 @@ class ThumbnailPanel(QWidget):
             self.action_requested.emit("replace", selected_pages)
         elif selected_action == act_swap:
             self.action_requested.emit("swap", selected_pages)
-        elif selected_action == act_duplicate:
-            self.action_requested.emit("duplicate", selected_pages)
         elif selected_action == act_move:
             self.action_requested.emit("move", selected_pages)
         elif selected_action == act_split:
