@@ -1,8 +1,8 @@
 # app/workspace_bar.py
 """PDF_Editor – WorkspaceBar: top toolbar for workspace actions and navigation using SVG icons."""
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QLabel, QPushButton, QLineEdit, QSizePolicy
+    QApplication, QWidget, QHBoxLayout, QLabel, QPushButton, QLineEdit, QSizePolicy, QToolTip
 )
 
 from app.constants import TEXT_PRI, ACCENT, _LP
@@ -34,18 +34,66 @@ from app.utils import (
 
 
 class ElidedLabel(QLabel):
-    """QLabel that elides text in the middle when horizontal space is constrained."""
+    """QLabel that elides text in the middle when horizontal space is constrained and copies path on single left-click."""
+
+    clicked = Signal()
 
     def __init__(self, text="", parent=None):
         super().__init__(text, parent)
         self._full_text = text
+        self._copy_text = ""
         self.setMinimumWidth(0)
+        self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
 
     def setText(self, text: str):
         self._full_text = text
         super().setText(text)
         self._update_elide()
+
+    def setCopyText(self, text: str):
+        self._copy_text = text or ""
+        if not self._copy_text:
+            self.unsetCursor()
+
+    def copyText(self) -> str:
+        return self._copy_text
+
+    def _is_over_text(self, pos_x: float) -> bool:
+        if not self._copy_text or not self.text():
+            return False
+        text_w = self.fontMetrics().horizontalAdvance(self.text())
+        return 0.0 <= pos_x <= float(text_w + 12)
+
+    def mouseMoveEvent(self, event):
+        pos_x = event.position().x() if hasattr(event, "position") else float(event.pos().x())
+        if self._is_over_text(pos_x):
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        else:
+            self.unsetCursor()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self.unsetCursor()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos_x = event.position().x() if hasattr(event, "position") else float(event.pos().x())
+            if self._is_over_text(pos_x):
+                cb = QApplication.clipboard()
+                if cb is not None:
+                    cb.setText(self._copy_text)
+                gpos = event.globalPosition().toPoint() if hasattr(event, "globalPosition") else event.globalPos()
+                QToolTip.showText(gpos, "Copied to clipboard!", self, self.rect(), 1500)
+                win = self.window()
+                set_status = getattr(win, "_set_status", None)
+                if callable(set_status):
+                    set_status(f"Copied path to clipboard: {self._copy_text}")
+                self.clicked.emit()
+                event.accept()
+                return
+        super().mousePressEvent(event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -62,7 +110,7 @@ class ElidedLabel(QLabel):
 
 
 class WorkspaceBar(QWidget):
-    """Top bar containing sidebar toggle, full-path title, viewer tools, zoom and page navigation."""
+    """Top bar containing sidebar toggle, clickable full-path title, viewer tools, zoom and page navigation."""
 
     def __init__(self, parent=None):
         super().__init__(parent)

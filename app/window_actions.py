@@ -44,7 +44,7 @@ from app.window_tools_router import WindowToolsRouterMixin
 if TYPE_CHECKING:
     from app.viewer.panel import PdfViewerPanel
     from app.window_tabs import _ViewerTabBar
-    from app.workspace_bar import WorkspaceBar
+    from app.workspace_bar import ElidedLabel, WorkspaceBar
     _Base = QMainWindow
 else:
     _Base = object
@@ -63,7 +63,7 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
         _saved_right_width: int
         _right_tool_container: QWidget
         _splitter: QSplitter
-        _breadcrumb: QLabel
+        _breadcrumb: ElidedLabel
         _undo_top_btn: QPushButton
         _redo_top_btn: QPushButton
         _tool_usage: dict[str, int]
@@ -237,7 +237,9 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
         else:
             self._breadcrumb.setText("")
 
-        self._breadcrumb.setToolTip(full_path)
+        if hasattr(self._breadcrumb, "setCopyText"):
+            self._breadcrumb.setCopyText(full_path)
+        self._breadcrumb.setToolTip(f"{full_path}\n(Click to copy path)" if full_path else "")
 
     def _update_undo_redo_buttons(self):
         if not hasattr(self, "_undo_top_btn") or not hasattr(self, "_redo_top_btn"):
