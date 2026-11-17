@@ -1,4 +1,5 @@
-"""PDF_Editor – Keyboard navigation, shortcuts, undo/redo, and active item manipulation."""
+# app/viewer/canvas_keystroke_exec.py
+"""PDF_Editor – Keyboard navigation, shortcuts, undo/redo, page clipboard, and active item manipulation."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable
@@ -155,6 +156,17 @@ class CanvasKeystrokeHandler:
             elif key == Qt.Key.Key_Y:
                 c.page_action_requested.emit("redo", [idx])
                 return True
+            elif key == Qt.Key.Key_D:
+                c.page_action_requested.emit("duplicate", [idx])
+                return True
+            elif key == Qt.Key.Key_X and not c._sel_text:
+                c.page_action_requested.emit("cut", [idx])
+                return True
+            elif key == Qt.Key.Key_V:
+                from app.viewer.panel_page_ops import has_cut_pages
+                if has_cut_pages():
+                    c.page_action_requested.emit("paste_pages", [idx])
+                    return True
             elif key == Qt.Key.Key_Left:
                 c.page_action_requested.emit("rotate_left", [idx])
                 return True
@@ -166,7 +178,7 @@ class CanvasKeystrokeHandler:
                 win: Any = c.window()
                 set_status = getattr(win, "_set_status", None)
                 if callable(set_status):
-                    set_status(f"✔ Copied {len(c._sel_text):,} characters to clipboard")
+                    set_status(f"Copied {len(c._sel_text):,} characters to clipboard")
                 return True
             elif key == Qt.Key.Key_A:
                 select_all_fn()
@@ -186,3 +198,4 @@ class CanvasKeystrokeHandler:
             return True
 
         return False
+

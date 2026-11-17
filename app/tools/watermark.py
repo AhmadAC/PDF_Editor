@@ -1,5 +1,5 @@
 # app/tools/watermark.py
-"""PDF_Editor – TabMarcaDagua: stamp PDF A onto specific/all pages of PDF B with auto-duplication and opacity."""
+"""PDF_Editor – TabMarcaDagua: stamp PDF A onto PDF B with independent opacities and auto-page duplication."""
 
 from __future__ import annotations
 
@@ -99,6 +99,23 @@ class TabMarcaDagua(BasePage):
         self.cmb_layer.setMinimumContentsLength(8)
         form.addRow(t("tool.watermark.position_label"), self.cmb_layer)
 
+        # Base PDF (open document) opacity slider (5% - 100%)
+        base_op_row = QHBoxLayout()
+        base_op_row.setContentsMargins(0, 0, 0, 0)
+        base_op_row.setSpacing(8)
+        self.slider_base_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.slider_base_opacity.setRange(5, 100)
+        self.slider_base_opacity.setValue(100)
+        self.lbl_base_opacity_val = QLabel("100%")
+        self.lbl_base_opacity_val.setMinimumWidth(40)
+        self.slider_base_opacity.valueChanged.connect(
+            lambda v: self.lbl_base_opacity_val.setText(f"{v}%")
+        )
+        base_op_row.addWidget(self.slider_base_opacity, 1)
+        base_op_row.addWidget(self.lbl_base_opacity_val)
+        form.addRow("Base opacity:", base_op_row)
+
+        # Stamp PDF (PDF A) opacity slider (5% - 100%)
         op_row = QHBoxLayout()
         op_row.setContentsMargins(0, 0, 0, 0)
         op_row.setSpacing(8)
@@ -112,16 +129,16 @@ class TabMarcaDagua(BasePage):
         )
         op_row.addWidget(self.slider_opacity, 1)
         op_row.addWidget(self.lbl_opacity_val)
-        form.addRow("Opacity:", op_row)
+        form.addRow("Stamp opacity:", op_row)
 
         self.chk_transparent_white = QCheckBox("Make white background transparent")
         self.chk_transparent_white.setChecked(True)
         self.chk_transparent_white.setToolTip(
-            "Removes solid white page background from the stamp PDF so underlying content shows through"
+            "Removes solid white page background from the overlay PDF so underlying content shows through"
         )
         form.addRow("", self.chk_transparent_white)
 
-        lbl_tip = QLabel("💡 Use 100% opacity to stamp a full worksheet onto a background, or 20–40% for a faded watermark.")
+        lbl_tip = QLabel("💡 Adjust Base opacity to fade the open PDF, or Stamp opacity to fade the overlay PDF.")
         lbl_tip.setWordWrap(True)
         lbl_tip.setStyleSheet(f"color: {TEXT_SEC}; font-size: 9pt; padding-top: 4px;")
         form.addRow("", lbl_tip)
@@ -242,7 +259,6 @@ class TabMarcaDagua(BasePage):
             finally:
                 src_probe.close()
 
-            # Determine if we are auto-duplicating a smaller background PDF to match a multi-page stamp PDF
             expanding_base = bool(match_pages and wm_total > base_total)
             range_limit = wm_total if expanding_base else base_total
             txt = self.edit_pages.text().strip()
@@ -258,32 +274,81 @@ class TabMarcaDagua(BasePage):
             return
 
         over = self.cmb_layer.currentIndex() == 0
-        opacity_pct = self.slider_opacity.value()
-        opacity_float = max(0.05, min(1.0, opacity_pct / 100.0))
+        base_opacity_pct = self.slider_base_opacity.value()
+        base_opacity = max(0.05, min(1.0, base_opacity_pct / 100.0))
+        stamp_opacity_pct = self.slider_opacity.value()
+        stamp_opacity = max(0.05, min(1.0, stamp_opacity_pct / 100.0))
         transparent_white = self.chk_transparent_white.isChecked()
         single_wm_idx = min(max(0, self.spin_wm_page.value() - 1), wm_total - 1)
         pwd = self._pdf_password
 
-        def _render_wm_png(wm_doc_obj: fitz.Document, p_idx: int) -> tuple[bytes, float, float]:
-            wm_page = wm_doc_obj[p_idx]
-            wm_pix = wm_page.get_pixmap(dpi=200, alpha=True)
-            pil_img = Image.frombytes("RGBA", (wm_pix.width, wm_pix.height), wm_pix.samples)
+        print(
+            f"[DEBUG][Watermark] Config: base_opacity={base_opacity_pct}%, "
+            f"stamp_opacity={stamp_opacity_pct}%, over={over}, transparent_white={transparent_white}"
+        )
+
+        def _render_rgba_png(doc_obj: fitz.Document, p_idx: int, opacity_f: float, strip_white: bool) -> tuple[bytes, float, float]:
+            pg = doc_obj[p_idx]
+            pix = pg.get_pixmap(dpi=200, alpha=True)
+            pil_img = Image.frombytes("RGBA", (pix.width, pix.height), pix.samples)
             r_ch, g_ch, b_ch, a_ch = pil_img.split()
-            if transparent_white:
+            if strip_white:
                 min_rgb = ImageChops.darker(ImageChops.darker(r_ch, g_ch), b_ch)
                 non_white_mask = min_rgb.point(lambda v: 0 if v >= 242 else 255)
                 a_ch = ImageChops.darker(a_ch, non_white_mask)
-            if opacity_float < 0.999:
-                a_ch = a_ch.point(lambda a: int(round(a * opacity_float)))
+            if opacity_f < 0.999:
+                a_ch = a_ch.point(lambda a: int(round(a * opacity_f)))
             pil_img.putalpha(a_ch)
             buf = io.BytesIO()
             pil_img.save(buf, format="PNG")
-            return buf.getvalue(), float(wm_pix.width), float(wm_pix.height)
+            return buf.getvalue(), float(pix.width), float(pix.height)
+
+        def _render_blended_white_png(doc_obj: fitz.Document, p_idx: int, opacity_f: float) -> bytes:
+            pg = doc_obj[p_idx]
+            pix = pg.get_pixmap(dpi=200, alpha=False)
+            rgb_img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            white_bg = Image.new("RGB", rgb_img.size, (255, 255, 255))
+            blended = Image.blend(white_bg, rgb_img, opacity_f)
+            buf = io.BytesIO()
+            blended.save(buf, format="PNG")
+            return buf.getvalue()
+
+        def _fit_rect(pr: fitz.Rect, ww: float, wh: float) -> fitz.Rect:
+            scale = min(pr.width / max(1.0, ww), pr.height / max(1.0, wh))
+            fw, fh = ww * scale, wh * scale
+            fx = pr.x0 + (pr.width - fw) / 2.0
+            fy = pr.y0 + (pr.height - fh) / 2.0
+            return fitz.Rect(fx, fy, fx + fw, fy + fh)
+
+        def _compose_page(out_doc: fitz.Document, src_doc: fitz.Document, b_idx: int, wm_doc_obj: fitz.Document, wm_idx: int, wm_cache: dict, base_cache: dict) -> None:
+            src_page = src_doc[b_idx]
+            pr = src_page.rect
+            new_pg = out_doc.new_page(width=pr.width, height=pr.height)
+
+            if wm_idx not in wm_cache:
+                wm_cache[wm_idx] = _render_rgba_png(wm_doc_obj, wm_idx, stamp_opacity, transparent_white)
+            wm_png, ww, wh = wm_cache[wm_idx]
+            wm_rect = _fit_rect(new_pg.rect, ww, wh)
+
+            if base_opacity >= 0.999:
+                new_pg.show_pdf_page(new_pg.rect, src_doc, b_idx)
+                new_pg.insert_image(wm_rect, stream=wm_png, overlay=over)
+            else:
+                if over:
+                    if b_idx not in base_cache:
+                        base_cache[b_idx] = _render_blended_white_png(src_doc, b_idx, base_opacity)
+                    new_pg.insert_image(new_pg.rect, stream=base_cache[b_idx], overlay=True)
+                    new_pg.insert_image(wm_rect, stream=wm_png, overlay=True)
+                else:
+                    if b_idx not in base_cache:
+                        base_cache[b_idx] = _render_rgba_png(src_doc, b_idx, base_opacity, transparent_white)[0]
+                    new_pg.insert_image(wm_rect, stream=wm_png, overlay=True)
+                    new_pg.insert_image(new_pg.rect, stream=base_cache[b_idx], overlay=True)
 
         def do_work(worker):
             wm_d = fitz.open(wm_path)
             src_d = fitz.open(pdf_path)
-            out_d = None
+            out_d = fitz.open()
             try:
                 if wm_d.needs_pass:
                     if not (wm_pwd and authenticate_fitz(wm_d, wm_pwd) is not None):
@@ -292,31 +357,16 @@ class TabMarcaDagua(BasePage):
                     if not (pwd and authenticate_fitz(src_d, pwd) is not None):
                         raise WrongPasswordError(t("tool.err.wrong_password"))
 
-                rendered_cache: dict[int, tuple[bytes, float, float]] = {}
-
-                def get_wm_cached(idx_to_render: int) -> tuple[bytes, float, float]:
-                    if idx_to_render not in rendered_cache:
-                        rendered_cache[idx_to_render] = _render_wm_png(wm_d, idx_to_render)
-                    return rendered_cache[idx_to_render]
+                wm_cache: dict[int, tuple[bytes, float, float]] = {}
+                base_cache: dict[int, bytes] = {}
 
                 if expanding_base:
-                    # Auto-duplicate base background page(s) to match all targeted pages of PDF A
-                    out_d = fitz.open()
                     total_steps = max(1, len(targets))
                     for step_idx, wm_idx in enumerate(targets):
                         if worker.is_cancelled():
                             return None
                         b_src_idx = step_idx % src_d.page_count
-                        out_d.insert_pdf(src_d, from_page=b_src_idx, to_page=b_src_idx)
-                        page_b = out_d[step_idx]
-                        png_bytes, ww, wh = get_wm_cached(wm_idx)
-                        pr = page_b.rect
-                        scale = min(pr.width / max(1.0, ww), pr.height / max(1.0, wh))
-                        fw, fh = ww * scale, wh * scale
-                        fx = pr.x0 + (pr.width - fw) / 2.0
-                        fy = pr.y0 + (pr.height - fh) / 2.0
-                        target_rect = fitz.Rect(fx, fy, fx + fw, fy + fh)
-                        page_b.insert_image(target_rect, stream=png_bytes, overlay=over)
+                        _compose_page(out_d, src_d, b_src_idx, wm_d, wm_idx, wm_cache, base_cache)
                         print(
                             f"[DEBUG][Watermark] Auto-duplicated base page {b_src_idx + 1} -> out page {step_idx + 1} "
                             f"& stamped PDF A page {wm_idx + 1}"
@@ -325,7 +375,6 @@ class TabMarcaDagua(BasePage):
                             int((step_idx + 1) / total_steps * 100),
                             t("progress.watermark.page", current=step_idx + 1, total=total_steps),
                         )
-                    target_save_doc = out_d
                 else:
                     n = src_d.page_count
                     for i in range(n):
@@ -333,21 +382,14 @@ class TabMarcaDagua(BasePage):
                             return None
                         if i in target_set:
                             wm_idx = (i % wm_total) if match_pages else single_wm_idx
-                            png_bytes, ww, wh = get_wm_cached(wm_idx)
-                            page_b = src_d[i]
-                            pr = page_b.rect
-                            scale = min(pr.width / max(1.0, ww), pr.height / max(1.0, wh))
-                            fw, fh = ww * scale, wh * scale
-                            fx = pr.x0 + (pr.width - fw) / 2.0
-                            fy = pr.y0 + (pr.height - fh) / 2.0
-                            target_rect = fitz.Rect(fx, fy, fx + fw, fy + fh)
-                            page_b.insert_image(target_rect, stream=png_bytes, overlay=over)
+                            _compose_page(out_d, src_d, i, wm_d, wm_idx, wm_cache, base_cache)
                             print(f"[DEBUG][Watermark] Stamped PDF A page {wm_idx + 1} onto PDF B page {i + 1}/{n}")
+                        else:
+                            out_d.insert_pdf(src_d, from_page=i, to_page=i)
                         worker.progress.emit(
                             int((i + 1) / max(1, n) * 100),
                             t("progress.watermark.page", current=i + 1, total=n),
                         )
-                    target_save_doc = src_d
 
                 if worker.is_cancelled():
                     return None
@@ -365,7 +407,7 @@ class TabMarcaDagua(BasePage):
                     viewer._thumbnails._stop_all_workers()
 
                 atomic_pdf_write(
-                    target_save_doc,
+                    out_d,
                     out_path,
                     sources=[pdf_path, wm_path],
                     save_opts={"garbage": 4, "deflate": True},
@@ -376,12 +418,10 @@ class TabMarcaDagua(BasePage):
                 with contextlib.suppress(Exception):
                     wm_d.close()
                 with contextlib.suppress(Exception):
-                    if not getattr(src_d, "is_closed", False):
-                        src_d.close()
-                if out_d is not None:
-                    with contextlib.suppress(Exception):
-                        if not getattr(out_d, "is_closed", False):
-                            out_d.close()
+                    src_d.close()
+                with contextlib.suppress(Exception):
+                    if not getattr(out_d, "is_closed", False):
+                        out_d.close()
             return out_path
 
         def on_done(saved):

@@ -1,5 +1,5 @@
 # app/viewer/thumbnail_panel.py
-"""Thumbnail panel container widget with Foxit-style actions, responsive multi-column layout, and worker orchestration."""
+"""Thumbnail panel container widget with Foxit-style actions, responsive multi-column layout, SVG icons, and worker orchestration."""
 
 from __future__ import annotations
 
@@ -29,10 +29,39 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-import qtawesome as qta
 
 from app.constants import TEXT_PRI, _LQ
 from app.i18n import _CONFIG_PATH, _update_config
+from app.utils import (
+    SVG_ARROWS_H,
+    SVG_CLONE,
+    SVG_COPY,
+    SVG_CROP,
+    SVG_CUT,
+    SVG_EXCHANGE,
+    SVG_EXPAND,
+    SVG_FILE,
+    SVG_FILE_EXPORT,
+    SVG_FILE_PLUS,
+    SVG_FOLDER,
+    SVG_INFO,
+    SVG_LIST_OL,
+    SVG_MOVE,
+    SVG_PASTE,
+    SVG_PRINT,
+    SVG_ROTATE_LEFT,
+    SVG_ROTATE_RIGHT,
+    SVG_SORT,
+    SVG_SWAP,
+    SVG_SYNC,
+    SVG_TH,
+    SVG_TH_LARGE,
+    SVG_TRASH,
+    SVG_TV,
+    SVG_ZOOM_IN,
+    SVG_ZOOM_OUT,
+    svg_icon,
+)
 from app.viewer.thumbnail_model import ThumbnailDelegate, ThumbnailModel
 from app.viewer.thumbnail_view import _ThumbnailListView
 from app.viewer.thumbnail_worker import (
@@ -184,13 +213,15 @@ class ThumbnailPanel(QWidget):
         self._delegate.set_cell_width(cell_w)
         self._view.setGridSize(QSize(cell_w, cell_h))
 
-    # ── Context Menu (Single-Column Scrollable Pane) ───────────────
+    # ── Context Menu (Single-Column Scrollable Pane with SVGs) ────
 
     def _show_context_menu(
         self, global_pos: QPoint, selected_pages: list[int]
     ) -> None:
         if self._model.rowCount() <= 0:
             return
+
+        from app.viewer.panel_page_ops import has_cut_pages
 
         dark = self._delegate._dark
         icon_color = TEXT_PRI if dark else _LQ
@@ -202,129 +233,136 @@ class ThumbnailPanel(QWidget):
         menu.setStyle(self._menu_style)
         menu.setStyleSheet("QMenu { menu-scrollable: 1; }")
 
-        # 1. Clipboard
+        # 1. Page & Text Clipboard
+        act_cut = menu.addAction(
+            svg_icon(SVG_CUT, color=icon_color, size=15), f"Cut Pages{suffix}\tCtrl+X"
+        )
+        act_paste_pages = menu.addAction(
+            svg_icon(SVG_PASTE, color=icon_color, size=15), "Paste Pages\tCtrl+V"
+        )
+        act_paste_pages.setEnabled(has_cut_pages())
         act_copy = menu.addAction(
-            qta.icon("fa5s.copy", color=icon_color), f"Copy{suffix}"
+            svg_icon(SVG_COPY, color=icon_color, size=15), f"Copy Text{suffix}"
         )
         act_paste = menu.addAction(
-            qta.icon("fa5s.paste", color=icon_color), "Paste"
+            svg_icon(SVG_PASTE, color=icon_color, size=15), "Paste Text"
         )
         menu.addSeparator()
 
         # 2. Thumbnail Zoom and Fitting
         act_enlarge = menu.addAction(
-            qta.icon("fa5s.search-plus", color=icon_color),
+            svg_icon(SVG_ZOOM_IN, color=icon_color, size=15),
             "Enlarge Page Thumbnails",
         )
         act_reduce = menu.addAction(
-            qta.icon("fa5s.search-minus", color=icon_color),
+            svg_icon(SVG_ZOOM_OUT, color=icon_color, size=15),
             "Reduce Page Thumbnails",
         )
         act_fit_window = menu.addAction(
-            qta.icon("fa5s.arrows-alt-h", color=icon_color),
+            svg_icon(SVG_ARROWS_H, color=icon_color, size=15),
             "Fit Window to Thumbnails",
         )
         act_fit_width = menu.addAction(
-            qta.icon("fa5s.expand-arrows-alt", color=icon_color),
+            svg_icon(SVG_EXPAND, color=icon_color, size=15),
             "Fit Thumbnails to Window Width",
         )
         menu.addSeparator()
 
         # 3. Embed actions
         act_embed = menu.addAction(
-            qta.icon("fa5s.th-large", color=icon_color),
+            svg_icon(SVG_TH_LARGE, color=icon_color, size=15),
             "Embed All Page Thumbnails",
         )
         act_rem_embed = menu.addAction(
-            qta.icon("fa5s.th", color=icon_color),
+            svg_icon(SVG_TH, color=icon_color, size=15),
             "Remove Embedded Page Thumbnails",
         )
         menu.addSeparator()
 
         # 4. Insert submenu
         insert_menu = menu.addMenu(
-            qta.icon("fa5s.file-medical", color=icon_color), "Insert Pages..."
+            svg_icon(SVG_FILE_PLUS, color=icon_color, size=15), "Insert Pages..."
         )
         act_ins_blank = insert_menu.addAction(
-            qta.icon("fa5s.file", color=icon_color), "Blank Page..."
+            svg_icon(SVG_FILE, color=icon_color, size=15), "Blank Page..."
         )
         act_ins_file = insert_menu.addAction(
-            qta.icon("fa5s.folder-open", color=icon_color), "From File..."
+            svg_icon(SVG_FOLDER, color=icon_color, size=15), "From File..."
         )
 
         # 5. Core Page Manipulations
         act_delete = menu.addAction(
-            qta.icon("fa5s.trash-alt", color="#EF4444"),
+            svg_icon(SVG_TRASH, color="#EF4444", size=15),
             f"Delete Pages{suffix}...\tDel",
         )
         act_extract = menu.addAction(
-            qta.icon("fa5s.file-export", color=icon_color),
+            svg_icon(SVG_FILE_EXPORT, color=icon_color, size=15),
             f"Extract Pages{suffix}...",
         )
         act_reverse = menu.addAction(
-            qta.icon("fa5s.sort-numeric-down-alt", color=icon_color),
+            svg_icon(SVG_SORT, color=icon_color, size=15),
             f"Reverse Pages{suffix}...",
         )
         act_replace = menu.addAction(
-            qta.icon("fa5s.exchange-alt", color=icon_color), "Replace Pages..."
+            svg_icon(SVG_EXCHANGE, color=icon_color, size=15), "Replace Pages..."
         )
         act_swap = menu.addAction(
-            qta.icon("fa5s.random", color=icon_color), "Swap Pages..."
+            svg_icon(SVG_SWAP, color=icon_color, size=15), "Swap Pages..."
         )
         act_duplicate = menu.addAction(
-            qta.icon("fa5s.clone", color=icon_color),
-            f"Duplicate Pages{suffix}...",
+            svg_icon(SVG_CLONE, color=icon_color, size=15),
+            f"Duplicate Pages{suffix}\tCtrl+D",
         )
         act_move = menu.addAction(
-            qta.icon("fa5s.arrows-alt", color=icon_color),
+            svg_icon(SVG_MOVE, color=icon_color, size=15),
             f"Move Pages{suffix}...",
         )
         act_split = menu.addAction(
-            qta.icon("fa5s.cut", color=icon_color), "Split Document..."
+            svg_icon(SVG_CUT, color=icon_color, size=15), "Split Document..."
         )
         menu.addSeparator()
 
         # 6. Page Geometry
         act_crop = menu.addAction(
-            qta.icon("fa5s.crop-alt", color=icon_color), f"Crop Pages{suffix}..."
+            svg_icon(SVG_CROP, color=icon_color, size=15), f"Crop Pages{suffix}..."
         )
         act_resize = menu.addAction(
-            qta.icon("fa5s.expand-arrows-alt", color=icon_color),
+            svg_icon(SVG_EXPAND, color=icon_color, size=15),
             f"Resize pages{suffix}...",
         )
 
         rotate_menu = menu.addMenu(
-            qta.icon("fa5s.sync-alt", color=icon_color), f"Rotate Pages{suffix}..."
+            svg_icon(SVG_SYNC, color=icon_color, size=15), f"Rotate Pages{suffix}..."
         )
         act_rot_right = rotate_menu.addAction(
-            qta.icon("fa5s.redo", color=icon_color),
+            svg_icon(SVG_ROTATE_RIGHT, color=icon_color, size=15),
             "Rotate Right (90° Clockwise)\tCtrl+Right",
         )
         act_rot_left = rotate_menu.addAction(
-            qta.icon("fa5s.undo", color=icon_color),
+            svg_icon(SVG_ROTATE_LEFT, color=icon_color, size=15),
             "Rotate Left (90° Counter-Clockwise)\tCtrl+Left",
         )
         act_rot_180 = rotate_menu.addAction(
-            qta.icon("fa5s.sync-alt", color=icon_color), "Rotate 180°"
+            svg_icon(SVG_SYNC, color=icon_color, size=15), "Rotate 180°"
         )
         menu.addSeparator()
 
         # 7. Navigation & Numbering
         act_transitions = menu.addAction(
-            qta.icon("fa5s.tv", color=icon_color), "Page Transitions..."
+            svg_icon(SVG_TV, color=icon_color, size=15), "Page Transitions..."
         )
         act_page_nums = menu.addAction(
-            qta.icon("fa5s.list-ol", color=icon_color),
+            svg_icon(SVG_LIST_OL, color=icon_color, size=15),
             f"Format Page Numbers{suffix}...",
         )
         menu.addSeparator()
 
         # 8. Print & Properties
         act_print = menu.addAction(
-            qta.icon("fa5s.print", color=icon_color), f"Print Pages{suffix}..."
+            svg_icon(SVG_PRINT, color=icon_color, size=15), f"Print Pages{suffix}..."
         )
         act_props = menu.addAction(
-            qta.icon("fa5s.info-circle", color=icon_color), "Properties..."
+            svg_icon(SVG_INFO, color=icon_color, size=15), "Properties..."
         )
 
         selected_action = menu.exec(global_pos)
@@ -332,7 +370,11 @@ class ThumbnailPanel(QWidget):
             return
 
         # Action Router
-        if selected_action == act_copy:
+        if selected_action == act_cut:
+            self.action_requested.emit("cut", selected_pages)
+        elif selected_action == act_paste_pages:
+            self.action_requested.emit("paste_pages", selected_pages)
+        elif selected_action == act_copy:
             self.action_requested.emit("copy", selected_pages)
         elif selected_action == act_paste:
             self.action_requested.emit("paste", selected_pages)
@@ -814,3 +856,4 @@ class ThumbnailPanel(QWidget):
     def closeEvent(self, event):
         self._stop_all_workers()
         super().closeEvent(event)
+

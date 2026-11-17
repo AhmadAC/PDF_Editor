@@ -7,13 +7,15 @@ from PySide6.QtCore import Signal, Qt, QSize
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QColor
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QLabel, QPushButton, QFileDialog, QColorDialog,
-    QMessageBox, QSpinBox, QComboBox,
+    QMessageBox, QSpinBox, QComboBox, QSizePolicy,
 )
-import qtawesome as qta
 
 from app.constants import ACCENT, DESKTOP, TEXT_SEC, _LQ
 from app.i18n import t
-from app.utils import error_color, is_dark
+from app.utils import (
+    error_color, is_dark, svg_icon,
+    SVG_UPLOAD, SVG_FILE_PDF, SVG_CLOSE, SVG_FOLDER,
+)
 
 
 def _muted_icon_color(dark: bool | None = None) -> str:
@@ -23,10 +25,10 @@ def _muted_icon_color(dark: bool | None = None) -> str:
     return TEXT_SEC if dark else _LQ
 
 
-def _drop_icon(icon_name: str, color: str) -> QPushButton:
-    """Create a small flat icon button for drop zones."""
+def _drop_icon(svg_xml: str, color: str) -> QPushButton:
+    """Create a small flat SVG icon button for drop zones."""
     b = QPushButton()
-    b.setIcon(qta.icon(icon_name, color=color))
+    b.setIcon(svg_icon(svg_xml, color=color, size=18))
     b.setIconSize(QSize(18, 18))
     b.setFixedSize(26, 26)
     b.setObjectName("drop_icon")
@@ -67,7 +69,7 @@ class FocusComboBox(QComboBox):
 
 
 class DropFileEdit(QWidget):
-    """File field with drag & drop, status icon and clear button."""
+    """File field with drag & drop, SVG status icon and clear button."""
 
     path_changed = Signal(str)
 
@@ -80,35 +82,41 @@ class DropFileEdit(QWidget):
         self._save         = save
         self._default      = default_name
         self._path_value   = ""
+        self._display_name = ""
         self._placeholder  = placeholder or t("widget.drop_hint")
         self.setAcceptDrops(True)
         self.setObjectName("drop_zone")
 
         h = QHBoxLayout(self)
-        h.setContentsMargins(14, 10, 10, 10)
-        h.setSpacing(10)
+        h.setContentsMargins(12, 8, 10, 8)
+        h.setSpacing(8)
 
         muted = _muted_icon_color()
-        self._ico = _drop_icon('fa5s.cloud-upload-alt', muted)
+        self._ico = _drop_icon(SVG_UPLOAD, muted)
         h.addWidget(self._ico)
 
-        self._lbl = QLabel(placeholder)
+        self._lbl = QLabel(self._placeholder)
         self._lbl.setObjectName("drop_zone_lbl")
         self._lbl.setWordWrap(True)
         self._lbl.setMinimumWidth(0)
+        self._lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         h.addWidget(self._lbl, 1)
         self.setMinimumWidth(0)
 
         self._clr = QPushButton()
-        self._clr.setIcon(qta.icon('fa5s.times', color=muted))
+        self._clr.setIcon(svg_icon(SVG_CLOSE, color=muted, size=14))
+        self._clr.setIconSize(QSize(14, 14))
         self._clr.setObjectName("drop_clear")
         self._clr.setFixedSize(24, 24)
+        self._clr.setCursor(Qt.CursorShape.PointingHandCursor)
         self._clr.setVisible(False)
         self._clr.clicked.connect(self.clear)
         h.addWidget(self._clr)
 
         self.btn = QPushButton(t("widget.save_as") if save else t("widget.open"))
-        self.btn.setFixedWidth(140 if save else 110)
+        self.btn.setMinimumWidth(78)
+        self.btn.setMaximumWidth(120 if save else 96)
+        self.btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn.clicked.connect(self._browse)
         h.addWidget(self.btn)
 
@@ -116,23 +124,24 @@ class DropFileEdit(QWidget):
     def path(self) -> str:
         return self._path_value
 
-    def set_path(self, p: str):
+    def set_path(self, p: str, display_name: str = ""):
         if p:
             p = os.path.abspath(os.path.normpath(p))
         self._path_value = p
-        name = os.path.basename(p) if p else ""
-        self._lbl.setText(f"  {name}" if name else self._placeholder)
+        name = display_name or (os.path.basename(p) if p else "")
+        self._display_name = name
+        self._lbl.setText(name if name else self._placeholder)
         self.path_changed.emit(p)
         self._lbl.setToolTip(p)
         self._lbl.setProperty("has_file", "true" if p else "false")
         if p:
-            self._ico.setIcon(qta.icon('fa5s.file-pdf', color=ACCENT))
+            self._ico.setIcon(svg_icon(SVG_FILE_PDF, color=ACCENT, size=18))
             self._ico.setProperty("has_file", "true")
-            self._clr.setIcon(qta.icon('fa5s.times', color=error_color()))
+            self._clr.setIcon(svg_icon(SVG_CLOSE, color=error_color(), size=14))
             self._clr.setVisible(True)
         else:
             muted = _muted_icon_color()
-            self._ico.setIcon(qta.icon('fa5s.cloud-upload-alt', color=muted))
+            self._ico.setIcon(svg_icon(SVG_UPLOAD, color=muted, size=18))
             self._ico.setProperty("has_file", "false")
             self._clr.setVisible(False)
         for w in (self._lbl, self._ico):
@@ -140,24 +149,26 @@ class DropFileEdit(QWidget):
 
     def clear(self):
         self._path_value = ""
+        self._display_name = ""
         muted = _muted_icon_color()
         self._lbl.setText(self._placeholder)
         self._lbl.setToolTip("")
         self._lbl.setProperty("has_file", "false")
-        self._ico.setIcon(qta.icon('fa5s.cloud-upload-alt', color=muted))
+        self._ico.setIcon(svg_icon(SVG_UPLOAD, color=muted, size=18))
         self._ico.setProperty("has_file", "false")
-        self._clr.setIcon(qta.icon('fa5s.times', color=muted))
+        self._clr.setIcon(svg_icon(SVG_CLOSE, color=muted, size=14))
         self._clr.setVisible(False)
         for w in (self._lbl, self._ico):
             w.style().unpolish(w); w.style().polish(w)
+        self.path_changed.emit("")
 
     def update_theme(self, dark: bool) -> None:
         if self._path_value:
-            self._clr.setIcon(qta.icon('fa5s.times', color=error_color()))
+            self._clr.setIcon(svg_icon(SVG_CLOSE, color=error_color(), size=14))
             return
         muted = _muted_icon_color(dark)
-        self._ico.setIcon(qta.icon('fa5s.cloud-upload-alt', color=muted))
-        self._clr.setIcon(qta.icon('fa5s.times', color=muted))
+        self._ico.setIcon(svg_icon(SVG_UPLOAD, color=muted, size=18))
+        self._clr.setIcon(svg_icon(SVG_CLOSE, color=muted, size=14))
 
     # ── drag & drop ──────────────────────────────────────────────────────────
     @staticmethod
@@ -222,7 +233,7 @@ class MultiDropWidget(QWidget):
         h = QHBoxLayout(self)
         h.setContentsMargins(14, 10, 10, 10)
         h.setSpacing(10)
-        self._ico = _drop_icon('fa5s.folder-open', _muted_icon_color())
+        self._ico = _drop_icon(SVG_FOLDER, _muted_icon_color())
         h.addWidget(self._ico)
         self._lbl = QLabel(t("widget.drop_multi"))
         self._lbl.setObjectName("drop_zone_lbl")
@@ -253,8 +264,7 @@ class MultiDropWidget(QWidget):
             self._cb(paths)
 
     def update_theme(self, dark: bool) -> None:
-        self._ico.setIcon(qta.icon('fa5s.folder-open',
-                                   color=_muted_icon_color(dark)))
+        self._ico.setIcon(svg_icon(SVG_FOLDER, color=_muted_icon_color(dark), size=18))
 
 
 class ColorPickerButton(QPushButton):

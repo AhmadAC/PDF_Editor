@@ -7,7 +7,7 @@ import tempfile
 import shutil
 from typing import Iterable
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QSize, QTimer, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QPushButton, QLabel, QSizePolicy
 )
@@ -16,8 +16,11 @@ from shiboken6 import isValid
 from app import pdf_io
 from app.constants import DESKTOP, ACCENT
 from app.i18n import t
-from app.utils import (ToolHeader, ActionBar, scrolled, _paint_bg,
-                       WrongPasswordError, reveal_file, open_folder, is_dark)
+from app.utils import (
+    ToolHeader, ActionBar, scrolled, _paint_bg,
+    WrongPasswordError, reveal_file, open_folder, is_dark,
+    svg_icon, svg_pixmap, SVG_ARROW_LEFT, SVG_CHECK, SVG_CLOSE,
+)
 
 # Backward-compatibility aliases
 _reveal_file = reveal_file
@@ -57,13 +60,16 @@ class BasePage(QWidget):
         inner_layout.addWidget(self._header)
 
         form_container = QWidget()
+        form_container.setMinimumWidth(0)
         self._form = QVBoxLayout(form_container)
-        self._form.setContentsMargins(24, 16, 24, 20)
+        self._form.setContentsMargins(20, 14, 20, 18)
         self._form.setSpacing(10)
         inner_layout.addWidget(form_container, 1)
 
         scroll_area = scrolled(self._inner)
         scroll_area.setMinimumWidth(0)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll_area = scroll_area
         self._page_layout.addWidget(scroll_area, 1)
         self.setMinimumWidth(0)
 
@@ -155,7 +161,9 @@ class BasePage(QWidget):
                 pass
 
         if active and self._compact_link is None:
-            link = QPushButton("← " + t("compact.change_source"))
+            link = QPushButton(t("compact.change_source"))
+            link.setIcon(svg_icon(SVG_ARROW_LEFT, color=ACCENT, size=14))
+            link.setIconSize(QSize(14, 14))
             link.setObjectName("compact_link")
             link.setFlat(True)
             link.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -203,8 +211,8 @@ class BasePage(QWidget):
             f"#toast QLabel {{ color: {txt_col}; font-size: 9.5pt; font-weight: 500; "
             f"background: transparent; border: none; }}"
             f"#toast QPushButton#toast_close {{ color: {sec_btn_fg}; border: none; "
-            f"background: transparent; font-size: 11pt; font-weight: bold; padding: 0; border-radius: 4px; }}"
-            f"#toast QPushButton#toast_close:hover {{ background: {sec_btn_hover}; color: #FFFFFF; }}"
+            f"background: transparent; padding: 0; border-radius: 4px; }}"
+            f"#toast QPushButton#toast_close:hover {{ background: {sec_btn_hover}; }}"
             f"#toast QPushButton#toast_action {{ color: {sec_btn_fg}; background: {sec_btn_bg}; "
             f"border: 1px solid {brd_col}; border-radius: 5px; font-size: 9pt; padding: 3px 10px; }}"
             f"#toast QPushButton#toast_action:hover {{ background: {sec_btn_hover}; }}"
@@ -228,14 +236,22 @@ class BasePage(QWidget):
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(8)
 
-        lbl_msg = QLabel(f"✔  {display_msg}")
+        ico_lbl = QLabel()
+        dpr = self.devicePixelRatioF() if hasattr(self, "devicePixelRatioF") else 1.0
+        ico_lbl.setPixmap(svg_pixmap(SVG_CHECK, color=brd_col, size=16, dpr=dpr))
+        ico_lbl.setFixedSize(16, 16)
+        top_row.addWidget(ico_lbl, 0, Qt.AlignmentFlag.AlignTop)
+
+        lbl_msg = QLabel(display_msg)
         lbl_msg.setWordWrap(True)
         lbl_msg.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         if file_path:
             lbl_msg.setToolTip(file_path)
         top_row.addWidget(lbl_msg, 1)
 
-        btn_close = QPushButton("×")
+        btn_close = QPushButton()
+        btn_close.setIcon(svg_icon(SVG_CLOSE, color=sec_btn_fg, size=12))
+        btn_close.setIconSize(QSize(12, 12))
         btn_close.setObjectName("toast_close")
         btn_close.setFixedSize(20, 20)
         btn_close.setCursor(Qt.CursorShape.PointingHandCursor)

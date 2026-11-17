@@ -1,9 +1,11 @@
 # app/viewer/panel_page_ops.py
-"""PDF_Editor – Multi-page operations, drag/drop reordering, and thumbnail action handlers."""
+"""PDF_Editor – Multi-page operations, page clipboard (cut/paste/duplicate), drag/drop reordering, and thumbnail action handlers."""
 from __future__ import annotations
 
+import contextlib
 import os
 import re
+import tempfile
 from typing import TYPE_CHECKING, Any
 
 import fitz
@@ -41,6 +43,41 @@ if TYPE_CHECKING:
 else:
     _Base = object
 
+# Shared cross-tab clipboard for cut PDF pages
+_PAGE_CLIPBOARD: dict[str, Any] = {
+    "temp_pdf": "",
+    "count": 0,
+    "source_name": "",
+}
+_CLEANUP_HOOK_INSTALLED = False
+
+
+def has_cut_pages() -> bool:
+    """Return True if the page clipboard currently holds cut PDF pages."""
+    p = _PAGE_CLIPBOARD.get("temp_pdf", "")
+    return bool(p and os.path.isfile(p) and _PAGE_CLIPBOARD.get("count", 0) > 0)
+
+
+def cleanup_page_clipboard() -> None:
+    """Delete any temporary PDF file stored in the shared page clipboard."""
+    p = _PAGE_CLIPBOARD.get("temp_pdf", "")
+    if p and os.path.isfile(p):
+        with contextlib.suppress(Exception):
+            os.unlink(p)
+    _PAGE_CLIPBOARD["temp_pdf"] = ""
+    _PAGE_CLIPBOARD["count"] = 0
+    _PAGE_CLIPBOARD["source_name"] = ""
+
+
+def _ensure_clipboard_cleanup_hook() -> None:
+    global _CLEANUP_HOOK_INSTALLED
+    if _CLEANUP_HOOK_INSTALLED:
+        return
+    app = QApplication.instance()
+    if app is not None:
+        app.aboutToQuit.connect(cleanup_page_clipboard)
+        _CLEANUP_HOOK_INSTALLED = True
+
 
 class _PageTransitionsDialog(QDialog):
     """Dialog to configure presentation page transitions and auto-advance timing."""
@@ -55,7 +92,6 @@ class _PageTransitionsDialog(QDialog):
         layout.setContentsMargins(18, 18, 18, 16)
         layout.setSpacing(12)
 
-        # ── Group 1: Transition Effect ──
         grp_effect = QGroupBox("Transition Effect")
         form_effect = QFormLayout(grp_effect)
         form_effect.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -109,7 +145,6 @@ class _PageTransitionsDialog(QDialog):
 
         layout.addWidget(grp_effect)
 
-        # ── Group 2: Auto-Advance / Timing ──
         grp_timing = QGroupBox("Auto-Advance & Duration")
         form_timing = QFormLayout(grp_timing)
         form_timing.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -126,7 +161,6 @@ class _PageTransitionsDialog(QDialog):
         form_timing.addRow(self.chk_auto_advance, self.spin_advance_seconds)
         layout.addWidget(grp_timing)
 
-        # ── Group 3: Page Range ──
         grp_range = QGroupBox("Page Range")
         v_range = QVBoxLayout(grp_range)
         v_range.setSpacing(6)
@@ -154,7 +188,6 @@ class _PageTransitionsDialog(QDialog):
         )
         layout.addWidget(grp_range)
 
-        # ── Buttons ──
         btn_box = QHBoxLayout()
         btn_box.setSpacing(8)
         btn_box.addStretch()
@@ -222,7 +255,7 @@ class _PageTransitionsDialog(QDialog):
 
 
 class PanelPageOpsMixin(_Base):
-    """Mixin for page modification, reordering, extraction, and insertion."""
+    """Mixin for page modification, clipboard cut/paste, duplicate, reordering, extraction, and insertion."""
 
     if TYPE_CHECKING:
         _current_path: str
@@ -312,13 +345,17 @@ class PanelPageOpsMixin(_Base):
             pages = [0]
 
         if not pages:
-            return
+            pages = [0]
 
         if action in ("rotate_right", "rotate_left", "rotate_180"):
             delta = 90 if action == "rotate_right" else (270 if action == "rotate_left" else 180)
             self._rotate_pages(pages, delta)
         elif action == "delete":
             self._delete_pages(pages)
+        elif action == "cut":
+            self._cut_pages(pages)
+        elif action == "paste_pages":
+            self._paste_pages(pages)
         elif action == "extract":
             self._extract_pages(pages)
         elif action == "insert_blank":
@@ -467,7 +504,7 @@ class PanelPageOpsMixin(_Base):
             win: Any = self.window()
             if win and hasattr(win, "_set_status"):
                 desc = "removed" if effect == "None" else f"'{effect}'"
-                win._set_status(f"✔ Page transition {desc} applied to {len(target_pages)} page(s)")
+                win._set_status(f"Page transition {desc} applied to {len(target_pages)} page(s)")
         except Exception as exc:
             show_error(self, exc)
 
@@ -482,7 +519,7 @@ class PanelPageOpsMixin(_Base):
             self._save_and_reload(doc)
             win: Any = self.window()
             if win and hasattr(win, "_set_status"):
-                win._set_status("✔ Removed embedded page thumbnails")
+                win._set_status("Removed embedded page thumbnails")
             QMessageBox.information(self, t("msg.done"), "Removed all embedded page thumbnails.")
         except Exception as exc:
             show_error(self, exc)
@@ -528,19 +565,120 @@ class PanelPageOpsMixin(_Base):
             self._save_and_reload(doc, target_page=target, selected_pages=[target])
             win: Any = self.window()
             if win and hasattr(win, "_set_status"):
-                win._set_status(f"✔ Deleted {len(pages)} page(s) (Ctrl+Z to undo)")
+                win._set_status(f"Deleted {len(pages)} page(s) (Ctrl+Z to undo)")
+        except Exception as exc:
+            show_error(self, exc)
+
+    def _cut_pages(self, pages: list[int]) -> None:
+        """Cut selected pages into the shared page clipboard and remove them from this document."""
+        if not self._current_path or not os.path.isfile(self._current_path):
+            return
+        _ensure_clipboard_cleanup_hook()
+        try:
+            doc = fitz.open(self._current_path)
+            if self._pdf_password and doc.needs_pass:
+                doc.authenticate(self._pdf_password)
+
+            valid_pages = sorted({p for p in pages if 0 <= p < doc.page_count})
+            if not valid_pages:
+                doc.close()
+                return
+
+            if doc.page_count <= len(valid_pages):
+                doc.close()
+                QMessageBox.warning(
+                    self,
+                    t("msg.warning"),
+                    "Cannot cut all pages in the document. At least one page must remain.",
+                )
+                return
+
+            cut_doc = fitz.open()
+            for p_idx in valid_pages:
+                cut_doc.insert_pdf(doc, from_page=p_idx, to_page=p_idx)
+
+            fd, tmp_cut = tempfile.mkstemp(prefix="PDF_Editor_cut_", suffix=".pdf")
+            os.close(fd)
+            atomic_pdf_write(
+                cut_doc,
+                tmp_cut,
+                save_opts={"garbage": 4, "deflate": True},
+                close_writer=True,
+            )
+
+            cleanup_page_clipboard()
+            _PAGE_CLIPBOARD["temp_pdf"] = tmp_cut
+            _PAGE_CLIPBOARD["count"] = len(valid_pages)
+            _PAGE_CLIPBOARD["source_name"] = os.path.basename(
+                getattr(self, "_original_doc_path", "") or self._current_path
+            )
+
+            for p_idx in sorted(valid_pages, reverse=True):
+                doc.delete_page(p_idx)
+
+            target = min(valid_pages[0], doc.page_count - 1)
+            self._save_and_reload(doc, target_page=target, selected_pages=[target])
+            win: Any = self.window()
+            if win and hasattr(win, "_set_status"):
+                win._set_status(
+                    f"Cut {len(valid_pages)} page(s) — press Ctrl+V in any open PDF tab to paste (Ctrl+Z to undo)"
+                )
+        except Exception as exc:
+            show_error(self, exc)
+
+    def _paste_pages(self, pages: list[int]) -> None:
+        """Paste cut pages from the shared page clipboard after the selected/current page."""
+        if not self._current_path or not os.path.isfile(self._current_path):
+            return
+        if not has_cut_pages():
+            win: Any = self.window()
+            if win and hasattr(win, "_set_status"):
+                win._set_status("No cut pages in clipboard")
+            return
+
+        temp_pdf = _PAGE_CLIPBOARD["temp_pdf"]
+        try:
+            doc = fitz.open(self._current_path)
+            if self._pdf_password and doc.needs_pass:
+                doc.authenticate(self._pdf_password)
+            src = fitz.open(temp_pdf)
+            n_inserted = src.page_count
+            if n_inserted <= 0:
+                src.close()
+                doc.close()
+                return
+
+            valid_pages = [p for p in pages if 0 <= p < doc.page_count]
+            insert_at = min(doc.page_count, (max(valid_pages) + 1) if valid_pages else doc.page_count)
+            doc.insert_pdf(src, start_at=insert_at)
+            src.close()
+
+            new_selected = list(range(insert_at, insert_at + n_inserted))
+            self._save_and_reload(
+                doc,
+                target_page=insert_at,
+                selected_pages=new_selected,
+                scroll_to_target=True,
+            )
+            win = self.window()
+            if win and hasattr(win, "_set_status"):
+                win._set_status(
+                    f"Pasted {n_inserted} page(s) at page {insert_at + 1} (Ctrl+Z to undo, Ctrl+S to save)"
+                )
         except Exception as exc:
             show_error(self, exc)
 
     def _extract_pages(self, pages: list[int]) -> None:
-        base, ext = os.path.splitext(os.path.basename(self._current_path))
+        orig_name = getattr(self, "_original_doc_path", "") or self._current_path
+        base, ext = os.path.splitext(os.path.basename(orig_name))
+        save_dir = os.path.dirname(orig_name) or os.path.dirname(self._current_path)
         if len(pages) == 1:
-            default_name = f"{base}_page_{pages[0] + 1}{ext}"
+            default_name = f"{base}_page_{pages[0] + 1}{ext or '.pdf'}"
         else:
-            default_name = f"{base}_extracted_pages{ext}"
+            default_name = f"{base}_extracted_pages{ext or '.pdf'}"
         out_path, _ = QFileDialog.getSaveFileName(
             self, t("tool.extract.name"),
-            os.path.join(os.path.dirname(self._current_path), default_name),
+            os.path.join(save_dir, default_name),
             t("file_filter.pdf"),
         )
         if not out_path:
@@ -605,10 +743,20 @@ class PanelPageOpsMixin(_Base):
             doc = fitz.open(self._current_path)
             if self._pdf_password and doc.needs_pass:
                 doc.authenticate(self._pdf_password)
-            for p_idx in sorted(pages, reverse=True):
-                if 0 <= p_idx < doc.page_count:
-                    doc.insert_pdf(doc, from_page=p_idx, to_page=p_idx, start_at=p_idx + 1)
-            self._save_and_reload(doc, target_page=pages[0], selected_pages=pages)
+            new_doc = fitz.open()
+            pages_set = set(pages)
+            new_selected: list[int] = []
+            for p_idx in range(doc.page_count):
+                new_doc.insert_pdf(doc, from_page=p_idx, to_page=p_idx)
+                if p_idx in pages_set:
+                    new_doc.insert_pdf(doc, from_page=p_idx, to_page=p_idx)
+                    new_selected.append(new_doc.page_count - 1)
+            doc.close()
+            target_pg = new_selected[0] if new_selected else 0
+            self._save_and_reload(new_doc, target_page=target_pg, selected_pages=new_selected)
+            win: Any = self.window()
+            if win and hasattr(win, "_set_status"):
+                win._set_status(f"Duplicated {len(pages_set)} page(s) (Ctrl+Z to undo, Ctrl+S to save)")
         except Exception as exc:
             show_error(self, exc)
 
@@ -698,7 +846,7 @@ class PanelPageOpsMixin(_Base):
 
             win: Any = self.window()
             if win and hasattr(win, "_set_status"):
-                win._set_status(f"✔ Moved {len(pages)} page(s)")
+                win._set_status(f"Moved {len(pages)} page(s)")
         except Exception as exc:
             show_error(self, exc)
 
@@ -775,7 +923,7 @@ class PanelPageOpsMixin(_Base):
                 cb.setText(combined)
             win: Any = self.window()
             if win and hasattr(win, "_set_status"):
-                win._set_status(f"✔ Copied text from {len(texts)} page(s) to clipboard")
+                win._set_status(f"Copied text from {len(texts)} page(s) to clipboard")
 
     def _paste_page_content(self, page_idx: int) -> None:
         cb = QApplication.clipboard()
@@ -830,3 +978,4 @@ class PanelPageOpsMixin(_Base):
         win: Any = self.window()
         if win and hasattr(win, "_open_tool_by_name"):
             win._open_tool_by_name(t("nav.split"))
+

@@ -306,7 +306,6 @@ class ThumbnailListView(QListView):
     def paintEvent(self, event):
         super().paintEvent(event)
 
-        # Draw insertion line when hovering during drag
         m = self.model()
         if (
             self._drop_target_row >= 0
@@ -515,7 +514,24 @@ class ThumbnailListView(QListView):
                 return
 
         if modifiers & Qt.KeyboardModifier.ControlModifier:
-            if key == Qt.Key.Key_Left:
+            if key == Qt.Key.Key_D:
+                selected_pages = self._panel.selected_pages()
+                if selected_pages:
+                    self._panel.action_requested.emit("duplicate", selected_pages)
+                event.accept()
+                return
+            elif key == Qt.Key.Key_X:
+                selected_pages = self._panel.selected_pages()
+                if selected_pages:
+                    self._panel.action_requested.emit("cut", selected_pages)
+                event.accept()
+                return
+            elif key == Qt.Key.Key_V:
+                selected_pages = self._panel.selected_pages()
+                self._panel.action_requested.emit("paste_pages", selected_pages)
+                event.accept()
+                return
+            elif key == Qt.Key.Key_Left:
                 selected_pages = self._panel.selected_pages()
                 if selected_pages:
                     self._panel.action_requested.emit(
@@ -571,3 +587,4 @@ class ThumbnailListView(QListView):
 
 
 _ThumbnailListView = ThumbnailListView
+

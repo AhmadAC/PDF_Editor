@@ -9,7 +9,7 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QByteArray, QPoint, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QIcon, QMouseEvent, QPainter, QPixmap
+from PySide6.QtGui import QIcon, QKeyEvent, QMouseEvent, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication,
@@ -18,11 +18,20 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTabBar,
 )
-import qtawesome as qta
 
 from app.constants import ACCENT, TEXT_PRI, _LQ
 from app.i18n import add_recent_file, t
-from app.utils import reveal_file, show_error
+from app.utils import (
+    SVG_CLOSE,
+    SVG_COPY,
+    SVG_FOLDER,
+    SVG_PASTE,
+    SVG_SAVE,
+    SVG_TRASH,
+    reveal_file,
+    show_error,
+    svg_icon,
+)
 from app.viewer.panel import PdfViewerPanel
 from app.tools.import_pdf import convert_file_to_pdf
 from app.window_tab_file_ops import (
@@ -49,6 +58,8 @@ _TAB_CLOSE_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18">
 <path d="M5.75 5.75l6.5 6.5M12.25 5.75l-6.5 6.5" fill="none" stroke="{color}" stroke-width="1.5" stroke-linecap="round"/>
 </svg>"""
 
+_SVG_RENAME = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>"""
+
 
 def _render_close_svg_pixmap(color: str, size: int = 18, dpr: float = 1.0) -> QPixmap:
     svg_bytes = _TAB_CLOSE_SVG.format(color=color).encode("utf-8")
@@ -67,7 +78,7 @@ def _render_close_svg_pixmap(color: str, size: int = 18, dpr: float = 1.0) -> QP
 
 
 class _ViewerTabBar(QTabBar):
-    """Custom tab bar supporting middle-click to close, left-click on active tab to toggle thumbnails, and double-click to open."""
+    """Custom tab bar supporting middle-click to close, left-click on active tab to toggle thumbnails, Ctrl+V paste pages, and double-click to open."""
 
     active_tab_clicked = Signal()
 
@@ -110,6 +121,19 @@ class _ViewerTabBar(QTabBar):
             btn = self.tabButton(i, QTabBar.ButtonPosition.RightSide)
             if isinstance(btn, QPushButton):
                 self._update_close_btn_icon(btn, dark=dark)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if (event.modifiers() & Qt.KeyboardModifier.ControlModifier) and event.key() == Qt.Key.Key_V:
+            from app.viewer.panel_page_ops import has_cut_pages
+            if has_cut_pages():
+                win: Any = self.window()
+                viewer = getattr(win, "_viewer", None)
+                if viewer and viewer.current_path() and hasattr(viewer, "_paste_pages"):
+                    pages = viewer._thumbnails.selected_pages() if hasattr(viewer, "_thumbnails") else [0]
+                    viewer._paste_pages(pages)
+                    event.accept()
+                    return
+        super().keyPressEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
@@ -239,7 +263,6 @@ class WindowTabsMixin(_Base):
         if not (0 <= index < len(self._viewers)):
             return
         viewer = self._viewers[index]
-        print(f"[DEBUG][Tabs] Closing tab index={index}, path={viewer.current_path()!r}")
 
         if hasattr(self, "_viewer_has_unsaved") and self._viewer_has_unsaved(viewer):
             ans = QMessageBox.question(
@@ -365,17 +388,27 @@ class WindowTabsMixin(_Base):
         dark = getattr(self, "_dark_mode", True)
         icon_color = TEXT_PRI if dark else _LQ
 
+        from app.viewer.panel_page_ops import has_cut_pages
+
         menu = QMenu(self)
 
-        act_save_copy = menu.addAction(qta.icon("fa5s.save", color=ACCENT), "Save As Copy...")
+        act_paste_pages = None
+        if curr_path and os.path.exists(curr_path) and has_cut_pages():
+            act_paste_pages = menu.addAction(
+                svg_icon(SVG_PASTE, color=ACCENT, size=15),
+                "Paste Cut Pages Here\tCtrl+V",
+            )
+            menu.addSeparator()
+
+        act_save_copy = menu.addAction(svg_icon(SVG_SAVE, color=ACCENT, size=15), "Save As Copy...")
         act_save_copy.setEnabled(bool(curr_path and os.path.exists(curr_path)))
 
-        act_rename = menu.addAction(qta.icon("fa5s.i-cursor", color=icon_color), "Rename File on Disk...")
+        act_rename = menu.addAction(svg_icon(_SVG_RENAME, color=icon_color, size=15), "Rename File on Disk...")
         act_rename.setEnabled(has_disk_file)
         menu.addSeparator()
 
-        act_close = menu.addAction(qta.icon("fa5s.times", color="#EF4444"), "Close Tab")
-        act_close_others = menu.addAction(qta.icon("fa5s.window-close", color=icon_color), "Close All Other Tabs")
+        act_close = menu.addAction(svg_icon(SVG_CLOSE, color="#EF4444", size=15), "Close Tab")
+        act_close_others = menu.addAction(svg_icon(SVG_CLOSE, color=icon_color, size=15), "Close All Other Tabs")
         act_close_others.setEnabled(len(self._viewers) > 1)
         menu.addSeparator()
 
@@ -392,13 +425,18 @@ class WindowTabsMixin(_Base):
             else:
                 reveal_label = "Reveal in File Manager"
 
-            act_reveal = menu.addAction(qta.icon("fa5s.folder-open", color=icon_color), reveal_label)
-            act_copy_path = menu.addAction(qta.icon("fa5s.copy", color=icon_color), "Copy Full Path")
+            act_reveal = menu.addAction(svg_icon(SVG_FOLDER, color=icon_color, size=15), reveal_label)
+            act_copy_path = menu.addAction(svg_icon(SVG_COPY, color=icon_color, size=15), "Copy Full Path")
             menu.addSeparator()
-            act_delete_disk = menu.addAction(qta.icon("fa5s.trash-alt", color="#EF4444"), "Delete From Disk")
+            act_delete_disk = menu.addAction(svg_icon(SVG_TRASH, color="#EF4444", size=15), "Delete From Disk")
 
         chosen = menu.exec(self._tab_bar.mapToGlobal(point))
-        if chosen == act_save_copy:
+        if act_paste_pages and chosen == act_paste_pages:
+            self._tab_bar.setCurrentIndex(tab_idx)
+            self._viewer_stack.setCurrentIndex(tab_idx)
+            pages = viewer._thumbnails.selected_pages() if hasattr(viewer, "_thumbnails") else [0]
+            viewer._paste_pages(pages)
+        elif chosen == act_save_copy:
             self._save_as_copy_for_viewer(viewer)
         elif chosen == act_rename:
             rename_tab_file_on_disk(self, tab_idx, viewer)
@@ -499,7 +537,7 @@ class WindowTabsMixin(_Base):
                 fn(target_load_path)
 
         if temp_pdf and hasattr(self, "_set_status"):
-            self._set_status(f"✔ Converted {os.path.basename(norm_path)} to PDF (Ctrl+S to save as PDF)")
+            self._set_status(f"Converted {os.path.basename(norm_path)} to PDF (Ctrl+S to save as PDF)")
         return target_v
 
     def _on_second_instance(self, paths: list[str]) -> None:
