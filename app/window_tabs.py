@@ -1,10 +1,8 @@
-
 # app/window_tabs.py
 """PDF_Editor – Tab management and multi-viewer window mixin."""
 
 from __future__ import annotations
 
-import contextlib
 import os
 import shutil
 import sys
@@ -22,11 +20,16 @@ from PySide6.QtWidgets import (
 )
 import qtawesome as qta
 
-from app.constants import TEXT_PRI, _LQ, OPEN_ALL_FILES_FILTER
+from app.constants import ACCENT, TEXT_PRI, _LQ
 from app.i18n import add_recent_file, t
 from app.utils import reveal_file, show_error
 from app.viewer.panel import PdfViewerPanel
 from app.tools.import_pdf import convert_file_to_pdf
+from app.window_tab_file_ops import (
+    delete_tab_file_from_disk,
+    get_tab_disk_path,
+    rename_tab_file_on_disk,
+)
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QDragEnterEvent, QDropEvent
@@ -109,11 +112,7 @@ class _ViewerTabBar(QTabBar):
                 self._update_close_btn_icon(btn, dark=dark)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        pos = (
-            event.position().toPoint()
-            if hasattr(event, "position")
-            else event.pos()
-        )
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
 
         if event.button() == Qt.MouseButton.MiddleButton:
             idx = self.tabAt(pos)
@@ -137,11 +136,7 @@ class _ViewerTabBar(QTabBar):
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        pos = (
-            event.position().toPoint()
-            if hasattr(event, "position")
-            else event.pos()
-        )
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
         idx = self.tabAt(pos)
         if idx < 0:
             parent = self.window()
@@ -161,6 +156,10 @@ class WindowTabsMixin(_Base):
         _viewer_stack: QStackedWidget
         _tab_bar: _ViewerTabBar
         stack: QStackedWidget
+        nav: Any
+        _right_tool_container: QWidget
+        _right_pane_toggle_btn: QPushButton
+        _tab_container: QWidget
         _current_tool: int
         _dark_mode: bool
         _sb: QStatusBar
@@ -173,11 +172,13 @@ class WindowTabsMixin(_Base):
         def _update_breadcrumb(self) -> None: ...
         def _viewer_has_unsaved(self, viewer: Any = ...) -> bool: ...
         def _save_pipeline(self) -> None: ...
+        def _save_as_copy_for_viewer(self, viewer: Any = ...) -> None: ...
         def _cleanup_pipeline(self, viewer_id: int) -> None: ...
         def _crop_tool_idx(self) -> int: ...
         def _edit_tool_idx(self) -> int: ...
         def _setup_zoom_bar(self, active: bool, canvas: Any = ...) -> None: ...
         def _toggle_pages_sidebar(self) -> None: ...
+        def _refresh_viewer_top_buttons(self) -> None: ...
 
     @property
     def _viewer(self) -> PdfViewerPanel | None:
@@ -189,7 +190,6 @@ class WindowTabsMixin(_Base):
         return None
 
     def _on_active_tab_clicked(self) -> None:
-        """Toggle page thumbnails when the currently previewed tab is clicked."""
         toggle_fn = getattr(self, "_toggle_pages_sidebar", None)
         if callable(toggle_fn):
             toggle_fn()
@@ -239,6 +239,7 @@ class WindowTabsMixin(_Base):
         if not (0 <= index < len(self._viewers)):
             return
         viewer = self._viewers[index]
+        print(f"[DEBUG][Tabs] Closing tab index={index}, path={viewer.current_path()!r}")
 
         if hasattr(self, "_viewer_has_unsaved") and self._viewer_has_unsaved(viewer):
             ans = QMessageBox.question(
@@ -257,16 +258,20 @@ class WindowTabsMixin(_Base):
 
         closed_path = viewer.current_path()
         orig_path = getattr(viewer, "_original_doc_path", "")
+        closed_norm = {os.path.abspath(p) for p in (closed_path, orig_path) if p}
 
-        # Clean up cached edit state for this document
         edit_idx = self._edit_tool_idx() if hasattr(self, "_edit_tool_idx") else -1
-        if edit_idx >= 0 and edit_idx < self.stack.count():
-            edit_w = self.stack.widget(edit_idx)
+        edit_w = self.stack.widget(edit_idx) if (0 <= edit_idx < self.stack.count()) else None
+        if edit_w is not None and not getattr(edit_w, "_is_lazy_placeholder", False):
             doc_states = getattr(edit_w, "_doc_states", None)
             if isinstance(doc_states, dict):
-                for p_check in (closed_path, orig_path):
-                    if p_check:
-                        doc_states.pop(os.path.abspath(p_check), None)
+                for p_norm in closed_norm:
+                    doc_states.pop(p_norm, None)
+            cur_edit_path = getattr(edit_w, "_doc_path", None)
+            if cur_edit_path and os.path.abspath(cur_edit_path) in closed_norm:
+                close_fn = getattr(edit_w, "_close_pdf", None)
+                if callable(close_fn):
+                    close_fn()
 
         if hasattr(self, "_cleanup_pipeline"):
             self._cleanup_pipeline(id(viewer))
@@ -287,11 +292,41 @@ class WindowTabsMixin(_Base):
             self._tab_bar.setCurrentIndex(new_idx)
             self._viewer_stack.setCurrentIndex(new_idx)
 
+        new_v = self._viewer
+        new_path = new_v.current_path() if new_v else ""
+
+        if not new_path:
+            if getattr(self, "_current_tool", -1) == edit_idx and edit_idx >= 0:
+                if hasattr(self, "nav"):
+                    self.nav.clearSelection()
+                self._current_tool = -1
+                self.stack.setVisible(False)
+                if hasattr(self, "_right_tool_container"):
+                    self._right_tool_container.setVisible(False)
+                if hasattr(self, "_right_pane_toggle_btn"):
+                    self._right_pane_toggle_btn.setVisible(False)
+                if hasattr(self, "_tab_container"):
+                    self._tab_container.setVisible(True)
+                if hasattr(self, "_setup_zoom_bar") and new_v:
+                    self._setup_zoom_bar(True, canvas=new_v._canvas)
+            if hasattr(self, "setWindowTitle"):
+                self.setWindowTitle(t("app.name"))
+        else:
+            if edit_w is not None and not getattr(edit_w, "_is_lazy_placeholder", False) and getattr(self, "_current_tool", -1) == edit_idx:
+                auto_fn = getattr(edit_w, "auto_load", None)
+                if callable(auto_fn):
+                    auto_fn(new_path)
+            if hasattr(self, "setWindowTitle") and new_v:
+                doc_name = os.path.basename(getattr(new_v, "_original_doc_path", "") or new_path)
+                self.setWindowTitle(f"{t('app.name')} - {doc_name}")
+
         self._update_tab_bar_visibility()
         if hasattr(self, "_update_page_nav"):
             self._update_page_nav()
         if hasattr(self, "_update_breadcrumb"):
             self._update_breadcrumb()
+        if hasattr(self, "_refresh_viewer_top_buttons"):
+            self._refresh_viewer_top_buttons()
 
     def _close_current_tab(self) -> None:
         if hasattr(self, "_viewer_stack"):
@@ -308,12 +343,8 @@ class WindowTabsMixin(_Base):
                 self._update_breadcrumb()
             if hasattr(self, "setWindowTitle"):
                 doc_name = os.path.basename(viewer._original_doc_path or viewer.current_path()) if viewer.current_path() else ""
-                if doc_name:
-                    self.setWindowTitle(f"{t('app.name')} - {doc_name}")
-                else:
-                    self.setWindowTitle(t("app.name"))
+                self.setWindowTitle(f"{t('app.name')} - {doc_name}" if doc_name else t("app.name"))
 
-            # When in Edit PDF tool or another tool, seamlessly synchronize the tool with the active tab's document
             if getattr(self, "_current_tool", -1) >= 0:
                 tool_w = self.stack.widget(self._current_tool)
                 cur_path = viewer.current_path()
@@ -328,30 +359,30 @@ class WindowTabsMixin(_Base):
         if tab_idx < 0:
             return
         viewer = self._viewers[tab_idx]
-        path = viewer.current_path()
+        curr_path = viewer.current_path()
+        disk_path = get_tab_disk_path(self, viewer)
+        has_disk_file = bool(disk_path and os.path.isfile(disk_path))
         dark = getattr(self, "_dark_mode", True)
         icon_color = TEXT_PRI if dark else _LQ
 
         menu = QMenu(self)
 
-        act_close = menu.addAction(
-            qta.icon("fa5s.times", color="#EF4444"),
-            "Close Tab",
-        )
+        act_save_copy = menu.addAction(qta.icon("fa5s.save", color=ACCENT), "Save As Copy...")
+        act_save_copy.setEnabled(bool(curr_path and os.path.exists(curr_path)))
 
-        can_close_others = len(self._viewers) > 1
-        act_close_others = menu.addAction(
-            qta.icon("fa5s.window-close", color=icon_color),
-            "Close All Other Tabs",
-        )
-        act_close_others.setEnabled(can_close_others)
+        act_rename = menu.addAction(qta.icon("fa5s.i-cursor", color=icon_color), "Rename File on Disk...")
+        act_rename.setEnabled(has_disk_file)
+        menu.addSeparator()
 
+        act_close = menu.addAction(qta.icon("fa5s.times", color="#EF4444"), "Close Tab")
+        act_close_others = menu.addAction(qta.icon("fa5s.window-close", color=icon_color), "Close All Other Tabs")
+        act_close_others.setEnabled(len(self._viewers) > 1)
         menu.addSeparator()
 
         act_reveal = None
         act_copy_path = None
         act_delete_disk = None
-        if path and os.path.exists(path):
+        if has_disk_file:
             if sys.platform == "win32":
                 reveal_label = "Reveal in File Explorer"
             elif sys.platform == "darwin":
@@ -361,82 +392,34 @@ class WindowTabsMixin(_Base):
             else:
                 reveal_label = "Reveal in File Manager"
 
-            act_reveal = menu.addAction(
-                qta.icon("fa5s.folder-open", color=icon_color),
-                reveal_label,
-            )
-            act_copy_path = menu.addAction(
-                qta.icon("fa5s.copy", color=icon_color),
-                "Copy Full Path",
-            )
+            act_reveal = menu.addAction(qta.icon("fa5s.folder-open", color=icon_color), reveal_label)
+            act_copy_path = menu.addAction(qta.icon("fa5s.copy", color=icon_color), "Copy Full Path")
             menu.addSeparator()
-            act_delete_disk = menu.addAction(
-                qta.icon("fa5s.trash-alt", color="#EF4444"),
-                "Delete From Disk",
-            )
+            act_delete_disk = menu.addAction(qta.icon("fa5s.trash-alt", color="#EF4444"), "Delete From Disk")
 
         chosen = menu.exec(self._tab_bar.mapToGlobal(point))
-        if chosen == act_close:
+        if chosen == act_save_copy:
+            self._save_as_copy_for_viewer(viewer)
+        elif chosen == act_rename:
+            rename_tab_file_on_disk(self, tab_idx, viewer)
+        elif chosen == act_close:
             self._close_tab(tab_idx)
         elif chosen == act_close_others:
             for i in range(len(self._viewers) - 1, -1, -1):
                 if i != tab_idx:
                     self._close_tab(i)
         elif act_reveal and chosen == act_reveal:
-            reveal_file(path)
+            reveal_file(disk_path)
         elif act_copy_path and chosen == act_copy_path:
-            QApplication.clipboard().setText(path)
+            QApplication.clipboard().setText(disk_path)
         elif act_delete_disk and chosen == act_delete_disk:
-            filename = os.path.basename(path)
-            reply = QMessageBox.question(
-                self,
-                "Delete From Disk",
-                f"Are you sure you want to permanently delete '{filename}' from disk?\n\n{path}",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                orig_path = getattr(viewer, "_original_doc_path", "") or path
-                if hasattr(self, "_cleanup_pipeline"):
-                    self._cleanup_pipeline(id(viewer))
-                self._close_tab(tab_idx)
-                for target in {path, orig_path}:
-                    if target and os.path.isfile(target):
-                        try:
-                            os.remove(target)
-                        except Exception as exc:
-                            QMessageBox.critical(self, "Error", f"Could not delete file:\n{exc}")
-                try:
-                    from app.i18n import _update_config
-                    norm_targets = {os.path.normpath(t) for t in (path, orig_path) if t}
-                    def _mutate(cfg: dict) -> None:
-                        recents = cfg.get("recent_files", [])
-                        if isinstance(recents, list):
-                            cfg["recent_files"] = [
-                                r for r in recents
-                                if isinstance(r, str) and os.path.normpath(r) not in norm_targets
-                            ]
-                    _update_config(_mutate)
-                except Exception:
-                    pass
-                for v in getattr(self, "_viewers", []):
-                    ref = getattr(v, "_refresh_recents", None)
-                    if callable(ref):
-                        with contextlib.suppress(Exception):
-                            ref()
-                set_status = getattr(self, "_set_status", None)
-                if callable(set_status):
-                    set_status(f"✔ Deleted '{filename}' from disc")
-                elif hasattr(self, "_sb"):
-                    self._sb.showMessage(f"✔ Deleted '{filename}' from disc")
+            delete_tab_file_from_disk(self, tab_idx, viewer)
 
     def _load_and_track(self, path: str) -> PdfViewerPanel | None:
-        """Open a file; if it's a non-PDF (DOCX, PPTX, XLSX, TXT, image, etc.), automatically convert to PDF and load."""
         if not path or not os.path.isfile(path):
             return None
         norm_path = os.path.abspath(path)
 
-        # 1. Switch to tab if already open
         for i, v in enumerate(self._viewers):
             orig_p = getattr(v, "_original_doc_path", "")
             curr_p = v.current_path()
@@ -456,13 +439,11 @@ class WindowTabsMixin(_Base):
                         fn(curr_p or orig_p)
                 return v
 
-        # 2. Check if file is PDF or requires automatic conversion
         is_pdf = norm_path.lower().endswith(".pdf")
         if not is_pdf:
             try:
                 with open(norm_path, "rb") as f:
-                    header = f.read(1024)
-                    if b"%PDF-" in header:
+                    if b"%PDF-" in f.read(1024):
                         is_pdf = True
             except Exception:
                 is_pdf = False
@@ -494,21 +475,14 @@ class WindowTabsMixin(_Base):
             vid = id(target_v)
             ps = getattr(self, "_pipeline_state", None)
             if ps is not None:
-                ps[vid] = {
-                    "original_path": norm_path,
-                    "temp_path": temp_pdf,
-                }
+                ps[vid] = {"original_path": norm_path, "temp_path": temp_pdf}
 
         target_v.load(target_load_path, _is_history_step=bool(temp_pdf))
         target_v._original_doc_path = norm_path
         add_recent_file(norm_path)
 
-        tab_title = os.path.basename(norm_path)
-        if temp_pdf:
-            tab_title = f"● {tab_title}"
-            tooltip = f"{norm_path} (Converted to PDF)"
-        else:
-            tooltip = norm_path
+        tab_title = f"● {os.path.basename(norm_path)}" if temp_pdf else os.path.basename(norm_path)
+        tooltip = f"{norm_path} (Converted to PDF)" if temp_pdf else norm_path
 
         self._tab_bar.setTabText(idx, tab_title)
         self._tab_bar.setTabToolTip(idx, tooltip)

@@ -1,4 +1,3 @@
-
 # app/editor/canvas_events1.py
 
 """Canvas interaction handler: mouse, drag handles, keyboard, stroke smoothing, vector stamps, and rich context menus."""
@@ -22,6 +21,15 @@ from app.viewer.canvas_action_menus import (
 )
 
 _PDF_ANNOT_TEXT: int = getattr(fitz, "PDF_ANNOT_TEXT", 0)
+
+
+def _find_tab_editar(canvas):
+    p = canvas.parentWidget() if hasattr(canvas, "parentWidget") else None
+    while p is not None:
+        if hasattr(p, "_set_mode_by_idx") and hasattr(p, "_set_text_submode"):
+            return p
+        p = p.parentWidget()
+    return None
 
 
 def smooth_stroke_points(pts: list[tuple[float, float]], iterations: int = 2) -> list[tuple[float, float]]:
@@ -587,6 +595,7 @@ class CanvasEventHandler:
     def handle_context_menu(self, e):
         c = self.canvas
         pos = e.pos()
+        tab = _find_tab_editar(c)
 
         if c._placing_signature:
             c.cancel_signature_placement()
@@ -632,39 +641,49 @@ class CanvasEventHandler:
 
         page_idx, lx, ly = c._page_and_local(pos.x(), pos.y())
         pdf_pt = c._to_pdf(page_idx, lx, ly)
+        span = c.get_span_at(page_idx, pdf_pt, max_dist=8.0)
+
+        def _activate_mode(m_idx: int, submode: str | None = None):
+            if tab is not None:
+                tab._set_mode_by_idx(m_idx)
+                if submode and hasattr(tab, "_set_text_submode"):
+                    tab._set_text_submode(submode)
+            else:
+                c.mode_change_requested.emit(m_idx)
 
         act_add_text = menu.addAction(qta.icon("fa5s.font", color=ACCENT), "Add Text")
         act_add_text.triggered.connect(
             lambda _=False, p=page_idx, pt=pdf_pt: (
-                c.mode_change_requested.emit(1),
-                c.set_text_mode(True),
+                _activate_mode(1, "add"),
                 c.begin_inline_text_insert(p, pt, 12.0, (0.0, 0.0, 0.0)),
             )
         )
 
-        span = c.get_span_at(page_idx, pdf_pt, max_dist=8.0)
+        act_edit_text = menu.addAction(qta.icon("fa5s.edit", color=ACCENT), "Edit Text")
         if span:
-            act_edit_click = menu.addAction(qta.icon("fa5s.edit", color=ACCENT), "Edit Text")
-            act_edit_click.triggered.connect(
+            act_edit_text.triggered.connect(
                 lambda _=False, s=span, p=page_idx: (
-                    c.mode_change_requested.emit(1),
-                    c.set_text_mode(True),
+                    _activate_mode(1, "edit"),
                     c.begin_inline_text_edit(s, p),
                 )
             )
+        else:
+            act_edit_text.triggered.connect(lambda _=False: _activate_mode(1, "edit"))
+
+        menu.addSeparator()
 
         act_draw_pen = menu.addAction(qta.icon("fa5s.pen", color=ACCENT), "Draw (Freehand Pen)")
         act_draw_pen.triggered.connect(
             lambda _=False: (
-                c.mode_change_requested.emit(8),
-                c.set_draw_mode(True),
+                _activate_mode(8),
+                c.set_draw_mode(True, color=c._draw_color),
             )
         )
 
         act_draw_hi_rect = menu.addAction(qta.icon("fa5s.vector-square", color=ACCENT), "Draw Highlight (Rectangle)")
         act_draw_hi_rect.triggered.connect(
             lambda _=False: (
-                c.mode_change_requested.emit(4),
+                _activate_mode(4),
                 c.set_highlight_mode(True, c._highlight_color, Qt.CursorShape.CrossCursor),
             )
         )
@@ -672,7 +691,7 @@ class CanvasEventHandler:
         act_hi_text = menu.addAction(qta.icon("fa5s.highlighter", color=ACCENT), "Highlight Text")
         act_hi_text.triggered.connect(
             lambda _=False: (
-                c.mode_change_requested.emit(3),
+                _activate_mode(3),
                 c.set_highlight_mode(True, c._highlight_color, Qt.CursorShape.IBeamCursor),
             )
         )
@@ -681,36 +700,32 @@ class CanvasEventHandler:
         color_menu = menu.addMenu(make_rainbow_wheel_icon(18), "Highlight & Pen Color")
         act_custom = color_menu.addAction(make_rainbow_wheel_icon(16), "Custom Color...")
 
+        def _apply_chosen_color(c_tup: tuple[float, float, float]):
+            c._highlight_color = c_tup
+            c._draw_color = c_tup
+            if tab is not None and hasattr(tab, "_sync_canvas_color"):
+                tab._sync_canvas_color(c_tup)
+            if c._highlight_mode:
+                c.set_highlight_mode(True, c_tup, c.cursor().shape())
+            elif c._draw_mode:
+                c.set_draw_mode(True, c_tup)
+
         def _on_custom_col():
             curr = QColor(
-                int(c._highlight_color[0] * 255),
-                int(c._highlight_color[1] * 255),
-                int(c._highlight_color[2] * 255),
+                int(c._draw_color[0] * 255),
+                int(c._draw_color[1] * 255),
+                int(c._draw_color[2] * 255),
             )
             col = QColorDialog.getColor(curr, c, "Select Color")
             if col.isValid():
-                c_tup = (col.redF(), col.greenF(), col.blueF())
-                c._highlight_color = c_tup
-                c._draw_color = c_tup
-                if c._highlight_mode:
-                    c.set_highlight_mode(True, c_tup)
-                elif c._draw_mode:
-                    c.set_draw_mode(True, c_tup)
+                _apply_chosen_color((col.redF(), col.greenF(), col.blueF()))
 
         act_custom.triggered.connect(lambda _=False: _on_custom_col())
         color_menu.addSeparator()
 
         for hex_code, label, rgb_tuple in PRESET_COLORS:
             act_c = color_menu.addAction(make_circular_color_icon(hex_code, 16), label)
-            act_c.triggered.connect(
-                lambda _=False, rgb=rgb_tuple: (
-                    setattr(c, "_highlight_color", rgb),
-                    setattr(c, "_draw_color", rgb),
-                    c.set_highlight_mode(True, rgb) if c._highlight_mode else (
-                        c.set_draw_mode(True, rgb) if c._draw_mode else None
-                    ),
-                )
-            )
+            act_c.triggered.connect(lambda _=False, rgb=rgb_tuple: _apply_chosen_color(rgb))
 
         menu.addSeparator()
         act_add_check = menu.addAction(qta.icon("fa5s.check", color=ACCENT), "Add Checkmark (✔)")
@@ -722,3 +737,4 @@ class CanvasEventHandler:
         act_add_sig.triggered.connect(lambda _=False: c.start_add_signature_flow(pos))
 
         menu.exec(e.globalPos())
+

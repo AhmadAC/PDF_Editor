@@ -1,4 +1,3 @@
-
 # app/viewer/canvas_action_menus.py
 """PDF_Editor – Context menus, note interaction, comment deletion, and rich highlight/color tools."""
 from __future__ import annotations
@@ -268,31 +267,35 @@ class CanvasActionMenuBuilder:
             if edit_idx >= 0 and hasattr(win, "stack"):
                 edit_w = win.stack.widget(edit_idx)
                 if edit_w:
-                    if mode == "add" and hasattr(edit_w, "_set_text_submode"):
+                    # Keep the right-hand editor controls pane collapsed when launching via context menu
+                    ctrl_scroll = getattr(edit_w, "_ctrl_scroll", None)
+                    if ctrl_scroll is not None:
+                        ctrl_scroll.setVisible(False)
+                    if hasattr(edit_w, "_relayout_canvas"):
+                        edit_w._relayout_canvas()
+
+                    if hasattr(edit_w, "_sync_canvas_color"):
+                        edit_w._sync_canvas_color(self._current_hi_color)
+
+                    edit_canvas = getattr(edit_w, "_canvas", None)
+                    if mode == "add" and hasattr(edit_w, "_set_mode_by_idx"):
+                        edit_w._set_mode_by_idx(1)
                         edit_w._set_text_submode("add")
-                        edit_canvas = getattr(edit_w, "_canvas", None)
-                        if edit_canvas and pos:
-                            page_idx, lx, ly = edit_canvas._page_and_local(pos.x(), pos.y())
-                            edit_canvas.begin_inline_text_insert(
-                                page_idx,
-                                edit_canvas._to_pdf(page_idx, lx, ly),
-                                size=12.0,
-                                color=(0.0, 0.0, 0.0),
-                            )
-                    elif mode == "edit" and hasattr(edit_w, "_set_text_submode"):
+                    elif mode == "edit" and hasattr(edit_w, "_set_mode_by_idx"):
+                        edit_w._set_mode_by_idx(1)
                         edit_w._set_text_submode("edit")
-                    elif mode == "draw" and hasattr(edit_w, "_on_mode_btn"):
-                        draw_btn = edit_w._mode_btns[8] if len(getattr(edit_w, "_mode_btns", [])) > 8 else None
-                        if draw_btn:
-                            edit_w._on_mode_btn(draw_btn)
-                    elif mode == "highlight_rect" and hasattr(edit_w, "_on_mode_btn"):
-                        hi_rect_btn = edit_w._mode_btns[4] if len(getattr(edit_w, "_mode_btns", [])) > 4 else None
-                        if hi_rect_btn:
-                            edit_w._on_mode_btn(hi_rect_btn)
-                    elif mode == "highlight_text" and hasattr(edit_w, "_on_mode_btn"):
-                        hi_text_btn = edit_w._mode_btns[3] if len(getattr(edit_w, "_mode_btns", [])) > 3 else None
-                        if hi_text_btn:
-                            edit_w._on_mode_btn(hi_text_btn)
+                    elif mode == "draw" and hasattr(edit_w, "_set_mode_by_idx"):
+                        edit_w._set_mode_by_idx(8)
+                        if edit_canvas:
+                            edit_canvas.set_draw_mode(True, color=self._current_hi_color)
+                    elif mode == "highlight_rect" and hasattr(edit_w, "_set_mode_by_idx"):
+                        edit_w._set_mode_by_idx(4)
+                        if edit_canvas:
+                            edit_canvas.set_highlight_mode(True, self._current_hi_color, Qt.CursorShape.CrossCursor)
+                    elif mode == "highlight_text" and hasattr(edit_w, "_set_mode_by_idx"):
+                        edit_w._set_mode_by_idx(3)
+                        if edit_canvas:
+                            edit_canvas.set_highlight_mode(True, self._current_hi_color, Qt.CursorShape.IBeamCursor)
 
     def show_context_menu(
         self,
@@ -390,7 +393,7 @@ class CanvasActionMenuBuilder:
         act_hi_text.triggered.connect(lambda _=False: self._route_to_edit_tool("highlight_text", pos))
         menu.addSeparator()
 
-        color_menu = menu.addMenu(make_rainbow_wheel_icon(18), "Highlight Color")
+        color_menu = menu.addMenu(make_rainbow_wheel_icon(18), "Highlight & Pen Color")
         act_custom = color_menu.addAction(make_rainbow_wheel_icon(16), "Custom Color...")
 
         def _on_custom_chosen():
@@ -421,3 +424,4 @@ class CanvasActionMenuBuilder:
         act_sig.triggered.connect(lambda _=False: c.start_add_signature_flow(pos))
 
         menu.exec(e.globalPos())
+

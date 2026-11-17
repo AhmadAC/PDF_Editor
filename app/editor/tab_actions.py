@@ -87,6 +87,14 @@ class TabActionsMixin(_Base):
         if 0 <= idx < len(self._mode_btns):
             self._on_mode_btn(self._mode_btns[idx])
 
+    def _sync_canvas_color(self, color_tuple: tuple[float, float, float]) -> None:
+        if hasattr(self, "_draw_color_cb"):
+            self._draw_color_cb.set_color(color_tuple)
+        if hasattr(self, "_hi_color"):
+            self._hi_color.set_color(color_tuple)
+        if hasattr(self, "_hi_rect_color"):
+            self._hi_rect_color.set_color(color_tuple)
+
     def _start_stamp_check(self):
         sz = float(self._stamp_size.value()) if hasattr(self, "_stamp_size") else 20.0
         col = self._stamp_color.color_tuple() if hasattr(self, "_stamp_color") else (0.0, 0.0, 0.0)
@@ -191,7 +199,7 @@ class TabActionsMixin(_Base):
             if is_add:
                 self._text_hint.setText("💡 Click anywhere on the page to insert new text exactly where you click.")
             else:
-                self._text_hint.setText("💡 Click any text to edit or delete it. Click empty space to add text.")
+                self._text_hint.setText("💡 Click or drag across any text on the page to edit it.")
 
     def _update_text_submode_styles(self):
         if not hasattr(self, "_btn_text_add") or not hasattr(self, "_btn_text_edit"):
@@ -270,11 +278,14 @@ class TabActionsMixin(_Base):
     def _on_stroke(self, page_idx: int, pdf_points):
         self._page_idx = page_idx
         self._update_nav()
+        col = getattr(self._canvas, "_draw_color", None)
+        if col is None:
+            col = self._draw_color_cb.color_tuple()
         self._add({
             "type": "draw",
             "page": page_idx,
             "points": pdf_points,
-            "color": self._draw_color_cb.color_tuple(),
+            "color": col,
             "width": self._draw_width_slider.value(),
         })
 
@@ -423,7 +434,9 @@ class TabActionsMixin(_Base):
                 lx1 = max(w[2] for w in line_words)
                 ly1 = max(w[3] for w in line_words)
                 line_rects.append(fitz.Rect(lx0, ly0, lx1, ly1))
-        hi_color = self._hi_color.color_tuple() if hasattr(self, "_hi_color") else (1.0, 1.0, 0.0)
+        hi_color = getattr(self._canvas, "_highlight_color", None)
+        if hi_color is None:
+            hi_color = self._hi_color.color_tuple() if hasattr(self, "_hi_color") else (1.0, 1.0, 0.0)
         self._add({
             "type": "highlight",
             "page": page_idx,
@@ -438,7 +451,6 @@ class TabActionsMixin(_Base):
         self._update_nav()
         mode = self._mode_idx
 
-        # If highlight mode is active on canvas, ALWAYS process as highlight, never as text!
         if getattr(self._canvas, "_highlight_mode", False) or mode in (_MODE_HIGHLIGHT, _MODE_HIGHLIGHT_RECT):
             hi_color = getattr(self._canvas, "_highlight_color", None)
             if hi_color is None:
@@ -475,7 +487,7 @@ class TabActionsMixin(_Base):
                     "rect": pdf_rect,
                     "color": hi_color
                 })
-            self._status("✔ Highlight rectangle added (Ctrl+Z to undo)")
+            self._status("✔ Highlight added (Ctrl+Z to undo)")
             return
 
         if mode == _MODE_SELECT:
@@ -502,6 +514,47 @@ class TabActionsMixin(_Base):
             return
 
         if mode == _MODE_TEXT:
+            submode = getattr(self, "_text_submode", "edit")
+            if submode == "edit":
+                doc = self._canvas._doc
+                if not doc or not (0 <= page_idx < doc.page_count):
+                    return
+                page = doc[page_idx]
+                matched_spans = []
+                text_dict = page.get_text("dict", clip=pdf_rect)
+                for block in text_dict.get("blocks", []):
+                    if block.get("type") != 0:
+                        continue
+                    for line in block.get("lines", []):
+                        for span in line.get("spans", []):
+                            if not span.get("text", "").strip():
+                                continue
+                            s_bbox = fitz.Rect(span["bbox"])
+                            inter = s_bbox & pdf_rect
+                            if not inter.is_empty and inter.width > 1 and inter.height > 1:
+                                matched_spans.append(span)
+
+                if not matched_spans:
+                    self._status("ℹ No text found in selected area to edit.")
+                    return
+
+                if len(matched_spans) == 1:
+                    target_span = dict(matched_spans[0])
+                else:
+                    first = matched_spans[0]
+                    union_rect = fitz.Rect(first["bbox"])
+                    for sp in matched_spans[1:]:
+                        union_rect |= fitz.Rect(sp["bbox"])
+                    combined_text = " ".join(
+                        sp.get("text", "").strip() for sp in matched_spans if sp.get("text", "").strip()
+                    )
+                    target_span = dict(first)
+                    target_span["bbox"] = [union_rect.x0, union_rect.y0, union_rect.x1, union_rect.y1]
+                    target_span["text"] = combined_text
+
+                self._canvas.begin_inline_text_edit(target_span, page_idx)
+                return
+
             insert_pt = fitz.Point(pdf_rect.x0, pdf_rect.y0)
             size = float(self._text_size.value())
             color = self._text_color.color_tuple()
@@ -584,6 +637,8 @@ class TabActionsMixin(_Base):
                 if hit:
                     self._canvas.begin_inline_text_edit(hit, page_idx)
                     return
+                self._status("ℹ Click or drag across existing text to edit it.")
+                return
 
             size = float(self._text_size.value())
             color = self._text_color.color_tuple()
@@ -605,7 +660,9 @@ class TabActionsMixin(_Base):
             hit = self._canvas.get_span_at(page_idx, pdf_pt, max_dist=8.0)
             if hit:
                 bb = fitz.Rect(hit["bbox"])
-                hi_col = self._hi_color.color_tuple() if hasattr(self, "_hi_color") else (1.0, 1.0, 0.0)
+                hi_col = getattr(self._canvas, "_highlight_color", None)
+                if hi_col is None:
+                    hi_col = self._hi_color.color_tuple() if hasattr(self, "_hi_color") else (1.0, 1.0, 0.0)
                 self._add({
                     "type": "highlight",
                     "page": page_idx,
@@ -625,4 +682,3 @@ class TabActionsMixin(_Base):
 
     def _on_note_deleted(self, overlay: dict):
         self._history.handle_note_deleted(overlay)
-

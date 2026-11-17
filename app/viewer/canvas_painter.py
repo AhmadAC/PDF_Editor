@@ -1,5 +1,5 @@
 # app/viewer/canvas_painter.py
-"""PDF_Editor – CanvasPainter for _SelectCanvas: renders pages, text selection, search highlights, notes, crop/number previews, and signatures."""
+"""PDF_Editor – CanvasPainter for _SelectCanvas: renders pages, highlights, notes, crop/number previews, and signatures."""
 
 from __future__ import annotations
 
@@ -223,7 +223,21 @@ class CanvasPainter:
                     p.setBrush(QColor(0, 120, 212, 45))
                     p.drawRect(drag_r)
 
-            # 7. Render live page-numbers preview
+            # 7. Render interactive drawn highlight rectangle drag preview
+            if getattr(canvas, "_rect_hi_mode", False):
+                hi_start = getattr(canvas, "_rect_hi_drag_start", None)
+                hi_cur = getattr(canvas, "_rect_hi_drag_cur", None)
+                if hi_start is not None and hi_cur is not None:
+                    drag_r = QRect(hi_start, hi_cur).normalized()
+                    hi_c = getattr(canvas, "_rect_hi_color", (1.0, 1.0, 0.0))
+                    r_c = int(hi_c[0] * 255)
+                    g_c = int(hi_c[1] * 255)
+                    b_c = int(hi_c[2] * 255)
+                    p.setPen(QPen(QColor(r_c, g_c, b_c, 230), 1.5, Qt.PenStyle.SolidLine))
+                    p.setBrush(QColor(r_c, g_c, b_c, 90))
+                    p.drawRect(drag_r)
+
+            # 8. Render live page-numbers preview
             num_preview = getattr(canvas, "_numbers_preview", None)
             if num_preview:
                 pos_code = num_preview.get("pos_code", "bc")
@@ -270,7 +284,7 @@ class CanvasPainter:
                     p.setPen(QColor("#000000") if not night else QColor("#FFFFFF"))
                     p.drawText(pill_r, Qt.AlignmentFlag.AlignCenter, label)
 
-            # 8. Render placed active signature with resize handles
+            # 9. Render placed active signature with resize handles
             active_sig = getattr(canvas, "_active_sig", None)
             if active_sig is not None:
                 sig_pg = int(active_sig.get("page", -1))
@@ -303,7 +317,7 @@ class CanvasPainter:
                     ):
                         p.drawRect(QRect(hpt.x() - hs // 2, hpt.y() - hs // 2, hs, hs))
 
-            # 9. Render cursor-follow signature placement preview
+            # 10. Render cursor-follow signature placement preview
             if (
                 getattr(canvas, "_placing_signature", False)
                 and getattr(canvas, "_sig_cursor_pos", None) is not None

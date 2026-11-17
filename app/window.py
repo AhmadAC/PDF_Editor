@@ -163,7 +163,6 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         root_v.setContentsMargins(0, 0, 0, 0)
         root_v.setSpacing(0)
 
-        # ── Workspace Bar Component ──────────────────────────────────────────
         self._workspace_bar = WorkspaceBar(self)
         wb = self._workspace_bar
         self._sidebar_toggle_btn = wb._sidebar_toggle_btn
@@ -195,7 +194,6 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         self._theme_btn = wb._theme_btn
         self._update_btn = wb._update_btn
 
-        # Wire top bar events
         self._sidebar_toggle_btn.clicked.connect(self._toggle_sidebar)
         self._pages_toggle_btn.clicked.connect(self._toggle_pages_sidebar)
         self._right_pane_toggle_btn.clicked.connect(self._toggle_right_pane)
@@ -229,7 +227,6 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         main_h.setContentsMargins(10, 10, 10, 0)
         main_h.setSpacing(0)
 
-        # ── Sidebar ──────────────────────────────────────────────────────────
         self._sidebar = QWidget()
         self._sidebar.setObjectName("sidebar")
         self._sidebar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -378,7 +375,6 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
             pass
         self._qapp: QApplication = cast(QApplication, QApplication.instance())
 
-        # ── Tool Stack with Lazy Widget Placeholders ─────────────────────────
         self.stack = QStackedWidget()
         self.stack.setObjectName("content_area")
         for _ in NAV_ITEMS:
@@ -394,7 +390,6 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         self._right_tool_container.setVisible(False)
         self._saved_right_width = 380
 
-        # ── Tabbed Viewer Containers ─────────────────────────────────────────
         self._tab_container = QWidget()
         tc_lay = QVBoxLayout(self._tab_container)
         tc_lay.setContentsMargins(0, 0, 0, 0)
@@ -469,7 +464,6 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
 
         self._current_tool = -1
         self.nav.itemClicked.connect(self._on_nav_clicked)
-
         self._pipeline_state: dict[int, dict] = {}
 
         QShortcut(QKeySequence("F5"), self, self._start_presentation)
@@ -491,13 +485,13 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         sc_undo = QShortcut(QKeySequence("Ctrl+Z"), self, self._handle_global_undo)
         sc_redo1 = QShortcut(QKeySequence("Ctrl+Y"), self, self._handle_global_redo)
         sc_redo2 = QShortcut(QKeySequence("Ctrl+Shift+Z"), self, self._handle_global_redo)
-
         sc_close = QShortcut(QKeySequence("Ctrl+W"), self, self._close_current_tab)
         sc_save = QShortcut(QKeySequence("Ctrl+S"), self, self._save_current_tool)
+        sc_save_as = QShortcut(QKeySequence("Ctrl+Shift+S"), self, self._save_as_current_doc)
         sc_pgup = QShortcut(QKeySequence("PgUp"), self, self._goto_prev_page)
         sc_pgdn = QShortcut(QKeySequence("PgDown"), self, self._goto_next_page)
         sc_sel_all = QShortcut(QKeySequence("Ctrl+A"), self, self._handle_global_select_all)
-        for sc in (sc_undo, sc_redo1, sc_redo2, sc_close, sc_save, sc_pgup, sc_pgdn, sc_sel_all):
+        for sc in (sc_undo, sc_redo1, sc_redo2, sc_close, sc_save, sc_save_as, sc_pgup, sc_pgdn, sc_sel_all):
             sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
         assert len(NAV_ITEMS) <= 18, f"Max 18 tool shortcuts defined but NAV_ITEMS has {len(NAV_ITEMS)}."
@@ -520,7 +514,6 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         self._instance_server.new_paths.connect(self._on_second_instance)
 
     def _get_or_create_tool(self, index: int) -> QWidget | None:
-        """On-demand lazy instantiation of tool panels."""
         if not (0 <= index < len(NAV_ITEMS)):
             return None
         w = self.stack.widget(index)
@@ -540,9 +533,8 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         return w
 
     def _connect_tool_signals(self, w: Any) -> None:
-        """Wire signals for lazily instantiated tool widgets using safe dynamic reflection."""
         for dfe in w.findChildren(DropFileEdit):
-            if not getattr(dfe, "_save", False):
+            if not getattr(dfe, "_save", False) and not getattr(dfe, "_skip_window_track", False):
                 dfe.path_changed.connect(lambda p: self._load_and_track(p) if (p and os.path.isfile(p)) else None)
 
         pipeline_done = getattr(w, "pipeline_done", None)

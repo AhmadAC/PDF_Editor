@@ -1,5 +1,3 @@
-
-
 # app/viewer/canvas_1.py
 """PDF_Editor – _SelectCanvas: continuous-scroll visual PDF viewer canvas with zoom, highlights, signatures, and notes."""
 
@@ -44,7 +42,7 @@ class _SelectCanvas(QWidget):
     crop_redo_requested = Signal()
     page_action_requested = Signal(str, object)
     text_copied = Signal(str)
-    signature_committed = Signal(int, object, str)  # (page_idx, fitz.Rect, sig_path)
+    signature_committed = Signal(int, object, str)
 
     HANDLE_NONE = 0
     HANDLE_TL = 1
@@ -524,6 +522,7 @@ class _SelectCanvas(QWidget):
         canvas_w = max(max_w + 32, vp_w, 300)
         canvas_h = max(total_h, 400)
         self.setFixedSize(canvas_w, canvas_h)
+
         sa = self._get_scroll_area()
         if sa:
             vp = sa.viewport()

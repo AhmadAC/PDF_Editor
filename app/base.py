@@ -9,7 +9,7 @@ from typing import Iterable
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QPushButton, QLabel
+    QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QPushButton, QLabel, QSizePolicy
 )
 from shiboken6 import isValid
 
@@ -17,7 +17,7 @@ from app import pdf_io
 from app.constants import DESKTOP, ACCENT
 from app.i18n import t
 from app.utils import (ToolHeader, ActionBar, scrolled, _paint_bg,
-                       WrongPasswordError, reveal_file, open_folder)
+                       WrongPasswordError, reveal_file, open_folder, is_dark)
 
 # Backward-compatibility aliases
 _reveal_file = reveal_file
@@ -80,8 +80,10 @@ class BasePage(QWidget):
     def update_theme(self, dark: bool) -> None:
         fn = getattr(self._action_bar, "update_theme", None)
         if callable(fn):
-            try: fn(dark)
-            except RuntimeError: pass
+            try:
+                fn(dark)
+            except RuntimeError:
+                pass
 
     def _build(self):
         """Subclasses add widgets to self._form here."""
@@ -177,41 +179,105 @@ class BasePage(QWidget):
                     with_save: bool = False) -> None:
         old = getattr(self, "_toast_widget", None)
         if old:
-            old.setParent(None); old.deleteLater()
+            old.setParent(None)
+            old.deleteLater()
 
-        toast = QWidget(); toast.setObjectName("toast")
+        wrapper = QWidget()
+        wrapper_lay = QVBoxLayout(wrapper)
+        wrapper_lay.setContentsMargins(16, 4, 16, 6)
+        wrapper_lay.setSpacing(0)
+
+        toast = QWidget()
+        toast.setObjectName("toast")
+        dark = is_dark()
+        bg_col = "#132E25" if dark else "#ECFDF5"
+        brd_col = "#10B981" if dark else "#059669"
+        txt_col = "#E2F8F0" if dark else "#064E3B"
+        sec_btn_bg = "rgba(16, 185, 129, 0.14)" if dark else "rgba(5, 150, 105, 0.10)"
+        sec_btn_hover = "rgba(16, 185, 129, 0.28)" if dark else "rgba(5, 150, 105, 0.22)"
+        sec_btn_fg = "#A7F3D0" if dark else "#065F46"
+
         toast.setStyleSheet(
-            "#toast { background: #1B3A2F; border: 1px solid #10B981; "
-            "border-radius: 8px; padding: 8px 12px; margin: 0 24px 8px 24px; }"
-            "#toast QLabel { color: #F0F0F0; font-size: 10pt; background: transparent; }"
-            "#toast QPushButton { color: #A7F3D0; border: none; background: transparent; "
-            "font-size: 10pt; text-decoration: underline; padding: 0 4px; }"
-            "#toast QPushButton:hover { color: #FFFFFF; }"
-            "#toast QPushButton#toast_save { color: #FFFFFF; font-weight: 600; }")
-        h = QHBoxLayout(toast); h.setContentsMargins(8, 4, 8, 4); h.setSpacing(8)
-        h.addWidget(QLabel(f"✔ {message}"), 1)
+            f"#toast {{ background: {bg_col}; border: 1px solid {brd_col}; "
+            f"border-radius: 8px; }}"
+            f"#toast QLabel {{ color: {txt_col}; font-size: 9.5pt; font-weight: 500; "
+            f"background: transparent; border: none; }}"
+            f"#toast QPushButton#toast_close {{ color: {sec_btn_fg}; border: none; "
+            f"background: transparent; font-size: 11pt; font-weight: bold; padding: 0; border-radius: 4px; }}"
+            f"#toast QPushButton#toast_close:hover {{ background: {sec_btn_hover}; color: #FFFFFF; }}"
+            f"#toast QPushButton#toast_action {{ color: {sec_btn_fg}; background: {sec_btn_bg}; "
+            f"border: 1px solid {brd_col}; border-radius: 5px; font-size: 9pt; padding: 3px 10px; }}"
+            f"#toast QPushButton#toast_action:hover {{ background: {sec_btn_hover}; }}"
+            f"#toast QPushButton#toast_save {{ color: #FFFFFF; background: #10B981; border: none; "
+            f"border-radius: 5px; font-size: 9pt; font-weight: 600; padding: 4px 12px; }}"
+            f"#toast QPushButton#toast_save:hover {{ background: #059669; }}"
+        )
+
+        v = QVBoxLayout(toast)
+        v.setContentsMargins(12, 10, 10, 10)
+        v.setSpacing(8)
+
+        if with_save:
+            display_msg = "Applied to preview — click Save As to keep changes."
+        elif file_path:
+            display_msg = f"Saved: {os.path.basename(file_path)}"
+        else:
+            display_msg = message
+
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(8)
+
+        lbl_msg = QLabel(f"✔  {display_msg}")
+        lbl_msg.setWordWrap(True)
+        lbl_msg.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        if file_path:
+            lbl_msg.setToolTip(file_path)
+        top_row.addWidget(lbl_msg, 1)
+
+        btn_close = QPushButton("×")
+        btn_close.setObjectName("toast_close")
+        btn_close.setFixedSize(20, 20)
+        btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_close.clicked.connect(lambda: wrapper.setVisible(False) if isValid(wrapper) else None)
+        top_row.addWidget(btn_close, 0, Qt.AlignmentFlag.AlignTop)
+        v.addLayout(top_row)
+
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.setSpacing(6)
+        btn_row.addStretch(1)
+
         if with_save:
             btn_save = QPushButton(t("widget.save_as"))
             btn_save.setObjectName("toast_save")
             btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
             btn_save.clicked.connect(self.pipeline_save_requested)
-            h.addWidget(btn_save)
+            btn_row.addWidget(btn_save)
+
         if file_path and os.path.exists(file_path):
-            btn_file = QPushButton(t("toast.open_file"))
-            btn_file.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn_file.clicked.connect(lambda: reveal_file(file_path))
-            h.addWidget(btn_file)
+            if not with_save:
+                btn_file = QPushButton(t("toast.open_file"))
+                btn_file.setObjectName("toast_action")
+                btn_file.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn_file.clicked.connect(lambda: reveal_file(file_path))
+                btn_row.addWidget(btn_file)
+
             btn_folder = QPushButton(t("toast.open_folder"))
+            btn_folder.setObjectName("toast_action")
             btn_folder.setCursor(Qt.CursorShape.PointingHandCursor)
             btn_folder.clicked.connect(lambda: open_folder(file_path))
-            h.addWidget(btn_folder)
+            btn_row.addWidget(btn_folder)
+
+        v.addLayout(btn_row)
+        wrapper_lay.addWidget(toast)
 
         idx = self._page_layout.indexOf(self._action_bar)
-        self._page_layout.insertWidget(idx, toast)
-        self._toast_widget = toast
+        self._page_layout.insertWidget(idx, wrapper)
+        self._toast_widget = wrapper
         if not with_save:
             QTimer.singleShot(
-                8000, lambda t=toast: t.setVisible(False) if isValid(t) else None)
+                8000, lambda w=wrapper: w.setVisible(False) if isValid(w) else None)
 
     def _resolve_output_dir(self, drop_widget, input_path: str = "") -> str:
         out = drop_widget.path()
@@ -347,8 +413,10 @@ class BasePage(QWidget):
             except RuntimeError:
                 continue
             if runner is not None and isValid(runner):
-                try: runner.cancel()
-                except Exception: pass
+                try:
+                    runner.cancel()
+                except Exception:
+                    pass
             threads.append(thread)
         if not threads:
             return
