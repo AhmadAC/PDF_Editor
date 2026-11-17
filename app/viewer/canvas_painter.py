@@ -242,9 +242,14 @@ class CanvasPainter:
             if num_preview:
                 pos_code = num_preview.get("pos_code", "bc")
                 font_size = float(num_preview.get("font_size", 10))
+                font_family = num_preview.get("font_family", "Helvetica") or "Helvetica"
+                is_bold = bool(num_preview.get("bold", False))
+                is_italic = bool(num_preview.get("italic", False))
                 targets = num_preview.get("targets", {})
                 margin = max(18.0, font_size + 8.0)
-                f_num = QFont("Helvetica")
+                f_num = QFont(font_family)
+                f_num.setBold(is_bold)
+                f_num.setItalic(is_italic)
                 f_num.setPixelSize(max(6, int(round(font_size * z))))
                 p.setFont(f_num)
                 fm_num = p.fontMetrics()

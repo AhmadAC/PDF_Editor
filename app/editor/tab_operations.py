@@ -1,5 +1,5 @@
 # app/editor/tab_operations.py
-"""PDF_Editor – tab_operations: form operations and PDF saving logic for TabEditar."""
+"""PDF_Editor – tab_operations: form operations and PDF saving logic with read-only Save As fallback for TabEditar."""
 
 import contextlib
 import io
@@ -7,12 +7,13 @@ import logging
 import os
 import tempfile
 import fitz
-from PySide6.QtWidgets import QMessageBox, QTableWidgetItem
+from PySide6.QtWidgets import QFileDialog, QMessageBox, QTableWidgetItem
 
+from app.constants import DESKTOP
 from app.i18n import t
 from app.utils import show_error, WrongPasswordError
 from app.editor.apply_edits import apply_pending_edits
-from app.pdf_io import atomic_pdf_write
+from app.pdf_io import atomic_pdf_write, is_path_writable
 from app.pdf_password import decrypt_pypdf
 
 _log = logging.getLogger(__name__)
@@ -97,13 +98,29 @@ def invalidate_viewer_pipeline(tab, out_path: str) -> None:
     for v in viewers:
         if v and v.current_path() and os.path.abspath(v.current_path()) == os.path.abspath(out_path):
             v._canvas.close_doc()
-            if v._fitz_doc:
+            doc = getattr(v, "_fitz_doc", None)
+            if doc is not None:
                 with contextlib.suppress(Exception):
-                    v._fitz_doc.close()
+                    if not getattr(doc, "is_closed", False):
+                        doc.close()
                 v._fitz_doc = None
             v._thumbnails._stop_all_workers()
             if win and hasattr(win, "_cleanup_pipeline"):
                 win._cleanup_pipeline(id(v))
+
+
+def _prompt_editor_save_as(tab, orig_out: str) -> str:
+    """Prompt Save As when the editor target path is read-only or locked."""
+    win = tab.window()
+    if win and hasattr(win, "_prompt_save_as_fallback"):
+        return win._prompt_save_as_fallback(orig_out)
+    base_name = os.path.basename(orig_out) if orig_out else "document.pdf"
+    suggested = os.path.normpath(os.path.join(DESKTOP, base_name))
+    tab._status("File is read-only — choose a location to save a copy")
+    new_out, _ = QFileDialog.getSaveFileName(
+        tab, t("widget.save_as"), suggested, t("file_filter.pdf")
+    )
+    return os.path.normpath(new_out) if new_out else ""
 
 
 def apply_form_fields_and_save(tab, out: str) -> None:
@@ -151,8 +168,26 @@ def apply_form_fields_and_save(tab, out: str) -> None:
             )
             _log.info("Re-encrypted forms output with user password as owner")
 
+        if not is_path_writable(out):
+            new_out = _prompt_editor_save_as(tab, out)
+            if not new_out:
+                return
+            out = new_out
+
         invalidate_viewer_pipeline(tab, out)
-        atomic_pdf_write(writer, out)
+        try:
+            atomic_pdf_write(writer, out)
+        except (PermissionError, OSError):
+            new_out = _prompt_editor_save_as(tab, out)
+            if not new_out:
+                return
+            out = new_out
+            invalidate_viewer_pipeline(tab, out)
+            atomic_pdf_write(writer, out)
+
+        win = tab.window()
+        if win and hasattr(win, "_remember_save_dir"):
+            win._remember_save_dir(os.path.dirname(out))
 
         tab._status(t("edit.status.form_saved", path=out))
         tab._load_pdf(out)
@@ -175,10 +210,30 @@ def apply_visual_edits_and_save(tab, out: str) -> None:
                 return
         peek.close()
 
-        tab._canvas.release_doc()
-        doc = fitz.open(tab._doc_path)
-        if doc.needs_pass and tab._pdf_password:
-            doc.authenticate(tab._pdf_password)
+        if not is_path_writable(out):
+            new_out = _prompt_editor_save_as(tab, out)
+            if not new_out:
+                return
+            out = new_out
+
+        def _build_edited_doc():
+            d = fitz.open(tab._doc_path)
+            if d.needs_pass and tab._pdf_password:
+                d.authenticate(tab._pdf_password)
+            res = apply_pending_edits(d, tab._pending)
+            reenc = bool(encrypt_choice == "protect" and tab._pdf_password)
+            if reenc:
+                perms = get_fitz_permissions(d)
+                opts = dict(
+                    garbage=4, deflate=True,
+                    encryption=_PDF_ENCRYPT_AES_256,
+                    user_pw=tab._pdf_password,
+                    owner_pw=tab._pdf_password,
+                    permissions=perms,
+                )
+            else:
+                opts = dict(garbage=4, deflate=True)
+            return d, res.text_fit_warnings, opts, reenc
 
         _non_latin = any(
             e.get("type") in ("text", "note", "text_edit")
@@ -188,30 +243,35 @@ def apply_visual_edits_and_save(tab, out: str) -> None:
         if _non_latin:
             tab._status(t("tool.warn.font_latin_only"))
 
-        _apply_result = apply_pending_edits(doc, tab._pending)
-        text_fit_warnings = _apply_result.text_fit_warnings
-        reencrypt = bool(encrypt_choice == "protect" and tab._pdf_password)
-        if reencrypt:
-            perms = get_fitz_permissions(doc)
-            save_opts = dict(
-                garbage=4, deflate=True,
-                encryption=_PDF_ENCRYPT_AES_256,
-                user_pw=tab._pdf_password,
-                owner_pw=tab._pdf_password,
-                permissions=perms,
-            )
-        else:
-            save_opts = dict(garbage=4, deflate=True)
+        tab._canvas.release_doc()
+        doc, text_fit_warnings, save_opts, reencrypt = _build_edited_doc()
 
         invalidate_viewer_pipeline(tab, out)
-        atomic_pdf_write(doc, out, save_opts=save_opts, close_writer=True)
+        try:
+            atomic_pdf_write(doc, out, save_opts=save_opts, close_writer=True)
+        except (PermissionError, OSError):
+            with contextlib.suppress(Exception):
+                if not getattr(doc, "is_closed", False):
+                    doc.close()
+            new_out = _prompt_editor_save_as(tab, out)
+            if not new_out:
+                tab._load_pdf(tab._doc_path)
+                return
+            out = new_out
+            doc2, text_fit_warnings, save_opts, reencrypt = _build_edited_doc()
+            invalidate_viewer_pipeline(tab, out)
+            atomic_pdf_write(doc2, out, save_opts=save_opts, close_writer=True)
+
         if reencrypt:
             _log.info("Re-encrypted output with user password as owner")
+
+        win = tab.window()
+        if win and hasattr(win, "_remember_save_dir"):
+            win._remember_save_dir(os.path.dirname(out))
 
         tab._pending.clear()
         tab._pending_list.clear()
 
-        win = tab.window()
         if win and hasattr(win, "_viewers"):
             for v in win._viewers:
                 if v and (not v.current_path() or os.path.abspath(v.current_path()) == os.path.abspath(out)):

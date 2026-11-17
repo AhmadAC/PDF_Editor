@@ -321,8 +321,8 @@ def t(key: str, **kwargs) -> str:
 
 
 _RECENT_FILES_MIN = 1
-_RECENT_FILES_MAX = 50
-_DEFAULT_MAX_RECENT = 10
+_RECENT_FILES_MAX = 200
+_DEFAULT_MAX_RECENT = 100
 _MAX_RECENT = _DEFAULT_MAX_RECENT
 
 
@@ -347,9 +347,28 @@ def get_recent_files() -> list[str]:
             recents = cfg.get("recent_files", [])
     except Exception:
         return []
-    valid = [p for p in recents
-             if isinstance(p, str) and os.path.lexists(p) and not os.path.isdir(p)]
-    if len(valid) != len([p for p in recents if isinstance(p, str)]):
+    if not isinstance(recents, list):
+        return []
+    valid: list[str] = []
+    seen: set[str] = set()
+    changed = False
+    for p in recents:
+        if not isinstance(p, str):
+            changed = True
+            continue
+        np = os.path.normpath(os.path.abspath(p))
+        nc = os.path.normcase(np)
+        if nc in seen:
+            changed = True
+            continue
+        if os.path.lexists(np) and not os.path.isdir(np):
+            seen.add(nc)
+            valid.append(np)
+            if np != p:
+                changed = True
+        else:
+            changed = True
+    if changed:
         try:
             _update_config(lambda c: c.__setitem__("recent_files", valid))
         except Exception:
@@ -360,7 +379,7 @@ def get_recent_files() -> list[str]:
 def add_recent_file(path: str):
     if not path or not isinstance(path, str):
         return
-    path = os.path.abspath(os.path.normpath(path))
+    path = os.path.normpath(os.path.abspath(path))
     if os.path.isdir(path):
         return
 
@@ -368,11 +387,18 @@ def add_recent_file(path: str):
         recents = cfg.get("recent_files", [])
         if not isinstance(recents, list):
             recents = []
-        recents = [p for p in recents if isinstance(p, str)]
-        if path in recents:
-            recents.remove(path)
-        recents.insert(0, path)
-        cfg["recent_files"] = recents[:_get_max_recent()]
+        norm_target = os.path.normcase(path)
+        cleaned: list[str] = [path]
+        seen: set[str] = {norm_target}
+        for p in recents:
+            if not isinstance(p, str):
+                continue
+            np = os.path.normpath(os.path.abspath(p))
+            nc = os.path.normcase(np)
+            if nc not in seen:
+                seen.add(nc)
+                cleaned.append(np)
+        cfg["recent_files"] = cleaned[:_get_max_recent()]
 
     _update_config(_mutate)
 

@@ -1,6 +1,6 @@
-# app\pdf_io.py 
+# app\pdf_io.py
 
-"""PDF_Editor – pdf_io: low-level atomic PDF write helpers.
+"""PDF_Editor – pdf_io: low-level atomic PDF write and writability helpers.
 
 Extracted from :class:`app.base.BasePage` (R3) so the same safe-write
 logic is shared by BOTH the tool pages (via
@@ -19,12 +19,37 @@ cycle.
 
 import contextlib
 import os
+import stat
 import sys
 import tempfile
 import time
 from typing import Iterable
 
-__all__ = ["atomic_pdf_write", "check_not_same_path"]
+__all__ = ["atomic_pdf_write", "check_not_same_path", "is_path_writable"]
+
+
+def is_path_writable(path: str) -> bool:
+    """Return True if ``path`` appears writable via OS permissions and file attributes.
+
+    Checks without opening a write handle so active read handles held by the
+    viewer do not trigger false negatives on Windows.
+    """
+    if not path:
+        return False
+    try:
+        if os.path.exists(path):
+            if not os.access(path, os.W_OK):
+                return False
+            if sys.platform == "win32":
+                attrs = getattr(os.stat(path), "st_file_attributes", 0)
+                ro_flag = getattr(stat, "FILE_ATTRIBUTE_READONLY", 0x1)
+                if attrs & ro_flag:
+                    return False
+            return True
+        parent = os.path.dirname(path) or "."
+        return os.path.isdir(parent) and os.access(parent, os.W_OK)
+    except OSError:
+        return False
 
 
 def check_not_same_path(dst: str,

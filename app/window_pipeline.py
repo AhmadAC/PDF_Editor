@@ -1,12 +1,15 @@
 # app/window_pipeline.py
-"""PDF_Editor – Pipeline processing, Save As, Save As Copy, and security wiping mixin."""
+"""PDF_Editor – Pipeline processing, Save As, Save As Copy, read-only fallback, and security wiping mixin."""
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import shutil
+import sys
 import tempfile
+import time
 import traceback
 from typing import TYPE_CHECKING, Any
 
@@ -15,6 +18,8 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox
 from app.base import BasePage
 from app.constants import DESKTOP
 from app.i18n import add_recent_file, t
+from app.pdf_io import is_path_writable
+from app.utils import show_error
 
 if TYPE_CHECKING:
     from PySide6.QtWidgets import (
@@ -41,6 +46,7 @@ class WindowPipelineMixin(_Base):
         _current_tool: int
         _pipeline_state: dict[int, dict[str, Any]]
         _sb: QStatusBar
+        _last_save_dir: str
 
         def _get_or_create_tool(self, index: int) -> QWidget | None: ...
         def _edit_tool_idx(self) -> int: ...
@@ -49,6 +55,59 @@ class WindowPipelineMixin(_Base):
         def _page_numbers_tool_idx(self) -> int: ...
         def _update_breadcrumb(self) -> None: ...
         def _update_tab_bar_visibility(self) -> None: ...
+
+    def _get_last_save_dir(self) -> str:
+        d = getattr(self, "_last_save_dir", "")
+        if d and os.path.isdir(d):
+            return d
+        try:
+            from app.i18n import _CONFIG_PATH
+            if os.path.isfile(_CONFIG_PATH):
+                with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+                    val = json.load(f).get("last_save_dir", "")
+                    if val and os.path.isdir(val):
+                        self._last_save_dir = val
+                        return val
+        except Exception:
+            pass
+        return ""
+
+    def _remember_save_dir(self, directory: str) -> None:
+        if not directory or not os.path.isdir(directory):
+            return
+        norm_d = os.path.normpath(directory)
+        self._last_save_dir = norm_d
+        with contextlib.suppress(Exception):
+            from app.i18n import _update_config
+            _update_config(lambda cfg: cfg.__setitem__("last_save_dir", norm_d))
+
+    def _prompt_save_as_fallback(self, orig_path: str) -> str:
+        """Open a Save As dialog when the original file cannot be overwritten (e.g. read-only)."""
+        base_name = os.path.basename(orig_path) if orig_path else "document.pdf"
+        if not base_name.lower().endswith(".pdf"):
+            base_name = os.path.splitext(base_name)[0] + ".pdf"
+
+        last_dir = self._get_last_save_dir()
+        if last_dir and is_path_writable(last_dir):
+            target_dir = last_dir
+        else:
+            orig_dir = os.path.dirname(orig_path) if orig_path else ""
+            if (
+                orig_dir
+                and os.path.isdir(orig_dir)
+                and "xwechat_files" not in orig_dir.lower()
+                and is_path_writable(orig_dir)
+            ):
+                target_dir = orig_dir
+            else:
+                target_dir = DESKTOP
+
+        suggested = os.path.normpath(os.path.join(target_dir, base_name))
+        self._sb.showMessage("File is read-only — choose a location to save a copy")
+        path, _ = QFileDialog.getSaveFileName(
+            self, t("widget.save_as"), suggested, t("file_filter.pdf")
+        )
+        return os.path.normpath(path) if path else ""
 
     def _handle_global_undo(self):
         edit_idx = self._edit_tool_idx()
@@ -139,19 +198,24 @@ class WindowPipelineMixin(_Base):
                     v._fitz_doc = None
                 v._thumbnails._stop_all_workers()
 
+        dst_dir = os.path.dirname(dest_path) or "."
+        fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=dst_dir)
+        os.close(fd)
         try:
-            dst_dir = os.path.dirname(dest_path) or "."
-            fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=dst_dir)
-            os.close(fd)
-            try:
-                shutil.copyfile(src_path, tmp)
-                os.replace(tmp, dest_path)
-            except Exception:
-                with contextlib.suppress(Exception):
+            shutil.copyfile(src_path, tmp)
+            for attempt in range(5):
+                try:
+                    os.replace(tmp, dest_path)
+                    break
+                except PermissionError:
+                    if attempt == 4 or sys.platform != "win32":
+                        raise
+                    time.sleep(0.05)
+        except Exception:
+            with contextlib.suppress(Exception):
+                if os.path.exists(tmp):
                     os.unlink(tmp)
-                raise
-        except OSError:
-            shutil.copy2(src_path, dest_path)
+            raise
 
     def _save_pipeline(self, prompt_dialog: bool = False):
         viewer = self._viewer
@@ -169,12 +233,16 @@ class WindowPipelineMixin(_Base):
             base, ext = os.path.splitext(os.path.basename(orig)) if orig else ("document", ".pdf")
             default_name = f"{base}{ext if ext.lower() == '.pdf' else '.pdf'}"
             suggested = os.path.normpath(os.path.join(os.path.dirname(orig) if orig else DESKTOP, default_name))
-            path, _ = QFileDialog.getSaveFileName(self, t("btn.choose"), suggested, t("file_filter.pdf"))
+            path, _ = QFileDialog.getSaveFileName(self, t("widget.save_as"), suggested, t("file_filter.pdf"))
             if not path:
                 return
             path = os.path.normpath(path)
         else:
             path = orig
+            if not is_path_writable(path):
+                path = self._prompt_save_as_fallback(orig)
+                if not path:
+                    return
 
         try:
             if os.path.lexists(path) and os.path.realpath(path) != os.path.abspath(path):
@@ -186,7 +254,21 @@ class WindowPipelineMixin(_Base):
         cur_page = viewer._canvas.page_at_y(scroll_val) if (hasattr(viewer, "_canvas") and viewer._canvas.page_count() > 0) else 0
         cur_selected = viewer._thumbnails.selected_pages() if hasattr(viewer, "_thumbnails") else [cur_page]
 
-        self._atomic_copy_file(ps["temp_path"], path)
+        try:
+            self._atomic_copy_file(ps["temp_path"], path)
+        except (PermissionError, OSError) as exc:
+            _log.warning("Direct save failed (%s), falling back to Save As", exc)
+            new_path = self._prompt_save_as_fallback(path)
+            if not new_path:
+                return
+            path = new_path
+            try:
+                self._atomic_copy_file(ps["temp_path"], path)
+            except Exception as exc2:
+                show_error(self, exc2)
+                return
+
+        self._remember_save_dir(os.path.dirname(path))
         self._cleanup_pipeline(vid)
         viewer.load(path, target_page=cur_page, target_scroll=scroll_val, selected_pages=cur_selected, _is_history_step=True)
         viewer._original_doc_path = path
@@ -214,14 +296,18 @@ class WindowPipelineMixin(_Base):
             if not out:
                 return
             out = os.path.normpath(out)
+            self._remember_save_dir(os.path.dirname(out))
             if getattr(edit_w, "_user_pending", None):
                 edit_w._drop_out.set_path(out)
                 from app.editor.tab_operations import apply_visual_edits_and_save
                 apply_visual_edits_and_save(edit_w, out)
             else:
-                self._atomic_copy_file(doc_path, out)
-                edit_w._load_pdf(out)
-                self._sb.showMessage(f"Saved as {os.path.basename(out)}")
+                try:
+                    self._atomic_copy_file(doc_path, out)
+                    edit_w._load_pdf(out)
+                    self._sb.showMessage(f"Saved as {os.path.basename(out)}")
+                except Exception as exc:
+                    show_error(self, exc)
             return
 
         viewer = self._viewer
@@ -244,6 +330,7 @@ class WindowPipelineMixin(_Base):
 
         try:
             self._atomic_copy_file(src_path, out)
+            self._remember_save_dir(os.path.dirname(out))
             self._cleanup_pipeline(vid)
             viewer.load(out)
             viewer._original_doc_path = out
@@ -279,6 +366,7 @@ class WindowPipelineMixin(_Base):
 
         try:
             self._atomic_copy_file(src_path, out)
+            self._remember_save_dir(os.path.dirname(out))
             add_recent_file(out)
             self._sb.showMessage(f"Saved copy -> {os.path.basename(out)}")
         except Exception as exc:
