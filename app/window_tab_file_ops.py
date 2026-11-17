@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import tempfile
@@ -16,6 +17,8 @@ from app.i18n import t
 
 if TYPE_CHECKING:
     from app.viewer.panel import PdfViewerPanel
+
+_log = logging.getLogger(__name__)
 
 _INVALID_WIN_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -100,9 +103,6 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
         QMessageBox.warning(win, t("msg.warning"), f"A file named '{new_name}' already exists in this folder.")
         return
 
-    print(f"[DEBUG][Rename] Renaming on disk: {disk_path!r} -> {new_path!r}")
-
-    # Capture current view state before releasing file handles
     curr_viewer_path = viewer.current_path()
     viewer_holds_disk_file = bool(
         curr_viewer_path and os.path.abspath(curr_viewer_path) == os.path.abspath(disk_path)
@@ -115,7 +115,6 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
         if viewer._canvas.page_count() > 0:
             cur_page = viewer._canvas.page_at_y(scroll_val)
 
-    # Release viewer handles on disk_path if directly opened
     if viewer_holds_disk_file:
         viewer._canvas.close_doc()
         if viewer._fitz_doc is not None:
@@ -124,7 +123,6 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
             viewer._fitz_doc = None
         viewer._thumbnails._stop_all_workers()
 
-    # Release TabEditar handles if it holds disk_path
     edit_idx = win._edit_tool_idx() if hasattr(win, "_edit_tool_idx") else -1
     edit_w = win.stack.widget(edit_idx) if (0 <= edit_idx < win.stack.count()) else None
     edit_holds_disk_file = False
@@ -134,7 +132,6 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
             edit_holds_disk_file = True
             edit_w._canvas.release_doc()
 
-    # Perform atomic rename (handling case-only renames on Windows)
     try:
         if is_case_only:
             fd, tmp_path = tempfile.mkstemp(prefix=".rename_", suffix=old_ext, dir=parent_dir)
@@ -145,7 +142,7 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
         else:
             os.rename(disk_path, new_path)
     except Exception as exc:
-        print(f"[DEBUG][Rename] Failed: {traceback.format_exc()}")
+        _log.debug("Rename failed: %s", traceback.format_exc())
         if viewer_holds_disk_file:
             viewer.load(disk_path, target_page=cur_page, target_scroll=scroll_val, _is_history_step=True)
         if edit_holds_disk_file and edit_w is not None:
@@ -153,7 +150,6 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
         QMessageBox.critical(win, t("msg.error"), f"Could not rename file:\n{exc}")
         return
 
-    # Update viewer state & history paths
     viewer._original_doc_path = new_path
     old_abs = os.path.abspath(disk_path)
     for stack_attr in ("_undo_stack", "_redo_stack"):
@@ -167,8 +163,8 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
 
     if is_modified and ps is not None:
         ps["original_path"] = new_path
-        viewer._name_lbl.setText(f"● {new_name}")
-        win._tab_bar.setTabText(tab_idx, f"● {new_name}")
+        viewer._name_lbl.setText(f"* {new_name}")
+        win._tab_bar.setTabText(tab_idx, f"* {new_name}")
         win._tab_bar.setTabToolTip(tab_idx, f"{new_path} (modified)")
     else:
         win._tab_bar.setTabText(tab_idx, new_name)
@@ -178,7 +174,6 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
         viewer.load(new_path, target_page=cur_page, target_scroll=scroll_val, _is_history_step=True)
         viewer._original_doc_path = new_path
 
-    # Update TabEditar cache & open path
     if edit_w is not None and not getattr(edit_w, "_is_lazy_placeholder", False):
         doc_states = getattr(edit_w, "_doc_states", None)
         if isinstance(doc_states, dict) and old_abs in doc_states:
@@ -200,15 +195,14 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
     if hasattr(win, "_update_breadcrumb"):
         win._update_breadcrumb()
     if viewer is win._viewer and hasattr(win, "setWindowTitle"):
-        title_name = f"● {new_name}" if is_modified else new_name
+        title_name = f"* {new_name}" if is_modified else new_name
         win.setWindowTitle(f"{t('app.name')} - {title_name}")
 
-    msg = f"✔ Renamed to '{new_name}'"
+    msg = f"Renamed to '{new_name}'"
     if hasattr(win, "_set_status"):
         win._set_status(msg)
     elif hasattr(win, "_sb"):
         win._sb.showMessage(msg)
-    print(f"[DEBUG][Rename] Successfully renamed to {new_path!r}")
 
 
 def delete_tab_file_from_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> None:
@@ -237,7 +231,6 @@ def delete_tab_file_from_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) ->
         if target and os.path.isfile(target):
             try:
                 os.remove(target)
-                print(f"[DEBUG][DeleteDisk] Deleted {target!r}")
             except Exception as exc:
                 QMessageBox.critical(win, "Error", f"Could not delete file:\n{exc}")
 
@@ -248,7 +241,7 @@ def delete_tab_file_from_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) ->
             with contextlib.suppress(Exception):
                 ref()
 
-    msg = f"✔ Deleted '{filename}' from disk"
+    msg = f"Deleted '{filename}' from disk"
     if hasattr(win, "_set_status"):
         win._set_status(msg)
     elif hasattr(win, "_sb"):

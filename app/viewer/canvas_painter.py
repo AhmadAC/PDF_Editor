@@ -70,7 +70,7 @@ class CanvasPainter:
                     f = QFont()
                     f.setPointSize(9)
                     p.setFont(f)
-                    p.drawText(page_r, Qt.AlignmentFlag.AlignCenter, f"⏳ {i + 1}")
+                    p.drawText(page_r, Qt.AlignmentFlag.AlignCenter, f"Page {i + 1}")
 
                 p.setPen(border_col)
                 p.setBrush(Qt.BrushStyle.NoBrush)
@@ -147,7 +147,7 @@ class CanvasPainter:
                         fi.setBold(True)
                         p.setFont(fi)
                         p.setPen(QColor("#1C1917"))
-                        p.drawText(icon_r, Qt.AlignmentFlag.AlignCenter, "\u270e")
+                        p.drawText(icon_r, Qt.AlignmentFlag.AlignCenter, "N")
                     if open_note == (page_idx, annot_idx) and txt:
                         open_note_info = (px, py, txt)
 
@@ -258,7 +258,6 @@ class CanvasPainter:
                     if clip_rect is not None and not page_r.intersects(clip_rect):
                         continue
 
-                    pw_pt = entry.w / z
                     ph_pt = entry.h / z
                     tw_px = fm_num.horizontalAdvance(label)
                     th_px = fm_num.height()

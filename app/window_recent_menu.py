@@ -1,30 +1,32 @@
 # app/window_recent_menu.py
-"""PDF_Editor – Recent files context menu, persistent popups, and history actions mixin."""
+"""PDF_Editor – Recent files context menu, persistent popups, and history actions mixin using SVG icons."""
 
 from __future__ import annotations
 
 import contextlib
 import os
-import shutil
-import sys
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QCursor
 from PySide6.QtWidgets import (
-    QApplication,
     QMainWindow,
     QMenu,
-    QMessageBox,
     QProxyStyle,
     QStyle,
 )
-import qtawesome as qta
 from shiboken6 import isValid
 
 from app.constants import ACCENT, TEXT_SEC, _LQ
 from app.i18n import get_recent_files, t
-from app.utils import reveal_file, success_color
+from app.utils import (
+    SVG_CHECK,
+    SVG_FILE_ALT,
+    SVG_FILE_PDF,
+    SVG_HISTORY,
+    success_color,
+    svg_icon,
+)
 
 if TYPE_CHECKING:
     _Base = QMainWindow
@@ -117,7 +119,7 @@ class WindowRecentMenuMixin(_Base):
         hdr_text = t("viewer.recent")
         if hdr_text == "viewer.recent":
             hdr_text = "Recent files"
-        hdr_action = menu.addAction(qta.icon("fa5s.history", color=ACCENT), hdr_text)
+        hdr_action = menu.addAction(svg_icon(SVG_HISTORY, color=ACCENT, size=15), hdr_text)
         hdr_action.setEnabled(False)
         menu.addSeparator()
 
@@ -145,7 +147,7 @@ class WindowRecentMenuMixin(_Base):
             for rp in recents:
                 fname = os.path.basename(rp)
                 if len(fname) > 42:
-                    disp_name = fname[:22] + "…" + fname[-17:]
+                    disp_name = fname[:22] + "..." + fname[-17:]
                 else:
                     disp_name = fname
 
@@ -157,11 +159,11 @@ class WindowRecentMenuMixin(_Base):
                 norm_rp = os.path.normcase(os.path.abspath(rp))
                 is_open = norm_rp in open_paths
                 if is_open:
-                    ico = qta.icon("fa5s.check", color=opened_color)
+                    ico = svg_icon(SVG_CHECK, color=opened_color, size=15)
                 elif rp.lower().endswith(".pdf"):
-                    ico = qta.icon("fa5s.file-pdf", color=icon_color)
+                    ico = svg_icon(SVG_FILE_PDF, color=icon_color, size=15)
                 else:
-                    ico = qta.icon("fa5s.file-alt", color=icon_color)
+                    ico = svg_icon(SVG_FILE_ALT, color=icon_color, size=15)
 
                 act = menu.addAction(ico, disp_name)
                 act.setToolTip(rp)
@@ -202,8 +204,8 @@ class WindowRecentMenuMixin(_Base):
         if viewer is not None:
             opened_color = success_color(getattr(self, "_dark_mode", True))
             if isValid(action):
-                action.setIcon(qta.icon("fa5s.check", color=opened_color))
-            self._set_status(f"✔ {os.path.basename(path)}")
+                action.setIcon(svg_icon(SVG_CHECK, color=opened_color, size=15))
+            self._set_status(f"Opened {os.path.basename(path)}")
 
     def _clear_recent(self):
         from app.i18n import _update_config

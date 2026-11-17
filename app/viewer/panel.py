@@ -1,5 +1,6 @@
+
 # app/viewer/panel.py
-"""PDF_Editor – PdfViewerPanel: PDF viewer with drag & drop, text selection, signatures, and thumbnail multi-page actions."""
+"""PDF_Editor – PdfViewerPanel: PDF viewer with drag & drop, text selection, SVG icons, signatures, and thumbnail multi-page actions."""
 import contextlib
 import json
 import logging
@@ -10,13 +11,21 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QLineEdit, QSplitter, QTabWidget,
-    QTreeWidget, QDialog, QTextEdit
+    QTreeWidget, QTextEdit
 )
 from PySide6.QtGui import QKeySequence, QShortcut
-import qtawesome as qta
 
-from app.constants import TEXT_SEC, DESKTOP
+from app.constants import TEXT_SEC
 from app.i18n import t, _CONFIG_PATH
+from app.utils import (
+    SVG_CHEVRON_DOWN,
+    SVG_CHEVRON_UP,
+    SVG_CLOSE,
+    SVG_FOLDER,
+    show_error,
+    svg_for_name,
+    svg_icon,
+)
 from app.viewer.canvas_1 import _SelectCanvas
 from app.viewer.thumbnails import ThumbnailPanel, DEFAULT_THUMB_WIDTH
 
@@ -24,7 +33,6 @@ from app.viewer.panel_history import PanelHistoryMixin
 from app.viewer.panel_page_ops import PanelPageOpsMixin
 from app.viewer.panel_search_print import PanelSearchPrintMixin
 from app.viewer.panel_nav import PanelNavMixin
-from app.utils import show_error
 
 _log = logging.getLogger(__name__)
 
@@ -92,7 +100,7 @@ class PdfViewerPanel(PanelHistoryMixin, PanelPageOpsMixin, PanelSearchPrintMixin
 
         def _nav_btn(icon_name):
             b = QPushButton()
-            b.setIcon(qta.icon(icon_name, color=TEXT_SEC))
+            b.setIcon(svg_for_name(icon_name, color=TEXT_SEC, size=15))
             b.setObjectName("viewer_nav_btn")
             b.setFixedSize(28, 28)
             b.setEnabled(False)
@@ -169,7 +177,7 @@ class PdfViewerPanel(PanelHistoryMixin, PanelPageOpsMixin, PanelSearchPrintMixin
         ph_drag.setObjectName("viewer_placeholder")
         ph_drag.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._ph_btn = QPushButton(t("viewer.open_btn"))
-        self._ph_btn.setIcon(qta.icon('fa5s.folder-open', color='#FFFFFF'))
+        self._ph_btn.setIcon(svg_icon(SVG_FOLDER, color='#FFFFFF', size=16))
         self._ph_btn.setObjectName("btn_primary")
         self._ph_btn.setFixedWidth(160)
         self._ph_btn.clicked.connect(self._open_dialog)
@@ -280,21 +288,21 @@ class PdfViewerPanel(PanelHistoryMixin, PanelPageOpsMixin, PanelSearchPrintMixin
         self._search_lbl.setMinimumWidth(60)
         self._search_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._search_prev_btn = QPushButton()
-        self._search_prev_btn.setIcon(qta.icon("fa5s.chevron-up", color=TEXT_SEC))
+        self._search_prev_btn.setIcon(svg_icon(SVG_CHEVRON_UP, color=TEXT_SEC, size=15))
         self._search_prev_btn.setFixedSize(28, 28)
         self._search_prev_btn.setObjectName("viewer_nav_btn")
         self._search_prev_btn.setToolTip(t("search.prev"))
         self._search_prev_btn.setAccessibleName(t("search.prev"))
         self._search_prev_btn.clicked.connect(self._search_prev)
         self._search_next_btn = QPushButton()
-        self._search_next_btn.setIcon(qta.icon("fa5s.chevron-down", color=TEXT_SEC))
+        self._search_next_btn.setIcon(svg_icon(SVG_CHEVRON_DOWN, color=TEXT_SEC, size=15))
         self._search_next_btn.setFixedSize(28, 28)
         self._search_next_btn.setObjectName("viewer_nav_btn")
         self._search_next_btn.setToolTip(t("search.next"))
         self._search_next_btn.setAccessibleName(t("search.next"))
         self._search_next_btn.clicked.connect(self._search_next)
         self._search_close_btn = QPushButton()
-        self._search_close_btn.setIcon(qta.icon("fa5s.times", color=TEXT_SEC))
+        self._search_close_btn.setIcon(svg_icon(SVG_CLOSE, color=TEXT_SEC, size=14))
         self._search_close_btn.setFixedSize(28, 28)
         self._search_close_btn.setObjectName("viewer_nav_btn")
         self._search_close_btn.setToolTip(t("search.close"))
@@ -394,3 +402,4 @@ class PdfViewerPanel(PanelHistoryMixin, PanelPageOpsMixin, PanelSearchPrintMixin
         except Exception:
             pass
         super().closeEvent(event)
+

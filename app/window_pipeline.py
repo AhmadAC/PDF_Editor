@@ -98,7 +98,6 @@ class WindowPipelineMixin(_Base):
             self._viewer.redo()
 
     def _on_pipeline_done(self, temp_path: str):
-        print(f"[DEBUG][Pipeline] _on_pipeline_done temp_path={temp_path!r}")
         viewer = self._viewer
         if not viewer:
             return
@@ -112,7 +111,7 @@ class WindowPipelineMixin(_Base):
         viewer.load(temp_path, _is_history_step=True)
         idx = self._viewer_stack.currentIndex()
         orig_name = os.path.basename(ps["original_path"])
-        self._tab_bar.setTabText(idx, f"● {orig_name}")
+        self._tab_bar.setTabText(idx, f"* {orig_name}")
         self._tab_bar.setTabToolTip(idx, f"{ps['original_path']} (modified)")
         self._sb.showMessage(t("pipeline.applied"))
         if self._current_tool >= 0:
@@ -126,10 +125,8 @@ class WindowPipelineMixin(_Base):
                 fn(temp_path)
 
     def _atomic_copy_file(self, src_path: str, dest_path: str) -> None:
-        print(f"[DEBUG][Save] Atomic copy {src_path!r} -> {dest_path!r}")
         for v in self._viewers:
             if v.current_path() and os.path.abspath(v.current_path()) == os.path.abspath(dest_path):
-                print(f"[DEBUG][Save] Releasing open viewer handles on target {dest_path!r}")
                 v._canvas.close_doc()
                 if v._fitz_doc:
                     with contextlib.suppress(Exception):
@@ -180,11 +177,9 @@ class WindowPipelineMixin(_Base):
         self._tab_bar.setTabToolTip(idx, path)
         add_recent_file(path)
         self._sb.showMessage(t("pipeline.saved"))
-        print(f"[DEBUG][Save] Pipeline saved to {path!r}")
 
     def _save_as_current_doc(self):
         """Handle Ctrl+Shift+S (Save As) across Edit Mode and Normal Viewer."""
-        print(f"[DEBUG][SaveAs] Triggered Ctrl+Shift+S (current_tool={self._current_tool})")
         edit_idx = self._edit_tool_idx()
         if self._current_tool == edit_idx:
             edit_w: Any = self._get_or_create_tool(edit_idx)
@@ -197,7 +192,6 @@ class WindowPipelineMixin(_Base):
             out, _ = QFileDialog.getSaveFileName(self, t("widget.save_as"), suggested, t("file_filter.pdf"))
             if not out:
                 return
-            print(f"[DEBUG][SaveAs] Saving Edit Mode document to {out!r}")
             if getattr(edit_w, "_user_pending", None):
                 edit_w._drop_out.set_path(out)
                 from app.editor.tab_operations import apply_visual_edits_and_save
@@ -205,12 +199,12 @@ class WindowPipelineMixin(_Base):
             else:
                 self._atomic_copy_file(doc_path, out)
                 edit_w._load_pdf(out)
-                self._sb.showMessage(f"✔ Saved as {os.path.basename(out)}")
+                self._sb.showMessage(f"Saved as {os.path.basename(out)}")
             return
 
         viewer = self._viewer
         if not viewer or not viewer.current_path():
-            self._sb.showMessage("ℹ No open PDF to save.")
+            self._sb.showMessage("No open PDF to save.")
             return
 
         vid = id(viewer)
@@ -235,10 +229,9 @@ class WindowPipelineMixin(_Base):
             add_recent_file(out)
             self._update_tab_bar_visibility()
             self._update_breadcrumb()
-            self._sb.showMessage(f"✔ Saved as {os.path.basename(out)}")
-            print(f"[DEBUG][SaveAs] Viewer document saved to {out!r}")
+            self._sb.showMessage(f"Saved as {os.path.basename(out)}")
         except Exception as exc:
-            print(f"[DEBUG][SaveAs] Error: {traceback.format_exc()}")
+            _log.debug("Save As error: %s", traceback.format_exc())
             QMessageBox.critical(self, t("msg.error"), f"Could not save file:\n{exc}")
 
     def _save_as_copy_for_viewer(self, viewer: PdfViewerPanel | None = None):
@@ -252,8 +245,6 @@ class WindowPipelineMixin(_Base):
         src_path = ps["temp_path"] if (ps and ps.get("temp_path") and os.path.isfile(ps["temp_path"])) else target_v.current_path()
         orig = (ps.get("original_path") if ps else None) or getattr(target_v, "_original_doc_path", "") or target_v.current_path()
 
-        print(f"[DEBUG][SaveAsCopy] Tab save as copy | src={src_path!r} | orig={orig!r}")
-
         base, ext = os.path.splitext(os.path.basename(orig))
         default_name = f"{base}_copy.pdf" if ext.lower() == ".pdf" else f"{base}.pdf"
         suggested = os.path.join(os.path.dirname(orig), default_name)
@@ -264,10 +255,9 @@ class WindowPipelineMixin(_Base):
         try:
             self._atomic_copy_file(src_path, out)
             add_recent_file(out)
-            self._sb.showMessage(f"✔ Saved copy → {os.path.basename(out)}")
-            print(f"[DEBUG][SaveAsCopy] Successfully saved copy to {out!r}")
+            self._sb.showMessage(f"Saved copy -> {os.path.basename(out)}")
         except Exception as exc:
-            print(f"[DEBUG][SaveAsCopy] Error: {traceback.format_exc()}")
+            _log.debug("Save As Copy error: %s", traceback.format_exc())
             QMessageBox.critical(self, t("msg.error"), f"Could not save copy:\n{exc}")
 
     def _cleanup_pipeline(self, viewer_id: int):

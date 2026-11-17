@@ -1,5 +1,5 @@
 # app/viewer/canvas_action_menus.py
-"""PDF_Editor – Context menus, note interaction, comment deletion, and rich highlight/color tools."""
+"""PDF_Editor – Context menus, note interaction, comment deletion, and rich highlight/color tools with SVG icons."""
 from __future__ import annotations
 
 import contextlib
@@ -19,10 +19,22 @@ from PySide6.QtWidgets import (
     QProxyStyle,
     QStyle,
 )
-import qtawesome as qta
 
 from app.constants import ACCENT, TEXT_SEC
 from app.i18n import t
+from app.utils import (
+    SVG_CHECK,
+    SVG_COPY,
+    SVG_EDIT,
+    SVG_GROUP,
+    SVG_HIGHLIGHTER,
+    SVG_PEN,
+    SVG_PLUS_CIRCLE,
+    SVG_SIGNATURE,
+    SVG_TRASH,
+    SVG_VECTOR_SQUARE,
+    svg_icon,
+)
 from app.viewer.canvas_worker import _NOTE_ICON_SIZE
 
 if TYPE_CHECKING:
@@ -267,7 +279,6 @@ class CanvasActionMenuBuilder:
             if edit_idx >= 0 and hasattr(win, "stack"):
                 edit_w = win.stack.widget(edit_idx)
                 if edit_w:
-                    # Keep the right-hand editor controls pane collapsed when launching via context menu
                     ctrl_scroll = getattr(edit_w, "_ctrl_scroll", None)
                     if ctrl_scroll is not None:
                         ctrl_scroll.setVisible(False)
@@ -316,9 +327,9 @@ class CanvasActionMenuBuilder:
             self._menu_style = _ScrollableMenuStyle(menu.style())
             menu.setStyle(self._menu_style)
             menu.setStyleSheet("QMenu { menu-scrollable: 1; }")
-            act_apply = menu.addAction(qta.icon("fa5s.check", color=ACCENT), t("btn.apply"))
+            act_apply = menu.addAction(svg_icon(SVG_CHECK, color=ACCENT, size=15), t("btn.apply"))
             act_apply.triggered.connect(lambda _=False: c.commit_active_signature())
-            act_del = menu.addAction(qta.icon("fa5s.trash-alt", color="#EF4444"), t("btn.delete"))
+            act_del = menu.addAction(svg_icon(SVG_TRASH, color="#EF4444", size=15), t("btn.delete"))
             act_del.triggered.connect(lambda _=False: c.delete_active_signature())
             menu.exec(e.globalPos())
             return
@@ -329,7 +340,7 @@ class CanvasActionMenuBuilder:
             self._menu_style = _ScrollableMenuStyle(menu.style())
             menu.setStyle(self._menu_style)
             menu.setStyleSheet("QMenu { menu-scrollable: 1; }")
-            delete_action = menu.addAction(t("viewer.delete_comment"))
+            delete_action = menu.addAction(svg_icon(SVG_TRASH, color="#EF4444", size=15), t("viewer.delete_comment"))
             action = menu.exec(e.globalPos())
             if action == delete_action:
                 self._delete_comment_at(hit)
@@ -342,52 +353,52 @@ class CanvasActionMenuBuilder:
 
         if c._sel_text:
             act_copy = menu.addAction(
-                qta.icon("fa5s.copy", color=ACCENT),
+                svg_icon(SVG_COPY, color=ACCENT, size=15),
                 t("viewer.copy_chars", n=len(c._sel_text)),
             )
             act_copy.triggered.connect(lambda _=False: QApplication.clipboard().setText(c._sel_text))
 
             act_hi_sel = menu.addAction(
-                qta.icon("fa5s.highlighter", color=ACCENT),
+                svg_icon(SVG_HIGHLIGHTER, color=ACCENT, size=15),
                 t("tool.text.highlight", default="Highlight Selection"),
             )
             act_hi_sel.triggered.connect(lambda _=False: self._apply_highlight_to_selection(self._current_hi_color))
             menu.addSeparator()
 
         act_sel_all = menu.addAction(
-            qta.icon("fa5s.object-group", color=TEXT_SEC),
+            svg_icon(SVG_GROUP, color=TEXT_SEC, size=15),
             t("Select All Text", default="Select All Text\tCtrl+A"),
         )
         act_sel_all.triggered.connect(lambda _=False: select_all_fn())
         menu.addSeparator()
 
         act_add_text = menu.addAction(
-            qta.icon("fa5s.plus-circle", color=ACCENT),
+            svg_icon(SVG_PLUS_CIRCLE, color=ACCENT, size=15),
             "Add Text",
         )
         act_add_text.triggered.connect(lambda _=False: self._route_to_edit_tool("add", pos))
 
         act_edit_text = menu.addAction(
-            qta.icon("fa5s.edit", color=ACCENT),
+            svg_icon(SVG_EDIT, color=ACCENT, size=15),
             "Edit Text",
         )
         act_edit_text.triggered.connect(lambda _=False: self._route_to_edit_tool("edit", pos))
         menu.addSeparator()
 
         act_draw = menu.addAction(
-            qta.icon("fa5s.pen", color=ACCENT),
+            svg_icon(SVG_PEN, color=ACCENT, size=15),
             "Draw (Freehand Pen)",
         )
         act_draw.triggered.connect(lambda _=False: self._route_to_edit_tool("draw", pos))
 
         act_draw_hi_rect = menu.addAction(
-            qta.icon("fa5s.vector-square", color=ACCENT),
+            svg_icon(SVG_VECTOR_SQUARE, color=ACCENT, size=15),
             "Draw Highlight (Rectangle)",
         )
         act_draw_hi_rect.triggered.connect(lambda _=False: c.set_rect_highlight_mode(True, self._current_hi_color))
 
         act_hi_text = menu.addAction(
-            qta.icon("fa5s.highlighter", color=ACCENT),
+            svg_icon(SVG_HIGHLIGHTER, color=ACCENT, size=15),
             "Highlight Text",
         )
         act_hi_text.triggered.connect(lambda _=False: self._route_to_edit_tool("highlight_text", pos))
@@ -420,8 +431,7 @@ class CanvasActionMenuBuilder:
             act_color.triggered.connect(_make_color_handler(rgb_tuple))
 
         menu.addSeparator()
-        act_sig = menu.addAction(qta.icon("fa5s.signature", color=ACCENT), t("viewer.add_signature"))
+        act_sig = menu.addAction(svg_icon(SVG_SIGNATURE, color=ACCENT, size=15), t("viewer.add_signature"))
         act_sig.triggered.connect(lambda _=False: c.start_add_signature_flow(pos))
 
         menu.exec(e.globalPos())
-

@@ -13,7 +13,7 @@ from app.i18n import t
 
 if TYPE_CHECKING:
     import fitz
-    from PySide6.QtWidgets import QWidget, QScrollArea, QTabWidget
+    from PySide6.QtWidgets import QScrollArea, QTabWidget
     from app.viewer.canvas_1 import _SelectCanvas
     from app.viewer.thumbnails import ThumbnailPanel
 
@@ -62,7 +62,7 @@ class PanelHistoryMixin:
         if not getattr(self, "_undo_stack", None):
             win: Any = self.window()
             if hasattr(win, "_set_status"):
-                win._set_status("ℹ Nothing to undo")
+                win._set_status("Nothing to undo")
             return
 
         scroll_val = self._canvas_scroll.verticalScrollBar().value()
@@ -110,7 +110,7 @@ class PanelHistoryMixin:
                         win._tab_bar.setTabToolTip(idx, self._original_doc_path)
                         break
             if hasattr(win, "_set_status"):
-                win._set_status("↩ Undo (Original document state)")
+                win._set_status("Undo (Original document state)")
             if hasattr(win, "setWindowTitle"):
                 orig_name = os.path.basename(self._original_doc_path)
                 win.setWindowTitle(f"{t('app.name')} - {orig_name}")
@@ -124,14 +124,14 @@ class PanelHistoryMixin:
                 for idx, v in enumerate(win._viewers):
                     if v is self:
                         orig_name = os.path.basename(self._original_doc_path)
-                        win._tab_bar.setTabText(idx, f"● {orig_name}")
+                        win._tab_bar.setTabText(idx, f"* {orig_name}")
                         win._tab_bar.setTabToolTip(idx, f"{self._original_doc_path} (modified)")
                         break
             if hasattr(win, "_set_status"):
-                win._set_status("↩ Undo")
+                win._set_status("Undo")
             if hasattr(win, "setWindowTitle"):
                 orig_name = os.path.basename(self._original_doc_path)
-                win.setWindowTitle(f"{t('app.name')} - ● {orig_name}")
+                win.setWindowTitle(f"{t('app.name')} - * {orig_name}")
 
         if hasattr(win, "_update_tab_bar_visibility"):
             win._update_tab_bar_visibility()
@@ -144,7 +144,7 @@ class PanelHistoryMixin:
         if not getattr(self, "_redo_stack", None):
             win: Any = self.window()
             if hasattr(win, "_set_status"):
-                win._set_status("ℹ Nothing to redo")
+                win._set_status("Nothing to redo")
             return
 
         scroll_val = self._canvas_scroll.verticalScrollBar().value()
@@ -204,15 +204,15 @@ class PanelHistoryMixin:
                 for idx, v in enumerate(win._viewers):
                     if v is self:
                         orig_name = os.path.basename(self._original_doc_path)
-                        win._tab_bar.setTabText(idx, f"● {orig_name}")
+                        win._tab_bar.setTabText(idx, f"* {orig_name}")
                         win._tab_bar.setTabToolTip(idx, f"{self._original_doc_path} (modified)")
                         break
             if hasattr(win, "setWindowTitle"):
                 orig_name = os.path.basename(self._original_doc_path)
-                win.setWindowTitle(f"{t('app.name')} - ● {orig_name}")
+                win.setWindowTitle(f"{t('app.name')} - * {orig_name}")
 
         if hasattr(win, "_set_status"):
-            win._set_status("↪ Redo")
+            win._set_status("Redo")
         if hasattr(win, "_update_tab_bar_visibility"):
             win._update_tab_bar_visibility()
         if hasattr(win, "_update_breadcrumb"):
@@ -229,7 +229,6 @@ class PanelHistoryMixin:
 
             orig_path = getattr(self, "_original_doc_path", "") or getattr(self, "_current_path", "")
 
-            # Preserve current state in undo history before applying new modification
             scroll_val = self._canvas_scroll.verticalScrollBar().value()
             viewed_page = self._canvas.page_at_y(scroll_val) if self._canvas.page_count() > 0 else 0
             cur_selected = self._thumbnails.selected_pages() if hasattr(self, "_thumbnails") else [0]
@@ -247,7 +246,6 @@ class PanelHistoryMixin:
                     with contextlib.suppress(Exception):
                         os.unlink(old_state["path"])
 
-            # Clear redo stack on new operation
             for red_s in self._redo_stack:
                 if red_s.get("is_temp") and red_s.get("path") != self._current_path:
                     with contextlib.suppress(Exception):
@@ -270,7 +268,6 @@ class PanelHistoryMixin:
                 if sb:
                     thumb_scroll_val = sb.value()
 
-            # Release all open document handles before writing to temp
             self._canvas.close_doc()
             if self._fitz_doc is not None:
                 with contextlib.suppress(Exception):
@@ -308,7 +305,7 @@ class PanelHistoryMixin:
                 for idx, v in enumerate(win._viewers):
                     if v is self:
                         orig_name = os.path.basename(orig_path)
-                        win._tab_bar.setTabText(idx, f"● {orig_name}")
+                        win._tab_bar.setTabText(idx, f"* {orig_name}")
                         win._tab_bar.setTabToolTip(idx, f"{orig_path} (modified)")
                         break
 
@@ -318,7 +315,7 @@ class PanelHistoryMixin:
                 win._update_breadcrumb()
             if win and hasattr(win, "setWindowTitle"):
                 orig_name = os.path.basename(orig_path)
-                win.setWindowTitle(f"{t('app.name')} - ● {orig_name}")
+                win.setWindowTitle(f"{t('app.name')} - * {orig_name}")
 
             if not scroll_to_target and thumb_scroll_val > 0:
                 thumbnails = getattr(self, "_thumbnails", None)
@@ -331,6 +328,7 @@ class PanelHistoryMixin:
             if hasattr(win, "_update_page_nav"):
                 win._update_page_nav()
             if hasattr(win, "_set_status"):
-                win._set_status("ℹ Document modified (Press Ctrl+S to save changes)")
+                win._set_status("Document modified (Press Ctrl+S to save changes)")
         except Exception as exc:
             show_error(self, exc)
+

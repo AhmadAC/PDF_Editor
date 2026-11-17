@@ -1,5 +1,5 @@
 # app/viewer/panel_nav.py
-"""PDF_Editor – Navigation, TOC generation, recent files, and theme rendering."""
+"""PDF_Editor – Navigation, TOC generation, recent files, and theme rendering with SVG icons."""
 from __future__ import annotations
 
 import logging
@@ -9,18 +9,36 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 import fitz
-from PySide6.QtCore import Qt, QEvent, QTimer, QPoint
+from PySide6.QtCore import Qt, QEvent, QTimer, QPoint, QSize
 from PySide6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QLabel, QPushButton,
     QFileDialog, QMessageBox, QDialog, QTreeWidgetItem,
     QScrollArea, QSplitter, QTabWidget, QTreeWidget, QVBoxLayout,
     QMenu,
 )
-import qtawesome as qta
 
-from app.constants import ACCENT, TEXT_PRI, TEXT_SEC, _LQ, _LP, DESKTOP, OPEN_ALL_FILES_FILTER
+from app.constants import ACCENT, TEXT_PRI, TEXT_SEC, _LQ, DESKTOP, OPEN_ALL_FILES_FILTER
 from app.pdf_password import authenticate_fitz
-from app.utils import _paint_bg, reveal_file
+from app.utils import (
+    SVG_BOOKMARK,
+    SVG_CHEVRON_DOWN,
+    SVG_CHEVRON_LEFT,
+    SVG_CHEVRON_RIGHT,
+    SVG_CHEVRON_UP,
+    SVG_CLOSE,
+    SVG_COMPRESS,
+    SVG_COPY,
+    SVG_FILE_PDF,
+    SVG_FOLDER,
+    SVG_MOON,
+    SVG_PRINT,
+    SVG_TRASH,
+    SVG_ZOOM_IN,
+    SVG_ZOOM_OUT,
+    _paint_bg,
+    reveal_file,
+    svg_icon,
+)
 from app.i18n import t
 
 if TYPE_CHECKING:
@@ -198,23 +216,24 @@ class PanelNavMixin(_Base):
     def update_theme(self, dark: bool) -> None:
         self._canvas.set_dark_mode(dark)
         c = TEXT_SEC if dark else _LQ
-        self._open_btn.setIcon(qta.icon('fa5s.folder-open', color=c))
-        self._toc_btn.setIcon(qta.icon('fa5s.bookmark', color=c))
-        self._night_btn.setIcon(qta.icon('fa5s.moon', color=c))
-        self._prev_btn.setIcon(qta.icon('fa5s.chevron-left', color=c))
-        self._next_btn.setIcon(qta.icon('fa5s.chevron-right', color=c))
-        self._zoom_out_btn.setIcon(qta.icon('fa5s.search-minus', color=c))
-        self._zoom_in_btn.setIcon(qta.icon('fa5s.search-plus', color=c))
-        self._fit_btn.setIcon(qta.icon('fa5s.compress-arrows-alt', color=c))
-        self._print_btn.setIcon(qta.icon('fa5s.print', color=c))
-        self._search_prev_btn.setIcon(qta.icon('fa5s.chevron-up', color=c))
-        self._search_next_btn.setIcon(qta.icon('fa5s.chevron-down', color=c))
-        self._search_close_btn.setIcon(qta.icon('fa5s.times', color=c))
+        self._open_btn.setIcon(svg_icon(SVG_FOLDER, color=c, size=15))
+        self._toc_btn.setIcon(svg_icon(SVG_BOOKMARK, color=c, size=15))
+        self._night_btn.setIcon(svg_icon(SVG_MOON, color=c, size=15))
+        self._prev_btn.setIcon(svg_icon(SVG_CHEVRON_LEFT, color=c, size=15))
+        self._next_btn.setIcon(svg_icon(SVG_CHEVRON_RIGHT, color=c, size=15))
+        self._zoom_out_btn.setIcon(svg_icon(SVG_ZOOM_OUT, color=c, size=15))
+        self._zoom_in_btn.setIcon(svg_icon(SVG_ZOOM_IN, color=c, size=15))
+        self._fit_btn.setIcon(svg_icon(SVG_COMPRESS, color=c, size=15))
+        self._print_btn.setIcon(svg_icon(SVG_PRINT, color=c, size=15))
+        self._search_prev_btn.setIcon(svg_icon(SVG_CHEVRON_UP, color=c, size=15))
+        self._search_next_btn.setIcon(svg_icon(SVG_CHEVRON_DOWN, color=c, size=15))
+        self._search_close_btn.setIcon(svg_icon(SVG_CLOSE, color=c, size=14))
         link_style = self._recent_link_style(dark)
         for link in self._recent_links:
             link.setStyleSheet(link_style)
+            link.setIcon(svg_icon(SVG_FILE_PDF, color=c, size=15))
         for btn in self._recent_del_btns:
-            btn.setIcon(qta.icon("fa5s.trash-alt", color=c))
+            btn.setIcon(svg_icon(SVG_TRASH, color=c, size=14))
         self._thumbnails.update_theme(dark)
 
     def _refresh_recents(self):
@@ -237,6 +256,7 @@ class PanelNavMixin(_Base):
         lay.addWidget(rec_title)
 
         dark = getattr(self.window(), "_dark_mode", True) if self.window() else True
+        c = TEXT_SEC if dark else _LQ
         link_style = self._recent_link_style(dark=dark)
         for rp in recents[:5]:
             if not os.path.lexists(rp) or os.path.isdir(rp):
@@ -246,15 +266,16 @@ class PanelNavMixin(_Base):
             row_h = QHBoxLayout(row)
             row_h.setContentsMargins(0, 0, 0, 0)
             row_h.setSpacing(0)
-            link = QPushButton(f"📄  {fname}")
+            link = QPushButton(fname)
+            link.setIcon(svg_icon(SVG_FILE_PDF, color=c, size=15))
+            link.setIconSize(QSize(15, 15))
             link.setObjectName("recent_link")
             link.setToolTip(rp)
             link.setCursor(Qt.CursorShape.PointingHandCursor)
             link.setFlat(True)
             link.setStyleSheet(link_style)
             link.clicked.connect(lambda checked=False, p=rp, r=row: self._on_recent_clicked(p, r))
-            
-            # Enable right-click context menu on recent file
+
             row.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             row.customContextMenuRequested.connect(
                 lambda pt, p=rp, r=row: self._show_recent_context_menu(row.mapToGlobal(pt), p, r)
@@ -266,7 +287,8 @@ class PanelNavMixin(_Base):
 
             self._recent_links.append(link)
             del_btn = QPushButton()
-            del_btn.setIcon(qta.icon("fa5s.trash-alt", color=TEXT_SEC if dark else _LQ))
+            del_btn.setIcon(svg_icon(SVG_TRASH, color=c, size=14))
+            del_btn.setIconSize(QSize(14, 14))
             del_btn.setFixedSize(28, 28)
             del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             del_btn.setFlat(True)
@@ -290,7 +312,7 @@ class PanelNavMixin(_Base):
         menu = QMenu(self)
 
         act_open = menu.addAction(
-            qta.icon("fa5s.file-pdf", color=icon_color),
+            svg_icon(SVG_FILE_PDF, color=icon_color, size=15),
             t("widget.open", default="Open"),
         )
         act_open.triggered.connect(lambda: self._on_recent_clicked(path, row_widget))
@@ -307,13 +329,13 @@ class PanelNavMixin(_Base):
             reveal_label = "Reveal in File Manager"
 
         act_reveal = menu.addAction(
-            qta.icon("fa5s.folder-open", color=icon_color),
+            svg_icon(SVG_FOLDER, color=icon_color, size=15),
             reveal_label,
         )
         act_reveal.triggered.connect(lambda: reveal_file(path))
 
         act_copy = menu.addAction(
-            qta.icon("fa5s.copy", color=icon_color),
+            svg_icon(SVG_COPY, color=icon_color, size=15),
             "Copy Path",
         )
         act_copy.triggered.connect(lambda: QApplication.clipboard().setText(path))
@@ -321,7 +343,7 @@ class PanelNavMixin(_Base):
         menu.addSeparator()
 
         act_remove = menu.addAction(
-            qta.icon("fa5s.trash-alt", color="#EF4444"),
+            svg_icon(SVG_TRASH, color="#EF4444", size=15),
             t("btn.remove", default="Remove from Recent"),
         )
         act_remove.triggered.connect(lambda: self._remove_recent(path, row_widget))
@@ -543,7 +565,6 @@ class PanelNavMixin(_Base):
                 is_pdf_format = False
 
         if not is_pdf_format:
-            # Auto-convert non-PDF files (DOCX, PPTX, XLSX, TXT, images, etc.) to PDF
             try:
                 from app.tools.import_pdf import convert_file_to_pdf
                 temp_pdf = convert_file_to_pdf(path)
@@ -636,7 +657,7 @@ class PanelNavMixin(_Base):
         if win and hasattr(win, "_pipeline_state"):
             ps = win._pipeline_state.get(id(self))
             if ps and ps.get("original_path"):
-                display_name = f"● {os.path.basename(ps['original_path'])}"
+                display_name = f"* {os.path.basename(ps['original_path'])}"
         self._name_lbl.setText(display_name)
 
         if win:
@@ -686,7 +707,6 @@ class PanelNavMixin(_Base):
         sb_val = sb.value() if sb else 0
         idx = self._canvas.page_at_y(sb_val)
 
-        # Calculate normalized viewport rectangle on the active page
         h_sb = self._canvas_scroll.horizontalScrollBar()
         v_sb = self._canvas_scroll.verticalScrollBar()
         h_val = h_sb.value() if h_sb else 0
@@ -767,3 +787,4 @@ class PanelNavMixin(_Base):
         except Exception:
             pass
         super().closeEvent(event)
+

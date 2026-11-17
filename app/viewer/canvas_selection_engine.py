@@ -1,3 +1,4 @@
+# app/viewer/canvas_selection_engine.py
 """PDF_Editor – Character-level text selection engine and line extraction."""
 from __future__ import annotations
 
@@ -115,7 +116,7 @@ class CanvasSelectionEngine:
             win: Any = c.window()
             set_status = getattr(win, "_set_status", None)
             if callable(set_status):
-                set_status("ℹ No text found in document")
+                set_status("No text found in document")
             return
 
         self.select_char_range(first_p, first_l, first_c, last_p, last_l, last_c)
@@ -129,7 +130,7 @@ class CanvasSelectionEngine:
         if callable(set_status) and c._sel_text:
             char_count = len(c._sel_text)
             page_count = last_p - first_p + 1
-            set_status(f"✔ Selected all text across {page_count} page(s) ({char_count:,} characters) — copied to clipboard")
+            set_status(f"Selected all text across {page_count} page(s) ({char_count:,} characters) - copied to clipboard")
 
     def find_char_at(self, lines: list[dict], px: float, py: float) -> tuple[int, int]:
         """Find the (line_idx, char_idx) boundary closest to page coordinates (px, py)."""
