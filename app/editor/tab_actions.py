@@ -1,4 +1,3 @@
-
 # app/editor/tab_actions.py
 """PDF_Editor – Editing modes, typography formatters, draw tools, stamps, and element selections for TabEditar."""
 
@@ -784,6 +783,20 @@ class TabActionsMixin(_Base):
         if hasattr(self, "_sync_thumbnails"):
             self._sync_thumbnails({page_idx})
 
+    def _on_overlay_ungrouped(self, info: dict):
+        page_idx = info.get("page", 0)
+        print(f"[DEBUG] [TabActions] _on_overlay_ungrouped on page {page_idx + 1}", flush=True)
+        self._history.handle_overlay_ungrouped(info)
+        if hasattr(self, "_sync_thumbnails"):
+            self._sync_thumbnails({page_idx})
+
+    def _on_overlay_grouped(self, info: dict):
+        page_idx = info.get("page", 0)
+        print(f"[DEBUG] [TabActions] _on_overlay_grouped on page {page_idx + 1}", flush=True)
+        self._history.handle_overlay_grouped(info)
+        if hasattr(self, "_sync_thumbnails"):
+            self._sync_thumbnails({page_idx})
+
     def _on_overlay_duplicated(self, new_edit: dict):
         page_idx = new_edit.get("page", 0)
         print(f"[DEBUG] [TabActions] _on_overlay_duplicated on page {page_idx + 1}", flush=True)
@@ -797,4 +810,3 @@ class TabActionsMixin(_Base):
         self._history.handle_note_deleted(overlay)
         if hasattr(self, "_sync_thumbnails"):
             self._sync_thumbnails({page_idx})
-

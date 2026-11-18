@@ -1,7 +1,5 @@
-#################### START OF FILE: app\editor\canvas.py ####################
-
 # app/editor/canvas.py
-"""PDF_Editor – PdfEditCanvas facade: visual PDF edit canvas with live background refresh, z-order, rotate/flip, opacity, lock, and object manipulation."""
+"""PDF_Editor – PdfEditCanvas facade: visual PDF edit canvas with live background refresh, grouping/ungrouping, z-order, rotate/flip, opacity, lock, and object manipulation."""
 
 from __future__ import annotations
 
@@ -27,6 +25,7 @@ try:
         overlay_pdf_rect,
         snapshot_overlay,
     )
+    from app.editor.canvas_events_helpers import _resize_overlay_from_rect
     from app.editor.canvas_text1 import CanvasInlineTextManager
     from app.editor.canvas_painter1 import CanvasPainter
     from app.editor.canvas_events1 import CanvasEventHandler
@@ -43,6 +42,7 @@ except ImportError:
         overlay_pdf_rect,
         snapshot_overlay,
     )
+    from .canvas_events_helpers import _resize_overlay_from_rect  # type: ignore
     from .canvas_text1 import CanvasInlineTextManager  # type: ignore
     from .canvas_painter1 import CanvasPainter  # type: ignore
     from .canvas_events1 import CanvasEventHandler  # type: ignore
@@ -63,6 +63,8 @@ class PdfEditCanvas(QWidget):
     overlay_committed             = Signal(dict)               # (overlay_dict)
     overlay_transformed           = Signal(dict, dict)         # (overlay_dict, before_snapshot)
     overlay_arranged              = Signal(dict)               # (arrange_info_dict)
+    overlay_ungrouped             = Signal(dict)               # (ungroup_info_dict)
+    overlay_grouped               = Signal(dict)               # (group_info_dict)
     overlay_duplicated            = Signal(dict)               # (new_overlay_dict)
     overlay_deleted               = Signal(int, dict)          # (index, overlay_dict)
     delete_selection_requested    = Signal()
@@ -91,6 +93,8 @@ class PdfEditCanvas(QWidget):
         self._page_offsets = []
         self._gen         = 0
         self._pending: set[int] = set()
+        self._pending_anchor: tuple[int, float, float, float, float] | None = None
+        self._pending_pixmaps: list | None = None
         self._render_signals = _EditRenderSignals()
         self._render_signals.page_ready.connect(self._on_page_ready)
         self._drag_start  = None
@@ -299,6 +303,13 @@ class PdfEditCanvas(QWidget):
         if self._active_sel_rect is not None:
             self.delete_selection_requested.emit()
 
+    def ungroup_selected_overlay(self, idx: int | None = None) -> list[dict] | None:
+        target = self._selected_overlay_idx if idx is None else idx
+        return self._overlay_mgr.ungroup_overlay(target)
+
+    def group_overlays(self, indices: list[int]) -> dict | None:
+        return self._overlay_mgr.group_overlays(indices)
+
     def arrange_selected_overlay(self, mode: str, idx: int | None = None) -> None:
         target = self._selected_overlay_idx if idx is None else idx
         if 0 <= target < len(self._overlays) and self._overlays[target].get("_locked"):
@@ -345,7 +356,9 @@ class PdfEditCanvas(QWidget):
         cy = (r.y0 + r.y1) / 2.0
         new_r = fitz.Rect(cx - new_w / 2.0, cy - new_h / 2.0, cx + new_w / 2.0, cy + new_h / 2.0)
 
-        if ov.get("type") == "draw" and "points" in ov:
+        if ov.get("type") == "group":
+            _resize_overlay_from_rect(ov, before_snap, r, new_r)
+        elif ov.get("type") == "draw" and "points" in ov:
             ov["points"] = [
                 (cx + (float(px) - cx) * factor, cy + (float(py) - cy) * factor)
                 for px, py in ov["points"]
@@ -360,28 +373,33 @@ class PdfEditCanvas(QWidget):
                 )
                 for hr in ov["rects"]
             ]
-        if "rect" in ov:
-            ov["rect"] = new_r
-        if "bbox" in ov:
-            ov["bbox"] = [new_r.x0, new_r.y0, new_r.x1, new_r.y1]
-        if "origin" in ov:
-            new_sz = max(4.0, float(ov.get("font_size", ov.get("size", 12))) * factor)
-            ov["origin"] = [new_r.x0, new_r.y0 + new_sz * 0.85]
-        if "point" in ov:
-            new_sz = max(4.0, float(ov.get("size", 12)) * factor)
-            ov["point"] = fitz.Point(new_r.x0, new_r.y0 + new_sz * 0.85)
-        if "font_size" in ov:
-            ov["font_size"] = max(4.0, float(ov["font_size"]) * factor)
-        if "size" in ov and ov.get("type") in ("text", "text_edit"):
-            ov["size"] = max(4.0, float(ov["size"]) * factor)
-        if ov.get("type") in ("check", "cross"):
-            ov["width"] = max(1.5, float(ov.get("width", 2.2)) * factor)
-        if ov.get("type") == "drawing":
-            ov["width"] = max(0.5, float(ov.get("width", 1.0)) * factor)
+        else:
+            if "rect" in ov:
+                ov["rect"] = new_r
+            if "bbox" in ov:
+                ov["bbox"] = [new_r.x0, new_r.y0, new_r.x1, new_r.y1]
+            if "origin" in ov:
+                new_sz = max(4.0, float(ov.get("font_size", ov.get("size", 12))) * factor)
+                ov["origin"] = [new_r.x0, new_r.y0 + new_sz * 0.85]
+            if "point" in ov:
+                new_sz = max(4.0, float(ov.get("size", 12)) * factor)
+                ov["point"] = fitz.Point(new_r.x0, new_r.y0 + new_sz * 0.85)
+            if "font_size" in ov:
+                ov["font_size"] = max(4.0, float(ov["font_size"]) * factor)
+            if "size" in ov and ov.get("type") in ("text", "text_edit"):
+                ov["size"] = max(4.0, float(ov["size"]) * factor)
+            if ov.get("type") in ("check", "cross"):
+                ov["width"] = max(1.5, float(ov.get("width", 2.2)) * factor)
+            if ov.get("type") == "drawing":
+                ov["width"] = max(0.5, float(ov.get("width", 1.0)) * factor)
 
         self._drag_start_rect = overlay_pdf_rect(ov, zoom=self._zoom or 1.0)
         if was_untouched:
             ov["_dirty"] = True
+            if ov.get("type") == "group":
+                for ch in ov.get("children", []):
+                    if ch.get("_existing"):
+                        ch["_dirty"] = True
             self.overlay_committed.emit(ov)
         else:
             self.overlay_transformed.emit(ov, before_snap)
@@ -454,7 +472,15 @@ class PdfEditCanvas(QWidget):
         sa = vp.parent() if vp else None
         return sa if isinstance(sa, _SA) else None
 
-    def load(self, path: str, password: str = "", initial_zoom_factor: float | None = None, initial_page: int = 0):
+    def load(
+        self,
+        path: str,
+        password: str = "",
+        initial_zoom_factor: float | None = None,
+        initial_page: int = 0,
+        initial_anchor: tuple[int, float, float, float, float] | None = None,
+        initial_pixmaps: list | None = None,
+    ):
         if self._doc:
             self._doc.close()
         self._doc = None
@@ -468,6 +494,8 @@ class PdfEditCanvas(QWidget):
         self._zoom_factor = initial_zoom_factor if initial_zoom_factor is not None else 1.0
         self._gen += 1
         self._pending.clear()
+        self._pending_anchor = initial_anchor
+        self._pending_pixmaps = list(initial_pixmaps) if initial_pixmaps is not None else None
         self.cancel_signature_placement()
         self.cancel_stamp_placement()
         self.clear_active_selection()
@@ -476,15 +504,60 @@ class PdfEditCanvas(QWidget):
         self._page_prev_pixmaps.clear()
         QTimer.singleShot(0, self._layout_and_schedule)
 
+    def apply_view_state(
+        self,
+        zoom_factor: float,
+        page_idx: int,
+        anchor: tuple[int, float, float, float, float] | None,
+    ) -> None:
+        """Synchronize zoom, active page, and scroll position without reloading the document."""
+        if not self._doc or self._doc.page_count <= 0:
+            return
+        target_p = max(0, min(self._doc.page_count - 1, int(page_idx)))
+        self._page_idx = target_p
+        target_zf = float(zoom_factor) if zoom_factor and zoom_factor > 0 else 1.0
+        zoom_changed = abs(self._zoom_factor - target_zf) > 1e-4
+        self._zoom_factor = target_zf
+
+        if zoom_changed or not self._page_offsets:
+            self._pending_anchor = anchor
+            self._invalidate_and_relayout(anchor=anchor)
+            return
+
+        if anchor is None:
+            return
+
+        self._pending_anchor = anchor
+        sa = self._get_scroll_area()
+        if not sa:
+            return
+        t_page, pdf_x, pdf_y, vp_x, vp_y = anchor
+        if 0 <= t_page < len(self._page_offsets):
+            yo, _pw, _ph = self._page_offsets[t_page]
+            tx = int(round(pdf_x * self._zoom - vp_x))
+            ty = int(round(yo + pdf_y * self._zoom - vp_y))
+            sb_h = sa.horizontalScrollBar()
+            sb_v = sa.verticalScrollBar()
+            if sb_h:
+                sb_h.setValue(max(0, min(tx, sb_h.maximum())))
+            if sb_v:
+                sb_v.setValue(max(0, min(ty, sb_v.maximum())))
+            vp = sa.viewport()
+            if vp and vp.width() > 100 and vp.height() > 100:
+                self._pending_anchor = None
+
     def zoom_in(self, anchor_pos: QPoint | None = None):
+        self._pending_anchor = None
         self._zoom_factor = min(8.0, round(self._zoom_factor * 1.25, 4))
         self._invalidate_and_relayout(anchor_pos=anchor_pos)
 
     def zoom_out(self, anchor_pos: QPoint | None = None):
+        self._pending_anchor = None
         self._zoom_factor = max(0.2, round(self._zoom_factor / 1.25, 4))
         self._invalidate_and_relayout(anchor_pos=anchor_pos)
 
     def zoom_reset(self):
+        self._pending_anchor = None
         self._zoom_factor = 1.0
         self._invalidate_and_relayout()
 
@@ -565,6 +638,8 @@ class PdfEditCanvas(QWidget):
         self._drag_before_snapshot = None
         self._gen += 1
         self._pending.clear()
+        self._pending_anchor = None
+        self._pending_pixmaps = None
         self.release_doc()
         self._page_pixmaps.clear()
         self._page_prev_pixmaps.clear()
@@ -653,13 +728,25 @@ class PdfEditCanvas(QWidget):
     def relayout_to_viewport(self):
         if not self._doc:
             return
-        anchor = self._calc_anchor()
-        self._layout_and_schedule(anchor=anchor)
+        anchor = self._pending_anchor if self._pending_anchor is not None else self._calc_anchor()
+        old_pixmaps = [
+            p if p is not None else prev
+            for p, prev in zip(
+                self._page_pixmaps,
+                getattr(self, "_page_prev_pixmaps", []),
+            )
+        ] or None
+        self._layout_and_schedule(old_pixmaps=old_pixmaps, anchor=anchor)
 
-    def _invalidate_and_relayout(self, anchor_pos: QPoint | None = None):
+    def _invalidate_and_relayout(
+        self,
+        anchor_pos: QPoint | None = None,
+        anchor: tuple[int, float, float, float, float] | None = None,
+    ):
         self._gen += 1
         self._pending.clear()
-        anchor = self._calc_anchor(anchor_pos)
+        if anchor is None:
+            anchor = self._pending_anchor if self._pending_anchor is not None else self._calc_anchor(anchor_pos)
         old_pixmaps = [
             p if p is not None else prev
             for p, prev in zip(
@@ -679,6 +766,12 @@ class PdfEditCanvas(QWidget):
     ):
         if not self._doc or self._doc.page_count <= 0:
             return
+
+        if old_pixmaps is None and self._pending_pixmaps is not None:
+            old_pixmaps = self._pending_pixmaps
+            self._pending_pixmaps = None
+        if anchor is None and self._pending_anchor is not None:
+            anchor = self._pending_anchor
 
         sa = self._get_scroll_area()
         if sa and sa.viewport() and sa.viewport().width() > 100:
@@ -736,6 +829,9 @@ class PdfEditCanvas(QWidget):
                         sb_h.setValue(max(0, min(target_scroll_x, max_scroll_x)))
                     if sb_v:
                         sb_v.setValue(max(0, min(target_scroll_y, max_scroll_y)))
+                    self._page_idx = target_page
+                    if vp.width() > 100 and vp.height() > 100 and anchor == self._pending_anchor:
+                        self._pending_anchor = None
 
         self.zoom_changed.emit(round(self._zoom_factor * 100))
         self.update()
@@ -827,6 +923,15 @@ class PdfEditCanvas(QWidget):
         self._event_handler.handle_mouse_release(e)
 
     def keyPressEvent(self, e):
+        if (
+            e.key() == Qt.Key.Key_G
+            and (e.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            and (e.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            and self._selected_overlay_idx >= 0
+        ):
+            if self.ungroup_selected_overlay():
+                e.accept()
+                return
         self._event_handler.handle_key_press(e)
         if not e.isAccepted():
             super().keyPressEvent(e)

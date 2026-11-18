@@ -9,7 +9,7 @@ import tempfile
 from typing import TYPE_CHECKING, Callable
 
 import fitz
-from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QConicalGradient, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QProxyStyle,
     QStyle,
 )
+from shiboken6 import isValid
 
 from app.constants import ACCENT, TEXT_SEC
 from app.i18n import t
@@ -270,43 +271,144 @@ class CanvasActionMenuBuilder:
             return chosen
         return None
 
+    @staticmethod
+    def _schedule_inline_text_action(
+        edit_w,
+        edit_canvas,
+        mode: str,
+        page_idx: int,
+        pdf_pt: fitz.Point,
+    ) -> None:
+        def _start() -> None:
+            if not isValid(edit_w) or not isValid(edit_canvas):
+                return
+            if not getattr(edit_canvas, "_doc", None):
+                return
+            if not getattr(edit_canvas, "_page_offsets", None):
+                edit_canvas._layout_and_schedule()
+            if not (0 <= page_idx < len(getattr(edit_canvas, "_page_offsets", []))):
+                return
+            inline_edit = getattr(edit_canvas, "_inline_edit", None)
+            if inline_edit is not None and inline_edit.isVisible():
+                return
+
+            if mode == "add":
+                size = float(edit_w._text_size.value()) if hasattr(edit_w, "_text_size") else 12.0
+                color = edit_w._text_color.color_tuple() if hasattr(edit_w, "_text_color") else (0.0, 0.0, 0.0)
+                font = edit_w._text_font.currentText() if hasattr(edit_w, "_text_font") else "Helvetica"
+                bold = bool(edit_w._btn_bold.isChecked()) if hasattr(edit_w, "_btn_bold") else False
+                italic = bool(edit_w._btn_italic.isChecked()) if hasattr(edit_w, "_btn_italic") else False
+                edit_canvas.begin_inline_text_insert(page_idx, pdf_pt, size, color, font, bold, italic)
+            elif mode == "edit":
+                span = edit_canvas.get_span_at(page_idx, pdf_pt, max_dist=8.0)
+                if span:
+                    edit_canvas.begin_inline_text_edit(span, page_idx)
+
+        QTimer.singleShot(80, _start)
+
     def _route_to_edit_tool(self, mode: str, pos: QPoint | None = None) -> None:
         c = self.canvas
         win = c.window()
-        if hasattr(win, "_open_tool_by_name"):
-            win._open_tool_by_name(t("nav.edit"))
-            edit_idx = win._edit_tool_idx() if hasattr(win, "_edit_tool_idx") else -1
-            if edit_idx >= 0 and hasattr(win, "stack"):
-                edit_w = win.stack.widget(edit_idx)
-                if edit_w:
-                    ctrl_scroll = getattr(edit_w, "_ctrl_scroll", None)
-                    if ctrl_scroll is not None:
-                        ctrl_scroll.setVisible(False)
-                    if hasattr(edit_w, "_relayout_canvas"):
-                        edit_w._relayout_canvas()
+        if not hasattr(win, "_open_tool_by_name"):
+            return
 
-                    if hasattr(edit_w, "_sync_canvas_color"):
-                        edit_w._sync_canvas_color(self._current_hi_color)
+        # Capture the exact viewer state and clicked PDF position BEFORE switching tools
+        click_src_page: int | None = None
+        click_pdf_pt: fitz.Point | None = None
+        viewer_ref = getattr(win, "_viewer", None)
 
-                    edit_canvas = getattr(edit_w, "_canvas", None)
-                    if mode == "add" and hasattr(edit_w, "_set_mode_by_idx"):
-                        edit_w._set_mode_by_idx(1)
-                        edit_w._set_text_submode("add")
-                    elif mode == "edit" and hasattr(edit_w, "_set_mode_by_idx"):
-                        edit_w._set_mode_by_idx(1)
-                        edit_w._set_text_submode("edit")
-                    elif mode == "draw" and hasattr(edit_w, "_set_mode_by_idx"):
-                        edit_w._set_mode_by_idx(8)
-                        if edit_canvas:
-                            edit_canvas.set_draw_mode(True, color=self._current_hi_color)
-                    elif mode == "highlight_rect" and hasattr(edit_w, "_set_mode_by_idx"):
-                        edit_w._set_mode_by_idx(4)
-                        if edit_canvas:
-                            edit_canvas.set_highlight_mode(True, self._current_hi_color, Qt.CursorShape.CrossCursor)
-                    elif mode == "highlight_text" and hasattr(edit_w, "_set_mode_by_idx"):
-                        edit_w._set_mode_by_idx(3)
-                        if edit_canvas:
-                            edit_canvas.set_highlight_mode(True, self._current_hi_color, Qt.CursorShape.IBeamCursor)
+        if pos is not None and getattr(c, "_entries", None):
+            pg_idx = c.page_at_y(pos.y())
+            if 0 <= pg_idx < len(c._entries):
+                entry = c._entries[pg_idx]
+                x_off = c.page_x_offset(entry)
+                z = c._zoom or 1.0
+                click_src_page = int(getattr(entry, "src_page", pg_idx))
+                click_pdf_pt = fitz.Point(
+                    max(0.0, min(entry.w / z, (pos.x() - x_off) / z)),
+                    max(0.0, min(entry.h / z, (pos.y() - entry.y_off) / z)),
+                )
+
+        viewer_view = None
+        if viewer_ref is not None and getattr(c, "_entries", None):
+            sa = c._get_scroll_area()
+            v_val = sa.verticalScrollBar().value() if sa and sa.verticalScrollBar() else 0
+            h_val = sa.horizontalScrollBar().value() if sa and sa.horizontalScrollBar() else 0
+            z = float(getattr(c, "_zoom", 1.0) or 1.0)
+            zf = float(getattr(c, "_zoom_factor", 1.0) or 1.0)
+            top_pg = c.page_at_y(v_val)
+            anchor = None
+            top_src_page = 0
+            if 0 <= top_pg < len(c._entries):
+                top_entry = c._entries[top_pg]
+                top_src_page = int(getattr(top_entry, "src_page", top_pg))
+                tx_off = c.page_x_offset(top_entry)
+                anchor = (
+                    top_src_page,
+                    max(0.0, (h_val - tx_off) / z),
+                    (v_val - top_entry.y_off) / z,
+                    0.0,
+                    0.0,
+                )
+            pixmaps = None
+            if (
+                not getattr(c, "_night_mode", False)
+                and not getattr(c, "_page_rotations", None)
+                and not getattr(c, "_page_crops", None)
+                and getattr(c, "_page_order", None) is None
+            ):
+                pixmaps = [
+                    (e.pixmap if e.pixmap is not None else e.prev_pixmap)
+                    for e in c._entries
+                ]
+            viewer_view = {
+                "page_idx": top_src_page,
+                "zoom_factor": zf,
+                "anchor": anchor,
+                "pixmaps": pixmaps,
+                "sidebar_collapsed": bool(getattr(viewer_ref, "_pages_sidebar_collapsed", False)),
+                "sidebar_width": int(getattr(viewer_ref, "_saved_sidebar_width", 220) or 220),
+            }
+
+        win._open_tool_by_name(t("nav.edit"))
+        edit_idx = win._edit_tool_idx() if hasattr(win, "_edit_tool_idx") else -1
+        if edit_idx >= 0 and hasattr(win, "stack"):
+            edit_w = win.stack.widget(edit_idx)
+            if edit_w:
+                ctrl_scroll = getattr(edit_w, "_ctrl_scroll", None)
+                if ctrl_scroll is not None:
+                    ctrl_scroll.setVisible(False)
+                if viewer_view is not None and hasattr(edit_w, "_apply_viewer_view"):
+                    edit_w._apply_viewer_view(viewer_view)
+                if hasattr(edit_w, "_relayout_canvas"):
+                    edit_w._relayout_canvas()
+
+                if hasattr(edit_w, "_sync_canvas_color"):
+                    edit_w._sync_canvas_color(self._current_hi_color)
+
+                edit_canvas = getattr(edit_w, "_canvas", None)
+                if mode == "add" and hasattr(edit_w, "_set_mode_by_idx"):
+                    edit_w._set_mode_by_idx(1)
+                    edit_w._set_text_submode("add")
+                    if edit_canvas is not None and click_src_page is not None and click_pdf_pt is not None:
+                        self._schedule_inline_text_action(edit_w, edit_canvas, "add", click_src_page, click_pdf_pt)
+                elif mode == "edit" and hasattr(edit_w, "_set_mode_by_idx"):
+                    edit_w._set_mode_by_idx(1)
+                    edit_w._set_text_submode("edit")
+                    if edit_canvas is not None and click_src_page is not None and click_pdf_pt is not None:
+                        self._schedule_inline_text_action(edit_w, edit_canvas, "edit", click_src_page, click_pdf_pt)
+                elif mode == "draw" and hasattr(edit_w, "_set_mode_by_idx"):
+                    edit_w._set_mode_by_idx(8)
+                    if edit_canvas:
+                        edit_canvas.set_draw_mode(True, color=self._current_hi_color)
+                elif mode == "highlight_rect" and hasattr(edit_w, "_set_mode_by_idx"):
+                    edit_w._set_mode_by_idx(4)
+                    if edit_canvas:
+                        edit_canvas.set_highlight_mode(True, self._current_hi_color, Qt.CursorShape.CrossCursor)
+                elif mode == "highlight_text" and hasattr(edit_w, "_set_mode_by_idx"):
+                    edit_w._set_mode_by_idx(3)
+                    if edit_canvas:
+                        edit_canvas.set_highlight_mode(True, self._current_hi_color, Qt.CursorShape.IBeamCursor)
 
     def show_context_menu(
         self,

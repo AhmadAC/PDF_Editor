@@ -1,4 +1,3 @@
-
 # app/editor/tab_document.py
 """PDF_Editor – Document loading, caching, password authentication, and asset file dialogs for TabEditar."""
 
@@ -57,6 +56,103 @@ class TabDocumentMixin(_Base):
         def _status(self, msg: str) -> None: ...
         def _sync_thumbnails(self, affected_pages: set[int] | list[int] | None = None) -> None: ...
 
+    def _capture_viewer_view(self, path: str) -> dict | None:
+        """Capture current page, zoom, scroll anchor, and pixmaps from MainWindow's active viewer if showing `path`."""
+        win = self.window() if hasattr(self, "window") else None
+        viewer = getattr(win, "_viewer", None) if win else None
+        if not viewer or not hasattr(viewer, "current_path"):
+            return None
+        v_curr = viewer.current_path() or ""
+        v_orig = getattr(viewer, "_original_doc_path", "") or v_curr
+        norm_target = os.path.normcase(os.path.normpath(os.path.abspath(path)))
+        if not any(
+            vp_str and os.path.normcase(os.path.normpath(os.path.abspath(vp_str))) == norm_target
+            for vp_str in (v_curr, v_orig)
+        ):
+            return None
+
+        canvas = getattr(viewer, "_canvas", None)
+        sa = getattr(viewer, "_canvas_scroll", None)
+        if not canvas or not sa or not getattr(canvas, "_entries", None):
+            return None
+
+        sb_v = sa.verticalScrollBar()
+        sb_h = sa.horizontalScrollBar()
+        v_val = sb_v.value() if sb_v else 0
+        h_val = sb_h.value() if sb_h else 0
+        z = float(getattr(canvas, "_zoom", 1.0) or 1.0)
+        zf = float(getattr(canvas, "_zoom_factor", 1.0) or 1.0)
+        entries = canvas._entries
+        top_page = canvas.page_at_y(v_val)
+        anchor = None
+        src_page = 0
+        if 0 <= top_page < len(entries):
+            entry = entries[top_page]
+            src_page = int(getattr(entry, "src_page", top_page))
+            x_off = canvas.page_x_offset(entry)
+            pdf_x = max(0.0, (h_val - x_off) / z)
+            pdf_y = (v_val - entry.y_off) / z
+            anchor = (src_page, pdf_x, pdf_y, 0.0, 0.0)
+
+        pixmaps = None
+        if (
+            not getattr(canvas, "_night_mode", False)
+            and not getattr(canvas, "_page_rotations", None)
+            and not getattr(canvas, "_page_crops", None)
+            and getattr(canvas, "_page_order", None) is None
+        ):
+            pixmaps = [
+                (e.pixmap if e.pixmap is not None else e.prev_pixmap)
+                for e in entries
+            ]
+
+        return {
+            "page_idx": src_page,
+            "zoom_factor": zf,
+            "anchor": anchor,
+            "pixmaps": pixmaps,
+            "sidebar_collapsed": bool(getattr(viewer, "_pages_sidebar_collapsed", False)),
+            "sidebar_width": int(getattr(viewer, "_saved_sidebar_width", 220) or 220),
+        }
+
+    def _sync_sidebar_from_viewer_view(self, viewer_view: dict) -> None:
+        if "sidebar_collapsed" not in viewer_view:
+            return
+        sidebar_panel = getattr(self, "_sidebar_panel", None)
+        edit_splitter = getattr(self, "_edit_splitter", None)
+        if sidebar_panel is None or edit_splitter is None:
+            return
+        v_col = bool(viewer_view["sidebar_collapsed"])
+        v_w = max(70, int(viewer_view.get("sidebar_width", 220) or 220))
+        cur_col = bool(getattr(self, "_pages_sidebar_collapsed", False))
+        cur_w = int(getattr(self, "_saved_sidebar_width", 220) or 220)
+        if cur_col != v_col or (not v_col and abs(cur_w - v_w) > 4):
+            self._pages_sidebar_collapsed = v_col
+            self._saved_sidebar_width = v_w
+            sidebar_panel.setVisible(not v_col)
+            total = edit_splitter.width() or 1020
+            if v_col:
+                edit_splitter.setSizes([0, total])
+            else:
+                edit_splitter.setSizes([v_w, max(300, total - v_w)])
+
+    def _apply_viewer_view(self, viewer_view: dict) -> None:
+        """Apply a captured viewer view (sidebar, page, zoom, scroll anchor) to the active editor canvas."""
+        if not viewer_view:
+            return
+        self._scroll_restore_token = getattr(self, "_scroll_restore_token", 0) + 1
+        self._sync_sidebar_from_viewer_view(viewer_view)
+
+        target_page = int(viewer_view.get("page_idx", 0) or 0)
+        target_zf = float(viewer_view.get("zoom_factor", 1.0) or 1.0)
+        anchor = viewer_view.get("anchor")
+
+        self._page_idx = target_page
+        self._canvas.apply_view_state(target_zf, target_page, anchor)
+        self._update_nav()
+        if hasattr(self, "_thumbnails"):
+            self._thumbnails.set_current_page(self._page_idx)
+
     def _save_current_doc_state(self):
         """Save the current document's pending edits, scroll, zoom, and active page before switching away."""
         if not self._doc_path:
@@ -81,7 +177,9 @@ class TabDocumentMixin(_Base):
         }
         print(f"[DEBUG] [TabDocument] _save_current_doc_state: saved state for {os.path.basename(self._doc_path)} ({len(self._pending)} pending edits)", flush=True)
 
-    def _restore_scroll(self, val_v: int, val_h: int) -> None:
+    def _restore_scroll(self, val_v: int, val_h: int, token: int | None = None) -> None:
+        if token is not None and token != getattr(self, "_scroll_restore_token", 0):
+            return
         if hasattr(self, "_canvas_scroll"):
             sb_v = self._canvas_scroll.verticalScrollBar()
             if sb_v:
@@ -95,7 +193,7 @@ class TabDocumentMixin(_Base):
         if p:
             self._load_pdf(p)
 
-    def _load_pdf(self, p: str):
+    def _load_pdf(self, p: str, viewer_view: dict | None = None):
         if not p:
             return
         if not os.path.isfile(p):
@@ -131,6 +229,12 @@ class TabDocumentMixin(_Base):
         self._drop_in.set_path(p)
         self._drop_in.blockSignals(False)
 
+        self._scroll_restore_token = getattr(self, "_scroll_restore_token", 0) + 1
+        restore_tok = self._scroll_restore_token
+
+        initial_anchor = None
+        initial_pixmaps = None
+
         if saved:
             self._drop_out.set_path(saved.get("drop_out") or p)
             self._pending = list(saved.get("pending", []))
@@ -146,11 +250,27 @@ class TabDocumentMixin(_Base):
             self._drop_out.set_path(p)
             self._pending.clear()
             self._pending_list.clear() if hasattr(self, "_pending_list") else None
-            self._page_idx = 0
-            target_zoom_factor = 1.0
+            if viewer_view is None:
+                viewer_view = self._capture_viewer_view(p)
+            if viewer_view is not None:
+                self._sync_sidebar_from_viewer_view(viewer_view)
+                self._page_idx = int(viewer_view.get("page_idx", 0) or 0)
+                target_zoom_factor = float(viewer_view.get("zoom_factor", 1.0) or 1.0)
+                initial_anchor = viewer_view.get("anchor")
+                initial_pixmaps = viewer_view.get("pixmaps")
+            else:
+                self._page_idx = 0
+                target_zoom_factor = 1.0
 
         try:
-            self._canvas.load(p, password=self._pdf_password, initial_zoom_factor=target_zoom_factor, initial_page=self._page_idx)
+            self._canvas.load(
+                p,
+                password=self._pdf_password,
+                initial_zoom_factor=target_zoom_factor,
+                initial_page=self._page_idx,
+                initial_anchor=initial_anchor,
+                initial_pixmaps=initial_pixmaps,
+            )
             self._canvas.set_overlays(self._pending)
         except ModuleNotFoundError as ex:
             QMessageBox.critical(self, t("msg.missing_dep"), t("msg.dep_pymupdf", ex=ex))
@@ -175,7 +295,12 @@ class TabDocumentMixin(_Base):
         if saved:
             v_val = saved.get("scroll_v", 0)
             h_val = saved.get("scroll_h", 0)
-            QTimer.singleShot(60, lambda v=v_val, h=h_val: self._restore_scroll(v, h))
+            QTimer.singleShot(
+                60,
+                lambda v=v_val, h=h_val, tok=restore_tok: (
+                    self._restore_scroll(v, h, token=tok) if isValid(self) else None
+                ),
+            )
         else:
             QTimer.singleShot(100, lambda: self._load_existing_annotations() if isValid(self) else None)
 
@@ -188,10 +313,13 @@ class TabDocumentMixin(_Base):
         if not path:
             return
         norm_p = os.path.abspath(path)
+        viewer_view = self._capture_viewer_view(path)
         if self._doc_path and os.path.abspath(self._doc_path) == norm_p:
+            if viewer_view is not None:
+                self._apply_viewer_view(viewer_view)
             return
         self._save_current_doc_state()
-        self._load_pdf(path)
+        self._load_pdf(path, viewer_view=viewer_view)
 
     def _close_pdf(self):
         if self._doc_path:

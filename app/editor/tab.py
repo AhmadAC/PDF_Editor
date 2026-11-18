@@ -1,7 +1,6 @@
-#################### START OF FILE: app\editor\tab.py ####################
 
 # app/editor/tab.py
-"""PDF_Editor – TabEditar facade: visual PDF editor tab with Fill & Sign, Foxit-style object editing, and typography styling."""
+"""PDF_Editor – TabEditar facade: visual PDF editor tab with Fill & Sign, Foxit-style object editing, grouping/ungrouping, and typography styling."""
 
 from __future__ import annotations
 
@@ -195,6 +194,8 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
         self._canvas.overlay_committed.connect(self._on_overlay_committed)
         self._canvas.overlay_transformed.connect(self._on_overlay_transformed)
         self._canvas.overlay_arranged.connect(self._on_overlay_arranged)
+        self._canvas.overlay_ungrouped.connect(self._on_overlay_ungrouped)
+        self._canvas.overlay_grouped.connect(self._on_overlay_grouped)
         self._canvas.overlay_duplicated.connect(self._on_overlay_duplicated)
         self._canvas.overlay_deleted.connect(self._on_overlay_deleted)
         self._canvas.zoom_changed.connect(lambda _: self._update_page_nav_and_thumbnails())

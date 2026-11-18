@@ -73,6 +73,7 @@ from app.utils_svg import (
     SVG_SUN,
     SVG_SWAP,
     SVG_SYNC,
+    SVG_TAB,
     SVG_TH,
     SVG_TH_LARGE,
     SVG_TRASH,

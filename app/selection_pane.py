@@ -1,18 +1,17 @@
+
 # app/selection_pane.py
-"""PDF_Editor – Selection Pane: inspector window for object layer order, opacity, locking, visibility, and renaming."""
+"""PDF_Editor – Selection Pane: inspector window for object layer order, grouping/ungrouping, opacity, locking, visibility, and renaming."""
 
 from __future__ import annotations
 
 import os
 from typing import TYPE_CHECKING, Any
 
-import fitz
 from PySide6.QtCore import QPoint, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QIcon, QMouseEvent
+from PySide6.QtGui import QKeySequence, QMouseEvent, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -21,26 +20,23 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from app.constants import ACCENT, ACCENT_H, BG_CARD, BG_INPUT, BORDER, TEXT_PRI, TEXT_SEC, _LP, _LQ
-from app.editor.canvas_overlay1 import overlay_pdf_rect, snapshot_overlay
+from app.constants import ACCENT, BG_CARD, BG_INPUT, BORDER, TEXT_PRI, TEXT_SEC, _LP, _LQ
+from app.editor.canvas_overlay1 import overlay_pdf_rect
 from app.utils import (
     SVG_ARROW_DOWN,
     SVG_ARROW_UP,
-    SVG_CHECK,
-    SVG_CLONE,
     SVG_CLOSE,
-    SVG_COPY,
     SVG_EDIT,
     SVG_ERASER,
     SVG_EYE,
     SVG_FILE_PDF,
     SVG_FONT,
+    SVG_GROUP,
     SVG_HIGHLIGHTER,
     SVG_IMAGE,
     SVG_LOCK,
@@ -48,10 +44,9 @@ from app.utils import (
     SVG_REFRESH,
     SVG_SIGNATURE,
     SVG_STICKY_NOTE,
-    SVG_SWAP,
-    SVG_SYNC,
     SVG_TRASH,
     SVG_VECTOR_SQUARE,
+    SVG_CHECK,
     is_dark,
     svg_icon,
 )
@@ -67,6 +62,7 @@ _ICON_BY_TYPE = {
     "image": SVG_IMAGE,
     "signature": SVG_SIGNATURE,
     "drawing": SVG_VECTOR_SQUARE,
+    "group": SVG_GROUP,
     "check": SVG_CHECK,
     "cross": SVG_CLOSE,
     "highlight": SVG_HIGHLIGHTER,
@@ -101,7 +97,6 @@ class _SelectionRowWidget(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         fg = TEXT_PRI if dark else "#1A2B28"
-        sec = TEXT_SEC if dark else "#6B7280"
         brd = BORDER if dark else "#D1D5DB"
         inp_bg = BG_INPUT if dark else "#FFFFFF"
 
@@ -129,7 +124,11 @@ class _SelectionRowWidget(QWidget):
         # 3. Clean Name Display Label (primary view)
         disp_name = self._default_friendly_name(overlay)
         self.name_lbl = QLabel(disp_name)
-        self.name_lbl.setToolTip(disp_name)
+        if etype == "group":
+            n_ch = len([ch for ch in overlay.get("children", []) if not ch.get("_deleted")])
+            self.name_lbl.setToolTip(f"{disp_name}\nGrouped ({n_ch} objects) — click Ungroup or Ctrl+Shift+G to edit individual pieces")
+        else:
+            self.name_lbl.setToolTip(disp_name)
         self.name_lbl.setStyleSheet(f"color: {fg}; font-size: 9.5pt; font-weight: 500; background: transparent;")
         layout.addWidget(self.name_lbl, 1)
 
@@ -185,6 +184,9 @@ class _SelectionRowWidget(QWidget):
         rw = int(round(r.width)) if r else 0
         rh = int(round(r.height)) if r else 0
 
+        if etype == "group":
+            children = [ch for ch in ov.get("children", []) if not ch.get("_deleted")]
+            return f"Picture Group ({len(children)} objects, {rw}×{rh})" if rw and rh else f"Picture Group ({len(children)} objects)"
         if etype in ("text", "text_edit"):
             txt = (ov.get("new_text") or ov.get("text") or ov.get("old_text") or "").strip().replace("\n", " ")
             if txt:
@@ -270,8 +272,8 @@ class _SelectionRowWidget(QWidget):
 
 class SelectionPane(QDialog):
     """Floating inspector window for PDF objects on the active page.
-    Automatically scans the page upon opening, shows all objects, and supports layer reordering,
-    opacity adjustment, locking, hiding, and renaming.
+    Automatically clusters related graphic objects into picture groups by default,
+    and supports ungrouping/regrouping, layer reordering, opacity adjustment, locking, hiding, and renaming.
     """
 
     def __init__(self, tab_editar: TabEditar, parent=None):
@@ -281,8 +283,8 @@ class SelectionPane(QDialog):
 
         self.setWindowTitle("Selection Pane — Objects & Layers")
         self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
-        self.setMinimumSize(420, 520)
-        self.resize(460, 580)
+        self.setMinimumSize(440, 560)
+        self.resize(470, 620)
 
         self._dark = is_dark()
         self._page_idx = getattr(self.canvas, "_page_idx", 0)
@@ -329,15 +331,15 @@ class SelectionPane(QDialog):
         top_bar.addWidget(self.btn_refresh)
         root.addLayout(top_bar)
 
-        # ── Main Objects List Widget ─────────────────────────────────────
+        # ── Main Objects List Widget (supports Ctrl/Shift multi-select for Grouping) ──
         self.list_widget = QListWidget()
-        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
         self.list_widget.itemSelectionChanged.connect(self._on_list_selection_changed)
         root.addWidget(self.list_widget, 1)
 
-        # ── Action Buttons: Arrange & Delete ─────────────────────────────
+        # ── Action Buttons: Arrange, Group/Ungroup, Rename & Delete ──────
         act_row1 = QHBoxLayout()
         act_row1.setSpacing(6)
 
@@ -366,6 +368,22 @@ class SelectionPane(QDialog):
         act_row1.addWidget(self.btn_back)
         root.addLayout(act_row1)
 
+        act_row_grp = QHBoxLayout()
+        act_row_grp.setSpacing(8)
+
+        self.btn_group = QPushButton("Group (Ctrl+G)")
+        self.btn_group.setIcon(svg_icon(SVG_GROUP, color=ACCENT, size=14))
+        self.btn_group.setToolTip("Group 2 or more selected objects (Ctrl+Click or Shift+Click to select multiple)")
+        self.btn_group.clicked.connect(self._group_selected)
+        act_row_grp.addWidget(self.btn_group)
+
+        self.btn_ungroup = QPushButton("Ungroup (Ctrl+Shift+G)")
+        self.btn_ungroup.setIcon(svg_icon(SVG_VECTOR_SQUARE, color=ACCENT, size=14))
+        self.btn_ungroup.setToolTip("Ungroup selected picture group into individual objects")
+        self.btn_ungroup.clicked.connect(self._ungroup_selected)
+        act_row_grp.addWidget(self.btn_ungroup)
+        root.addLayout(act_row_grp)
+
         act_row2 = QHBoxLayout()
         act_row2.setSpacing(8)
 
@@ -380,12 +398,18 @@ class SelectionPane(QDialog):
         act_row2.addWidget(self.btn_delete)
         root.addLayout(act_row2)
 
+        sc_grp = QShortcut(QKeySequence("Ctrl+G"), self, self._group_selected)
+        sc_grp.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_ungrp = QShortcut(QKeySequence("Ctrl+Shift+G"), self, self._ungroup_selected)
+        sc_ungrp.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+
     def _apply_theme(self):
         dark = self._dark
         bg_card = BG_CARD if dark else "#FFFFFF"
         bg_inp = BG_INPUT if dark else "#F8FAFC"
         brd = BORDER if dark else "#D1D5DB"
         fg = TEXT_PRI if dark else "#1A2B28"
+        dis_fg = "#6B7280" if dark else "#9CA3AF"
 
         self.setStyleSheet(
             f"QDialog {{ background-color: {bg_card}; color: {fg}; }}"
@@ -396,7 +420,8 @@ class SelectionPane(QDialog):
             f"QListWidget::item:hover:!selected {{ background-color: {'#333333' if dark else '#F1F5F9'}; }}"
             f"QPushButton {{ background-color: {'#3C3F41' if dark else '#FFFFFF'}; border: 1px solid {brd}; "
             f"border-radius: 5px; padding: 5px 10px; font-size: 9.5pt; color: {fg}; }}"
-            f"QPushButton:hover {{ background-color: {'#4F5254' if dark else '#F1F5F9'}; border-color: {ACCENT}; }}"
+            f"QPushButton:hover:enabled {{ background-color: {'#4F5254' if dark else '#F1F5F9'}; border-color: {ACCENT}; }}"
+            f"QPushButton:disabled {{ color: {dis_fg}; background-color: {'#2A2A2A' if dark else '#F1F5F9'}; }}"
         )
 
     def _connect_signals(self):
@@ -422,6 +447,52 @@ class SelectionPane(QDialog):
             self.tab._scroll_to(self._page_idx)
         self.refresh()
 
+    def _update_action_buttons(self):
+        selected_indices = self._selected_global_indices()
+        n_sel = len(selected_indices)
+        overlays = getattr(self.canvas, "_overlays", [])
+
+        single_ov = (
+            overlays[selected_indices[0]]
+            if n_sel == 1 and 0 <= selected_indices[0] < len(overlays)
+            else None
+        )
+        can_group = sum(
+            1 for idx in selected_indices
+            if 0 <= idx < len(overlays)
+            and overlays[idx].get("type") != "note"
+            and not overlays[idx].get("_locked")
+        ) >= 2
+        can_ungroup = any(
+            0 <= idx < len(overlays)
+            and overlays[idx].get("type") == "group"
+            and not overlays[idx].get("_locked")
+            for idx in selected_indices
+        )
+        can_arrange = (n_sel == 1 and single_ov is not None and not single_ov.get("_locked"))
+        can_rename = (n_sel == 1 and single_ov is not None)
+        can_delete = any(
+            0 <= idx < len(overlays) and not overlays[idx].get("_locked")
+            for idx in selected_indices
+        )
+
+        self.btn_group.setEnabled(can_group)
+        self.btn_ungroup.setEnabled(can_ungroup)
+        self.btn_front.setEnabled(can_arrange)
+        self.btn_fwd.setEnabled(can_arrange)
+        self.btn_bwd.setEnabled(can_arrange)
+        self.btn_back.setEnabled(can_arrange)
+        self.btn_rename.setEnabled(can_rename)
+        self.btn_delete.setEnabled(can_delete)
+
+    def _selected_global_indices(self) -> list[int]:
+        indices: list[int] = []
+        for item in self.list_widget.selectedItems():
+            g_idx = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(g_idx, int):
+                indices.append(g_idx)
+        return indices
+
     def refresh(self):
         """Scan all objects on the current page and rebuild the object list in visual z-order."""
         if self._is_syncing_selection:
@@ -432,7 +503,6 @@ class SelectionPane(QDialog):
         total_p = self.canvas.page_count() or 1
         self.spin_page.setMaximum(max(1, total_p))
 
-        # Scan the page automatically to discover and register all elements
         if hasattr(self.canvas, "_overlay_mgr") and hasattr(self.canvas._overlay_mgr, "scan_page_objects"):
             self.canvas._overlay_mgr.scan_page_objects(self._page_idx)
 
@@ -477,6 +547,7 @@ class SelectionPane(QDialog):
             self.list_widget.setCurrentRow(selected_row)
 
         self.list_widget.blockSignals(False)
+        self._update_action_buttons()
 
     def _set_object_opacity(self, global_idx: int, opacity: float):
         self.canvas.set_selected_overlay_opacity(opacity, idx=global_idx)
@@ -488,6 +559,10 @@ class SelectionPane(QDialog):
             ov["_visible"] = visible
             if ov.get("_existing"):
                 ov["_dirty"] = True
+                if ov.get("type") == "group":
+                    for ch in ov.get("children", []):
+                        if ch.get("_existing"):
+                            ch["_dirty"] = True
             self.canvas.overlay_changed.emit()
             if hasattr(self.canvas, "refresh_pages"):
                 self.canvas.refresh_pages({ov.get("page", 0)})
@@ -499,6 +574,7 @@ class SelectionPane(QDialog):
             ov = overlays[global_idx]
             ov["_locked"] = locked
             self.canvas.update()
+            self._update_action_buttons()
 
     def _rename_object(self, global_idx: int, new_name: str):
         overlays = getattr(self.canvas, "_overlays", [])
@@ -508,58 +584,115 @@ class SelectionPane(QDialog):
             self.canvas.overlay_changed.emit()
 
     def _on_list_selection_changed(self):
-        item = self.list_widget.currentItem()
-        if not item:
-            return
-        global_idx = item.data(Qt.ItemDataRole.UserRole)
-        if global_idx is not None and 0 <= global_idx < len(self.canvas._overlays):
+        indices = self._selected_global_indices()
+        if len(indices) == 1:
+            global_idx = indices[0]
+            if 0 <= global_idx < len(self.canvas._overlays):
+                self._is_syncing_selection = True
+                self.canvas._selected_overlay_idx = global_idx
+                self.canvas.update()
+                self._is_syncing_selection = False
+        elif len(indices) == 0:
             self._is_syncing_selection = True
-            self.canvas._selected_overlay_idx = global_idx
+            self.canvas._selected_overlay_idx = -1
             self.canvas.update()
             self._is_syncing_selection = False
+        self._update_action_buttons()
 
     def _arrange_selected(self, mode: str):
-        item = self.list_widget.currentItem()
-        if not item:
+        indices = self._selected_global_indices()
+        if len(indices) != 1:
             return
-        global_idx = item.data(Qt.ItemDataRole.UserRole)
-        if global_idx is not None:
-            self.canvas.arrange_selected_overlay(mode, idx=global_idx)
+        self.canvas.arrange_selected_overlay(mode, idx=indices[0])
+        self.refresh()
+
+    def _group_selected(self):
+        indices = self._selected_global_indices()
+        if len(indices) < 2:
+            return
+        grp = self.canvas.group_overlays(indices)
+        if grp is not None:
             self.refresh()
 
-    def _rename_selected(self):
-        item = self.list_widget.currentItem()
-        if not item:
+    def _ungroup_selected(self):
+        indices = self._selected_global_indices()
+        overlays = getattr(self.canvas, "_overlays", [])
+        group_indices = [
+            idx for idx in sorted(indices, reverse=True)
+            if 0 <= idx < len(overlays)
+            and overlays[idx].get("type") == "group"
+            and not overlays[idx].get("_locked")
+        ]
+        if not group_indices:
             return
-        widget = self.list_widget.itemWidget(item)
+        for idx in group_indices:
+            self.canvas.ungroup_selected_overlay(idx=idx)
+        self.refresh()
+
+    def _rename_selected(self):
+        selected = self.list_widget.selectedItems()
+        if len(selected) != 1:
+            return
+        widget = self.list_widget.itemWidget(selected[0])
         if isinstance(widget, _SelectionRowWidget):
             widget.start_editing()
 
     def _delete_selected(self):
-        item = self.list_widget.currentItem()
-        if not item:
+        indices = self._selected_global_indices()
+        if not indices:
             return
-        global_idx = item.data(Qt.ItemDataRole.UserRole)
-        if global_idx is not None and 0 <= global_idx < len(self.canvas._overlays):
-            ov = self.canvas._overlays[global_idx]
-            if ov.get("_locked"):
-                QMessageBox.warning(self, "Object Locked", "This object is locked. Unlock it before deleting.")
-                return
-            self.canvas._selected_overlay_idx = global_idx
-            self.canvas.delete_selected_overlay()
-            self.refresh()
+        overlays = getattr(self.canvas, "_overlays", [])
+        if any(0 <= i < len(overlays) and overlays[i].get("_locked") for i in indices):
+            QMessageBox.warning(self, "Object Locked", "One or more selected objects are locked. Unlock them before deleting.")
+            return
+        for idx in sorted(indices, reverse=True):
+            if 0 <= idx < len(self.canvas._overlays):
+                self.canvas._selected_overlay_idx = idx
+                self.canvas.delete_selected_overlay()
+        self.refresh()
 
     def _show_context_menu(self, pos: QPoint):
         item = self.list_widget.itemAt(pos)
         if not item:
             return
-        self.list_widget.setCurrentItem(item)
-        global_idx = item.data(Qt.ItemDataRole.UserRole)
-        if global_idx is None or not (0 <= global_idx < len(self.canvas._overlays)):
+        if not item.isSelected():
+            self.list_widget.setCurrentItem(item)
+        indices = self._selected_global_indices()
+        overlays = getattr(self.canvas, "_overlays", [])
+        if not indices:
             return
 
-        ov = self.canvas._overlays[global_idx]
         menu = QMenu(self)
+
+        if len(indices) >= 2:
+            can_grp = sum(
+                1 for idx in indices
+                if 0 <= idx < len(overlays)
+                and overlays[idx].get("type") != "note"
+                and not overlays[idx].get("_locked")
+            ) >= 2
+            if can_grp:
+                act_grp = menu.addAction(svg_icon(SVG_GROUP, color=ACCENT, size=14), f"Group {len(indices)} Objects (Ctrl+G)")
+                act_grp.triggered.connect(self._group_selected)
+            if any(0 <= idx < len(overlays) and overlays[idx].get("type") == "group" for idx in indices):
+                act_ungrp = menu.addAction(svg_icon(SVG_VECTOR_SQUARE, color=ACCENT, size=14), "Ungroup Selected (Ctrl+Shift+G)")
+                act_ungrp.triggered.connect(self._ungroup_selected)
+            menu.addSeparator()
+            act_del_m = menu.addAction(svg_icon(SVG_TRASH, color="#EF4444", size=14), f"Delete {len(indices)} Objects")
+            act_del_m.triggered.connect(self._delete_selected)
+            menu.exec(self.list_widget.mapToGlobal(pos))
+            return
+
+        global_idx = indices[0]
+        if not (0 <= global_idx < len(overlays)):
+            return
+
+        ov = overlays[global_idx]
+
+        if ov.get("type") == "group" and not ov.get("_locked"):
+            act_ungrp = menu.addAction(svg_icon(SVG_VECTOR_SQUARE, color=ACCENT, size=14), "Ungroup Objects (Ctrl+Shift+G)")
+            act_ungrp.triggered.connect(self._ungroup_selected)
+            menu.addSeparator()
 
         act_rename = menu.addAction(svg_icon(SVG_EDIT, color=ACCENT, size=14), "Rename")
         act_rename.triggered.connect(self._rename_selected)

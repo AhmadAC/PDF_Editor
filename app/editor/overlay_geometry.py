@@ -25,6 +25,20 @@ def rects_close(r1, r2, tol: float = 0.75) -> bool:
 def overlay_pdf_rect(ov: dict, zoom: float = 1.0) -> fitz.Rect | None:
     """Return the PDF-space bounding rectangle of any overlay dict."""
     etype = ov.get("type")
+    if etype == "group":
+        if "rect" in ov and ov["rect"] is not None:
+            return fitz.Rect(ov["rect"])
+        children = [ch for ch in ov.get("children", []) if not ch.get("_deleted")]
+        if children:
+            u = None
+            for ch in children:
+                cr = overlay_pdf_rect(ch, zoom=zoom)
+                if cr is not None:
+                    u = fitz.Rect(cr) if u is None else (u | cr)
+            if u is not None:
+                ov["rect"] = u
+                return u
+        return None
     if "rect" in ov and ov["rect"] is not None:
         return fitz.Rect(ov["rect"])
     if "bbox" in ov and ov["bbox"] is not None:
@@ -58,6 +72,22 @@ def overlay_pdf_rect(ov: dict, zoom: float = 1.0) -> fitz.Rect | None:
     return None
 
 
+def recompute_group_rect(ov: dict, zoom: float = 1.0) -> fitz.Rect | None:
+    """Recompute and store a group's bounding rectangle from its non-deleted children."""
+    if ov.get("type") != "group":
+        return overlay_pdf_rect(ov, zoom=zoom)
+    u = None
+    for ch in ov.get("children", []):
+        if ch.get("_deleted"):
+            continue
+        cr = overlay_pdf_rect(ch, zoom=zoom)
+        if cr is not None:
+            u = fitz.Rect(cr) if u is None else (u | cr)
+    if u is not None:
+        ov["rect"] = u
+    return ov.get("rect")
+
+
 def snapshot_overlay(ov: dict) -> dict:
     """Capture mutable geometry/style state of an overlay for undo/redo."""
     snap: dict = {}
@@ -77,10 +107,16 @@ def snapshot_overlay(ov: dict) -> dict:
         snap["items"] = list(ov["items"])
     if "_items_rect" in ov and ov["_items_rect"] is not None:
         snap["_items_rect"] = list(ov["_items_rect"])
+    if "children" in ov and ov["children"] is not None:
+        snap["children"] = [
+            {"ref": ch, "snap": snapshot_overlay(ch)}
+            for ch in ov["children"]
+        ]
     for k in (
         "size", "font_size", "width", "new_text", "text", "font",
         "color", "flags", "_font_changed", "_deleted", "_dirty",
         "opacity", "rotation", "flip_h", "flip_v", "_z_back",
+        "_visible", "_locked", "_ungrouped", "_name",
     ):
         if k in ov:
             snap[k] = ov[k]
@@ -94,6 +130,7 @@ def restore_overlay_snapshot(ov: dict, snap: dict) -> None:
         "size", "font_size", "width", "new_text", "text", "font",
         "color", "flags", "_font_changed", "_deleted", "_dirty",
         "opacity", "rotation", "flip_h", "flip_v", "_z_back",
+        "_visible", "_locked", "_ungrouped", "_name",
     )
     for k in mutable_keys:
         if k in snap:
@@ -114,6 +151,13 @@ def restore_overlay_snapshot(ov: dict, snap: dict) -> None:
                 ov[k] = val
         elif k in ov:
             del ov[k]
+    if "children" in snap:
+        restored_children: list[dict] = []
+        for entry in snap["children"]:
+            ch = entry["ref"]
+            restore_overlay_snapshot(ch, entry["snap"])
+            restored_children.append(ch)
+        ov["children"] = restored_children
 
 
 def get_page_preview_ops(overlays: list[dict], page_idx: int) -> list[dict]:
@@ -122,6 +166,32 @@ def get_page_preview_ops(overlays: list[dict], page_idx: int) -> list[dict]:
     for e in overlays:
         if e.get("page") != page_idx:
             continue
+
+        if e.get("type") == "group":
+            group_op = max(0.0, min(1.0, float(e.get("opacity", 1.0))))
+            is_group_removed = bool(e.get("_existing") and (e.get("_deleted") or e.get("_dirty")))
+            is_group_z_back = bool(not e.get("_deleted") and e.get("_z_back") and e.get("_visible", True))
+
+            for ch in e.get("children", []):
+                if is_group_removed and ch.get("_existing") and ch.get("type") != "note":
+                    rem = dict(ch)
+                    rem["page"] = 0
+                    rem["_deleted"] = True
+                    rem["_dirty"] = True
+                    ops.append(rem)
+                if is_group_z_back and not ch.get("_deleted") and ch.get("_visible", True):
+                    back_copy = dict(ch)
+                    back_copy["page"] = 0
+                    back_copy["_existing"] = False
+                    back_copy["_deleted"] = False
+                    back_copy["_dirty"] = True
+                    back_copy["_z_back"] = True
+                    back_copy["opacity"] = max(0.0, min(1.0, float(ch.get("opacity", 1.0)) * group_op))
+                    if back_copy.get("type") == "drawing" and "_items_rect" not in back_copy and "_orig_rect" in back_copy:
+                        back_copy["_items_rect"] = list(back_copy["_orig_rect"])
+                    ops.append(back_copy)
+            continue
+
         is_existing_removed = bool(
             e.get("_existing")
             and (e.get("_deleted") or e.get("_dirty"))
@@ -141,7 +211,7 @@ def get_page_preview_ops(overlays: list[dict], page_idx: int) -> list[dict]:
                 rem["_dirty"] = True
             ops.append(rem)
 
-        if not e.get("_deleted") and e.get("_z_back"):
+        if not e.get("_deleted") and e.get("_z_back") and e.get("_visible", True):
             back_copy = dict(e)
             back_copy["page"] = 0
             back_copy["_existing"] = False

@@ -1,7 +1,5 @@
-
-
 # app/editor/apply_edits.py
-"""PDF_Editor – Two-phase edit-application dispatcher supporting z-order, opacity, rotation, flip, and surgical image/drawing removal with custom system font embedding."""
+"""PDF_Editor – Two-phase edit-application dispatcher supporting grouped objects, z-order, opacity, rotation, flip, and batched surgical image/drawing removal."""
 
 import io
 import os
@@ -258,6 +256,79 @@ def _delete_existing_annot(fitz, pg, e: dict) -> bool:
     return False
 
 
+def _flatten_active_edits(
+    edits: list[dict],
+    *,
+    parent_op: float = 1.0,
+    parent_deleted: bool = False,
+    parent_dirty: bool = False,
+    parent_z_back: bool = False,
+    parent_visible: bool = True,
+    parent_page: int | None = None,
+) -> list[dict]:
+    """Expand 'group' overlays recursively into flat child edits while propagating group properties."""
+    flat: list[dict] = []
+    for e in edits:
+        if (
+            e.get("_existing")
+            and not e.get("_dirty")
+            and not e.get("_deleted")
+            and not parent_dirty
+            and not parent_deleted
+            and e.get("type") != "delete_annot"
+        ):
+            continue
+
+        if e.get("type") == "group":
+            g_op = max(0.0, min(1.0, float(e.get("opacity", 1.0)) * parent_op))
+            g_del = bool(e.get("_deleted") or parent_deleted)
+            g_dirty = bool(e.get("_dirty") or parent_dirty)
+            g_z_back = bool(e.get("_z_back") or parent_z_back)
+            g_vis = bool(e.get("_visible", True) and parent_visible)
+            g_page = e.get("page") if e.get("page") is not None else parent_page
+            flat.extend(
+                _flatten_active_edits(
+                    e.get("children", []),
+                    parent_op=g_op,
+                    parent_deleted=g_del,
+                    parent_dirty=g_dirty,
+                    parent_z_back=g_z_back,
+                    parent_visible=g_vis,
+                    parent_page=g_page,
+                )
+            )
+            continue
+
+        c_copy = dict(e)
+        if parent_page is not None and c_copy.get("page") is None:
+            c_copy["page"] = parent_page
+        if parent_deleted:
+            c_copy["_deleted"] = True
+        if parent_dirty:
+            c_copy["_dirty"] = True
+        if parent_z_back:
+            c_copy["_z_back"] = True
+        if not parent_visible:
+            c_copy["_visible"] = False
+        c_copy["opacity"] = max(0.0, min(1.0, float(c_copy.get("opacity", 1.0)) * parent_op))
+        flat.append(c_copy)
+    return flat
+
+
+def _apply_batched_redactions(pg, rect_bg_pairs: list[tuple], *, images: int, graphics: int, text: int) -> None:
+    if not rect_bg_pairs:
+        return
+    try:
+        for rect, _bg in rect_bg_pairs:
+            pg.add_redact_annot(rect, fill=False, cross_out=False)
+        pg.apply_redactions(images=images, graphics=graphics, text=text)
+    except Exception:
+        for rect, bg_col in rect_bg_pairs:
+            fill_col = tuple(c / 255.0 for c in bg_col) if bg_col else (1.0, 1.0, 1.0)
+            pg.add_redact_annot(rect, fill=fill_col)
+            pg.apply_redactions()
+
+
 def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
     """Apply pending edits to open doc in two phases so moved/deleted elements never collide or duplicate."""
     import fitz
@@ -276,29 +347,25 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
         if warn_fn is not None:
             warn_fn(edit)
 
-    active_edits = [
-        e for e in pending
-        if not (
-            e.get("_existing")
-            and not e.get("_dirty")
-            and not e.get("_deleted")
-            and e.get("type") != "delete_annot"
-        )
-    ]
+    active_edits = _flatten_active_edits(pending)
 
     print(f"[DEBUG] [apply_pending_edits] Total active edits to apply: {len(active_edits)}", flush=True)
 
     # Pre-extract embedded font archives before Phase 1 redacts text from pages
     prebuilt_archives: dict[int, tuple] = {}
     for e in active_edits:
-        if e.get("type") == "text_edit" and not e.get("_deleted"):
+        if e.get("type") == "text_edit" and not e.get("_deleted") and e.get("_visible", True):
             new_txt = (e.get("new_text") or "").strip()
             if new_txt:
                 p_idx = min(len(doc) - 1, max(0, e.get("page", 0)))
                 pg = doc[p_idx]
                 prebuilt_archives[id(e)] = _build_embed_archive(fitz, doc, pg, e, new_txt)
 
-    # Phase 1: Remove or redact all original existing elements being moved, edited, or deleted
+    # Phase 1: Remove or redact all original existing elements being moved, edited, hidden, or deleted
+    img_redactions: dict[int, list[tuple]] = {}
+    draw_redactions: dict[int, list[tuple]] = {}
+    text_redactions: dict[int, list[tuple]] = {}
+
     for e in active_edits:
         etype = e.get("type")
         p_idx = min(len(doc) - 1, max(0, e.get("page", 0)))
@@ -314,7 +381,6 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                 xref = e.get("_existing_xref")
                 orig_r = fitz.Rect(e["_orig_rect"])
 
-                # Resolve xref on pg if doc was cloned/inserted into tmp_doc where xrefs shifted
                 if not xref or not any(im[0] == xref for im in pg.get_images()):
                     for im in pg.get_images():
                         for ir in pg.get_image_rects(im[0]):
@@ -343,50 +409,31 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                         print(f"[DEBUG] [apply_pending_edits] Phase 1: Image deletion error: {err}", flush=True)
                         removed_cleanly = False
                 if not removed_cleanly:
-                    bg_col = e.get("_bg_color")
-                    fill_col = tuple(c / 255.0 for c in bg_col) if bg_col else (1.0, 1.0, 1.0)
-                    try:
-                        pg.add_redact_annot(orig_r, fill=False, cross_out=False)
-                        pg.apply_redactions(images=img_remove, graphics=la_none, text=txt_none)
-                        print(f"[DEBUG] [apply_pending_edits] Phase 1: Redacted original image area {orig_r} on page {p_idx + 1}", flush=True)
-                    except Exception:
-                        pg.add_redact_annot(orig_r, fill=fill_col)
-                        pg.apply_redactions()
-                        print(f"[DEBUG] [apply_pending_edits] Phase 1: Filled redaction applied for original image area on page {p_idx + 1}", flush=True)
+                    img_redactions.setdefault(p_idx, []).append((orig_r, e.get("_bg_color")))
                 continue
 
             if etype == "drawing" and e.get("_orig_rect"):
                 pad = max(1.0, float(e.get("width", 1.0)) * 0.75 + 0.5)
                 orig_r = fitz.Rect(e["_orig_rect"]) + fitz.Rect(-pad, -pad, pad, pad)
-                bg_col = e.get("_bg_color")
-                fill_col = tuple(c / 255.0 for c in bg_col) if bg_col else (1.0, 1.0, 1.0)
-                try:
-                    pg.add_redact_annot(orig_r, fill=False, cross_out=False)
-                    pg.apply_redactions(images=img_none, graphics=la_covered, text=txt_none)
-                    print(f"[DEBUG] [apply_pending_edits] Phase 1: Redacted original drawing area {orig_r} on page {p_idx + 1}", flush=True)
-                except Exception:
-                    pg.add_redact_annot(orig_r, fill=fill_col)
-                    pg.apply_redactions()
-                    print(f"[DEBUG] [apply_pending_edits] Phase 1: Filled redaction applied for drawing area on page {p_idx + 1}", flush=True)
+                draw_redactions.setdefault(p_idx, []).append((orig_r, e.get("_bg_color")))
                 continue
 
         if etype == "text_edit":
             size = _text_edit_size(e)
             redact_r = _text_edit_redaction_rect(fitz, e, size)
-            bg_col = e.get("_bg_color")
-            fill_col = tuple(c / 255.0 for c in bg_col) if bg_col else (1.0, 1.0, 1.0)
-            try:
-                pg.add_redact_annot(redact_r, fill=False, cross_out=False)
-                pg.apply_redactions(images=img_none, graphics=la_none, text=txt_remove)
-                print(f"[DEBUG] [apply_pending_edits] Phase 1: Redacted text area {redact_r} on page {p_idx + 1}", flush=True)
-            except Exception:
-                pg.add_redact_annot(redact_r, fill=fill_col)
-                pg.apply_redactions()
-                print(f"[DEBUG] [apply_pending_edits] Phase 1: Filled redaction applied for text area on page {p_idx + 1}", flush=True)
+            text_redactions.setdefault(p_idx, []).append((redact_r, e.get("_bg_color")))
+
+    for p_idx, pairs in img_redactions.items():
+        _apply_batched_redactions(doc[p_idx], pairs, images=img_remove, graphics=la_none, text=txt_none)
+    for p_idx, pairs in draw_redactions.items():
+        _apply_batched_redactions(doc[p_idx], pairs, images=img_none, graphics=la_covered, text=txt_none)
+    for p_idx, pairs in text_redactions.items():
+        _apply_batched_redactions(doc[p_idx], pairs, images=img_none, graphics=la_none, text=txt_remove)
 
     # Phase 2: Insert back-layer items first (in reverse so index 0 ends up furthest back), then foreground items in order
-    back_edits = [e for e in active_edits if not e.get("_deleted") and e.get("_z_back")]
-    front_edits = [e for e in active_edits if not e.get("_deleted") and not e.get("_z_back")]
+    visible_edits = [e for e in active_edits if not e.get("_deleted") and e.get("_visible", True)]
+    back_edits = [e for e in visible_edits if e.get("_z_back")]
+    front_edits = [e for e in visible_edits if not e.get("_z_back")]
     ordered_phase2 = list(reversed(back_edits)) + front_edits
 
     embedded_font = False
@@ -452,7 +499,6 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
 
         elif etype == "drawing":
             _insert_drawing_overlay(fitz, pg, e)
-            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted drawing overlay on page {p_idx + 1}", flush=True)
 
         elif etype == "text":
             font_req = str(e.get("font", "Helvetica") or "Helvetica")
@@ -592,4 +638,3 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
         except Exception:
             _log.exception("subset_fonts after text edit failed")
     return result
-

@@ -1,6 +1,6 @@
 
 # app/editor/tab_history.py
-"""PDF_Editor – tab_history: synchronized action-based history, undo/redo, and pending edits management."""
+"""PDF_Editor – tab_history: synchronized action-based history, undo/redo, grouping/ungrouping, and pending edits management."""
 
 import contextlib
 import os
@@ -62,6 +62,7 @@ class TabHistoryManager:
             "check":        lambda e: "Checkmark" + deleted_tag + suffix,
             "cross":        lambda e: "Crossmark" + deleted_tag + suffix,
             "drawing":      lambda e: f"Shape{deleted_tag} " + suffix,
+            "group":        lambda e: f"{e.get('_name') or 'Picture Group'}{deleted_tag} " + suffix,
             "draw":         lambda e: t("edit.mode.draw") + deleted_tag + suffix,
             "delete_annot": lambda e: t("edit.label.note_delete") + suffix,
         }
@@ -147,6 +148,32 @@ class TabHistoryManager:
         self.rebuild_pending_list()
         self.tab._status("Arranged object order (Ctrl+Z to undo)")
 
+    def handle_overlay_ungrouped(self, info: dict) -> None:
+        """Called when a 'group' overlay is split into individual objects."""
+        self.redo_stack.clear()
+        self._push_undo_action({
+            "kind": "ungroup",
+            "info": info,
+            "edit": info.get("group"),
+        })
+        n_ch = len(info.get("children", []))
+        print(f"[DEBUG] [TabHistoryManager] handle_overlay_ungrouped: split group into {n_ch} objects on page {info.get('page', 0) + 1}", flush=True)
+        self.rebuild_pending_list()
+        self.tab._status(f"Ungrouped {n_ch} objects (Ctrl+Z to undo)")
+
+    def handle_overlay_grouped(self, info: dict) -> None:
+        """Called when 2+ overlays are combined into a 'group' overlay."""
+        self.redo_stack.clear()
+        self._push_undo_action({
+            "kind": "group",
+            "info": info,
+            "edit": info.get("group"),
+        })
+        n_ch = len(info.get("children", []))
+        print(f"[DEBUG] [TabHistoryManager] handle_overlay_grouped: grouped {n_ch} objects on page {info.get('page', 0) + 1}", flush=True)
+        self.rebuild_pending_list()
+        self.tab._status(f"Grouped {n_ch} objects (Ctrl+Z to undo)")
+
     def handle_overlay_duplicated(self, new_edit: dict) -> None:
         print(f"[DEBUG] [TabHistoryManager] handle_overlay_duplicated on page {new_edit.get('page', 0) + 1}", flush=True)
         self.add(new_edit)
@@ -157,6 +184,11 @@ class TabHistoryManager:
             was_dirty = any(act.get("edit") is edit for act in self._undo_stack)
             edit["_deleted"] = True
             edit["_dirty"] = True
+            if edit.get("type") == "group":
+                for ch in edit.get("children", []):
+                    if ch.get("_existing"):
+                        ch["_deleted"] = True
+                        ch["_dirty"] = True
             if edit not in self.pending:
                 self.pending.append(edit)
             self._push_undo_action({
@@ -265,6 +297,9 @@ class TabHistoryManager:
             if edit in self.pending:
                 self.pending.remove(edit)
             edit["_dirty"] = False
+            if edit.get("type") == "group":
+                for ch in edit.get("children", []):
+                    ch["_dirty"] = False
             self.tab._canvas._selected_overlay_idx = -1
 
         elif kind == "transform":
@@ -280,6 +315,29 @@ class TabHistoryManager:
                 ov["_z_back"] = info.get("before_z_back", False)
                 if info.get("was_untouched"):
                     ov["_dirty"] = False
+                    if ov.get("type") == "group":
+                        for ch in ov.get("children", []):
+                            ch["_dirty"] = False
+
+        elif kind == "ungroup":
+            info = action.get("info", {})
+            for ch, snap in zip(info.get("children", []), info.get("child_before_snaps", [])):
+                restore_overlay_snapshot(ch, snap)
+            grp = info.get("group")
+            if grp is not None and info.get("group_snap") is not None:
+                restore_overlay_snapshot(grp, info["group_snap"])
+            before_order = info.get("before_order", [])
+            if before_order:
+                self.pending[:] = list(before_order)
+            if grp is not None and grp in self.pending:
+                self.tab._canvas._selected_overlay_idx = self.pending.index(grp)
+
+        elif kind == "group":
+            info = action.get("info", {})
+            before_order = info.get("before_order", [])
+            if before_order:
+                self.pending[:] = list(before_order)
+            self.tab._canvas._selected_overlay_idx = -1
 
         elif kind == "delete_new":
             idx = max(0, min(int(action.get("index", len(self.pending))), len(self.pending)))
@@ -287,6 +345,11 @@ class TabHistoryManager:
 
         elif kind == "delete_existing":
             edit["_deleted"] = False
+            if edit.get("type") == "group":
+                for ch in edit.get("children", []):
+                    ch["_deleted"] = False
+                    if not action.get("was_dirty"):
+                        ch["_dirty"] = False
             if not action.get("was_dirty"):
                 if edit in self.pending:
                     self.pending.remove(edit)
@@ -306,6 +369,10 @@ class TabHistoryManager:
             self.redo_stack.pop(0)
 
         self.rebuild_pending_list()
+        if isinstance(edit, dict) and hasattr(self.tab._canvas, "refresh_pages"):
+            self.tab._canvas.refresh_pages({edit.get("page", 0)})
+        if hasattr(self.tab, "_on_canvas_overlay_changed"):
+            self.tab._on_canvas_overlay_changed()
         self.tab._status(t("edit.status.undo", n=len(self.tab._user_pending)))
 
     def redo(self) -> None:
@@ -330,6 +397,10 @@ class TabHistoryManager:
             if "after" in entry:
                 restore_overlay_snapshot(edit, entry["after"])
             edit["_dirty"] = True
+            if edit.get("type") == "group":
+                for ch in edit.get("children", []):
+                    if ch.get("_existing"):
+                        ch["_dirty"] = True
             if edit not in self.pending:
                 self.pending.append(edit)
             self._push_undo_action(entry)
@@ -347,6 +418,32 @@ class TabHistoryManager:
             if ov is not None:
                 ov["_z_back"] = info.get("after_z_back", False)
                 ov["_dirty"] = True
+                if ov.get("type") == "group":
+                    for ch in ov.get("children", []):
+                        if ch.get("_existing"):
+                            ch["_dirty"] = True
+            self._push_undo_action(entry)
+
+        elif kind == "ungroup":
+            info = entry.get("info", {})
+            for ch, snap in zip(info.get("children", []), info.get("child_after_snaps", [])):
+                restore_overlay_snapshot(ch, snap)
+            after_order = info.get("after_order", [])
+            if after_order:
+                self.pending[:] = list(after_order)
+            children = info.get("children", [])
+            if children and children[0] in self.pending:
+                self.tab._canvas._selected_overlay_idx = self.pending.index(children[0])
+            self._push_undo_action(entry)
+
+        elif kind == "group":
+            info = entry.get("info", {})
+            after_order = info.get("after_order", [])
+            if after_order:
+                self.pending[:] = list(after_order)
+            grp = info.get("group")
+            if grp is not None and grp in self.pending:
+                self.tab._canvas._selected_overlay_idx = self.pending.index(grp)
             self._push_undo_action(entry)
 
         elif kind == "delete_new":
@@ -358,6 +455,11 @@ class TabHistoryManager:
         elif kind == "delete_existing":
             edit["_deleted"] = True
             edit["_dirty"] = True
+            if edit.get("type") == "group":
+                for ch in edit.get("children", []):
+                    if ch.get("_existing"):
+                        ch["_deleted"] = True
+                        ch["_dirty"] = True
             if edit not in self.pending:
                 self.pending.append(edit)
             self.tab._canvas._selected_overlay_idx = -1
@@ -372,6 +474,10 @@ class TabHistoryManager:
             self._push_undo_action(entry)
 
         self.rebuild_pending_list()
+        if isinstance(edit, dict) and hasattr(self.tab._canvas, "refresh_pages"):
+            self.tab._canvas.refresh_pages({edit.get("page", 0)})
+        if hasattr(self.tab, "_on_canvas_overlay_changed"):
+            self.tab._on_canvas_overlay_changed()
         self.tab._status(f"Redo ({len(self.tab._user_pending)} pending)")
 
     def clear(self) -> None:
