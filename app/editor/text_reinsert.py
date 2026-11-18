@@ -1,9 +1,12 @@
 # app/editor/text_reinsert.py
 
-"""PDF_Editor – pure typographic-fidelity helpers for text-edit reinsertion with custom font support."""
+"""PDF_Editor – pure typographic-fidelity helpers for text-edit reinsertion with custom system font embedding."""
 
 import html
 import logging
+import os
+
+from app.utils import find_system_font_file
 
 _log = logging.getLogger(__name__)
 
@@ -16,7 +19,7 @@ _FONT_STYLE_SUFFIXES = (
 )
 
 
-def _font_core(name):
+def _font_core(name: str) -> str:
     """Reduce a font name to a comparable lowercase alphanumeric core."""
     s = "".join(c for c in (name or "").split("+")[-1].lower() if c.isalnum())
     changed = True
@@ -29,7 +32,7 @@ def _font_core(name):
     return s
 
 
-def _font_matches(core, basefont, name):
+def _font_matches(core: str, basefont: str, name: str) -> bool:
     if not core:
         return False
     for cand in (_font_core(basefont), _font_core(name)):
@@ -38,13 +41,13 @@ def _font_matches(core, basefont, name):
     return False
 
 
-def _text_edit_size(edit):
+def _text_edit_size(edit: dict) -> float:
     """Original or user-modified span font size (points)."""
     size = float(edit.get("font_size") or 0) or float(edit.get("size") or 0)
     return size if size >= 1.0 else 4.0
 
 
-def _text_edit_color_hex(edit):
+def _text_edit_color_hex(edit: dict) -> str:
     c = edit.get("color", 0)
     if isinstance(c, bool):
         c = 0
@@ -64,7 +67,7 @@ def _text_edit_color_hex(edit):
     return "#000000"
 
 
-def _text_edit_color_rgb(edit):
+def _text_edit_color_rgb(edit: dict) -> tuple[float, float, float]:
     c = edit.get("color", 0)
     if isinstance(c, bool):
         c = 0
@@ -78,7 +81,7 @@ def _text_edit_color_rgb(edit):
     return (0.0, 0.0, 0.0)
 
 
-def _text_edit_style(edit):
+def _text_edit_style(edit: dict) -> tuple[bool, bool, bool, bool]:
     """Return (serif, mono, bold, italic) from flags and font name."""
     flags = int(edit.get("flags", 0) or 0)
     fname = (edit.get("font", "") or "").lower()
@@ -93,7 +96,7 @@ def _text_edit_style(edit):
     return serif, mono, bold, italic
 
 
-def _base14_fontname(edit):
+def _base14_fontname(edit: dict) -> str:
     """Best-matching base-14 font code for defensive insert_text fallback."""
     serif, mono, bold, italic = _text_edit_style(edit)
     if mono:
@@ -105,30 +108,55 @@ def _base14_fontname(edit):
     return tbl[(int(bold), int(italic))]
 
 
-def _generic_font_style(edit):
+def _generic_font_style(edit: dict) -> tuple[str, str, str]:
     """CSS (family, weight, style) for the generic-family htmlbox fallback."""
     serif, mono, bold, italic = _text_edit_style(edit)
-    font_spec = edit.get("font", "")
-    standard_families = ("Times New Roman", "Georgia", "Courier New", "Segoe UI",
-                         "Calibri", "Verdana", "Arial", "Helvetica", "Trebuchet MS")
-    if font_spec and any(sf.lower() in font_spec.lower() for sf in standard_families):
-        family = f"'{font_spec}', sans-serif"
+    font_spec = edit.get("font", "").strip()
+    if font_spec:
+        clean_spec = font_spec.split("+")[-1].strip()
+        family = f"'{clean_spec}', '{font_spec}', sans-serif"
     else:
         family = "monospace" if mono else ("serif" if serif else "sans-serif")
     return family, ("bold" if bold else "normal"), ("italic" if italic else "normal")
 
 
-def _build_embed_archive(fitz, doc, page, edit, new_txt):
-    """Return (archive, ref) embedding the span's original font, or (None, None)."""
+def _build_embed_archive(fitz, doc, page, edit: dict, new_txt: str):
+    """Return (archive, ref) embedding the span's font (either from system or PDF), or (None, None)."""
+    font_spec = edit.get("font", "").strip()
+    serif, mono, bold, italic = _text_edit_style(edit)
+
+    # 1. Prefer matching system installed font (e.g. LazyDog)
+    if font_spec:
+        clean_name = font_spec.split("+")[-1].strip()
+        sys_ttf = find_system_font_file(clean_name, bold=bold, italic=italic)
+        if not sys_ttf and clean_name != font_spec:
+            sys_ttf = find_system_font_file(font_spec, bold=bold, italic=italic)
+
+        if sys_ttf and os.path.isfile(sys_ttf):
+            try:
+                with open(sys_ttf, "rb") as f_in:
+                    content = f_in.read()
+                if content and len(content) >= 256:
+                    ext_str = os.path.splitext(sys_ttf)[1].lstrip(".") or "ttf"
+                    ref = f"PDF_Editor_custom.{ext_str}"
+                    arch = fitz.Archive()
+                    arch.add(content, ref)
+                    return arch, ref
+            except Exception:
+                pass
+
     if edit.get("_font_changed"):
         return None, None
-    core = _font_core(edit.get("font", ""))
+
+    # 2. Extract embedded font from original PDF
+    core = _font_core(font_spec)
     if not core:
         return None, None
     try:
         fonts = page.get_fonts(full=False)
     except Exception:
         return None, None
+
     xref = None
     for f in fonts:
         fxref, basefont, name = f[0], f[3], f[4]
@@ -137,14 +165,18 @@ def _build_embed_archive(fitz, doc, page, edit, new_txt):
         if fxref and int(fxref) > 0 and _font_matches(core, basefont, name):
             xref = int(fxref)
             break
+
     if not xref:
         return None, None
+
     try:
         _n, ext_, _t, content = doc.extract_font(xref)
     except Exception:
         return None, None
+
     if not content or len(content) < 256:
         return None, None
+
     try:
         probe = fitz.Font(fontbuffer=content)
         for ch in new_txt:
@@ -154,16 +186,18 @@ def _build_embed_archive(fitz, doc, page, edit, new_txt):
                 return None, None
     except Exception:
         return None, None
+
     ref = "PDF_Editor_embed." + ((ext_ or "ttf").lstrip(".") or "ttf")
     try:
         arch = fitz.Archive()
         arch.add(content, ref)
     except Exception:
         return None, None
+
     return arch, ref
 
 
-def _text_edit_redaction_rect(fitz, edit, size):
+def _text_edit_redaction_rect(fitz, edit: dict, size: float):
     """Vertically tight redaction rectangle for removing original span at its original location."""
     bbox = fitz.Rect(edit.get("_orig_rect") or edit["bbox"])
     origin = edit.get("_orig_origin") or edit.get("origin") or (bbox.x0, bbox.y1)
@@ -178,7 +212,7 @@ def _text_edit_redaction_rect(fitz, edit, size):
     return bbox
 
 
-def _text_edit_layout_rect(fitz, page, edit, size):
+def _text_edit_layout_rect(fitz, page, edit: dict, size: float):
     """Layout rectangle for insert_htmlbox at the target position."""
     bbox = fitz.Rect(edit["bbox"])
     origin = edit.get("origin") or (bbox.x0, bbox.y1)
@@ -192,7 +226,7 @@ def _text_edit_layout_rect(fitz, page, edit, size):
     return fitz.Rect(x0, top, right, bottom)
 
 
-def _warn_if_downscaled(htmlbox_result, edit, warn_fn):
+def _warn_if_downscaled(htmlbox_result, edit: dict, warn_fn) -> None:
     """Inspect insert_htmlbox's (spare_height, scale) output."""
     try:
         spare_height, scale = htmlbox_result
@@ -211,8 +245,8 @@ def _warn_if_downscaled(htmlbox_result, edit, warn_fn):
                 _log.exception("text-fit warn_fn raised")
 
 
-def _reinsert_edited_text(fitz, doc, page, edit, warn_fn=None, *, redact: bool = True, prebuilt_archive=None):
-    """Redact original span (if redact=True) and reinsert replacement text with custom typography support."""
+def _reinsert_edited_text(fitz, doc, page, edit: dict, warn_fn=None, *, redact: bool = True, prebuilt_archive=None) -> bool:
+    """Redact original span (if redact=True) and reinsert replacement text with custom typography and system font support."""
     bbox = fitz.Rect(edit["bbox"])
     new_txt = (edit.get("new_text") or "").strip()
     size = _text_edit_size(edit)
@@ -246,29 +280,41 @@ def _reinsert_edited_text(fitz, doc, page, edit, warn_fn=None, *, redact: bool =
 
     try:
         if arch is not None:
-            css = ("@font-face {{ font-family: {fam}; src: url({ref}); }}\n"
-                   "* {{ margin:0; padding:0; white-space:pre-wrap;"
-                   " font-family:{fam}; font-size:{sz}pt; color:{col}; }}"
-                   ).format(fam=_EMBED_FAMILY, ref=ref, sz=size, col=color_hex)
+            css = (
+                f"@font-face {{ font-family: {_EMBED_FAMILY}; src: url({ref}); }}\n"
+                f"* {{ margin:0; padding:0; white-space:pre-wrap;"
+                f" font-family:{_EMBED_FAMILY}; font-size:{size}pt; color:{color_hex}; }}"
+            )
             _warn_if_downscaled(
                 page.insert_htmlbox(rect, body, css=css, archive=arch),
                 edit, warn_fn)
             return True
+
         family, weight, style = _generic_font_style(edit)
-        css = ("* {{ margin:0; padding:0; white-space:pre-wrap;"
-               " font-family:{fam}; font-size:{sz}pt; color:{col};"
-               " font-weight:{w}; font-style:{s}; }}"
-               ).format(fam=family, sz=size, col=color_hex, w=weight, s=style)
+        css = (
+            f"* {{ margin:0; padding:0; white-space:pre-wrap;"
+            f" font-family:{family}; font-size:{size}pt; color:{color_hex};"
+            f" font-weight:{weight}; font-style:{style}; }}"
+        )
         _warn_if_downscaled(page.insert_htmlbox(rect, body, css=css), edit, warn_fn)
         return False
     except Exception:
-        _log.exception("htmlbox reinsertion failed; using base-14 insert_text")
+        _log.exception("htmlbox reinsertion failed; using fontfile/base-14 insert_text")
         try:
             origin = edit.get("origin") or (bbox.x0, bbox.y1)
-            page.insert_text(fitz.Point(float(origin[0]), float(origin[1])),
-                             new_txt, fontsize=size,
-                             fontname=_base14_fontname(edit),
-                             color=_text_edit_color_rgb(edit))
+            serif, mono, bold, italic = _text_edit_style(edit)
+            font_req = edit.get("font", "").split("+")[-1].strip()
+            sys_ttf = find_system_font_file(font_req, bold=bold, italic=italic)
+
+            pt = fitz.Point(float(origin[0]), float(origin[1]))
+            col = _text_edit_color_rgb(edit)
+
+            if sys_ttf and os.path.isfile(sys_ttf):
+                page.insert_text(pt, new_txt, fontsize=size, fontfile=sys_ttf, fontname="custom", color=col)
+                return True
+            else:
+                page.insert_text(pt, new_txt, fontsize=size, fontname=_base14_fontname(edit), color=col)
+                return False
         except Exception:
-            _log.exception("base-14 insert_text fallback also failed")
-        return False
+            _log.exception("insert_text fallback also failed")
+            return False

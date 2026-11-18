@@ -1,3 +1,1 @@
-# app/editor/canvas_overlay1.py
-# app/editor/canvas_events1.py
-app/viewer/thumbnail_panel.py
+page numbers

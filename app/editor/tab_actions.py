@@ -1,5 +1,4 @@
 
-
 # app/editor/tab_actions.py
 """PDF_Editor – Editing modes, typography formatters, draw tools, stamps, and element selections for TabEditar."""
 
@@ -247,12 +246,19 @@ class TabActionsMixin(_Base):
         self._btn_bold.blockSignals(True)
         self._btn_italic.blockSignals(True)
 
-        font_name = fmt.get("font", "Helvetica")
-        idx = self._text_font.findText(font_name, Qt.MatchFlag.MatchContains)
+        font_name = str(fmt.get("font", "Helvetica") or "Helvetica")
+        clean_name = font_name.split("+")[-1].strip()
+
+        idx = self._text_font.findText(clean_name, Qt.MatchFlag.MatchExactly)
+        if idx < 0:
+            idx = self._text_font.findText(clean_name, Qt.MatchFlag.MatchContains)
+        if idx < 0 and clean_name != font_name:
+            idx = self._text_font.findText(font_name, Qt.MatchFlag.MatchContains)
+
         if idx >= 0:
             self._text_font.setCurrentIndex(idx)
         else:
-            self._text_font.addItem(font_name)
+            self._text_font.addItem(clean_name)
             self._text_font.setCurrentIndex(self._text_font.count() - 1)
 
         self._text_size.setValue(max(4, int(round(fmt.get("size", 12)))))
@@ -791,3 +797,4 @@ class TabActionsMixin(_Base):
         self._history.handle_note_deleted(overlay)
         if hasattr(self, "_sync_thumbnails"):
             self._sync_thumbnails({page_idx})
+

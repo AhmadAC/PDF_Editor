@@ -1,6 +1,7 @@
 
+
 # app/editor/apply_edits.py
-"""PDF_Editor – Two-phase edit-application dispatcher supporting z-order, opacity, rotation, flip, and surgical image/drawing removal."""
+"""PDF_Editor – Two-phase edit-application dispatcher supporting z-order, opacity, rotation, flip, and surgical image/drawing removal with custom system font embedding."""
 
 import io
 import os
@@ -14,6 +15,7 @@ from app.editor.text_reinsert import (
     _text_edit_redaction_rect,
     _text_edit_size,
 )
+from app.utils import find_system_font_file
 
 _log = logging.getLogger(__name__)
 
@@ -453,25 +455,38 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
             print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted drawing overlay on page {p_idx + 1}", flush=True)
 
         elif etype == "text":
-            fname = (e.get("font", "") or "").lower()
-            if "times" in fname or "serif" in fname or "roman" in fname:
-                fontname = "tiro"
-            elif "mono" in fname or "courier" in fname or "consol" in fname:
-                fontname = "cour"
-            else:
-                fontname = "helv"
+            font_req = str(e.get("font", "Helvetica") or "Helvetica")
             flags = int(e.get("flags", 0) or 0)
-            if (flags & 16) or "bold" in fname:
-                if fontname == "helv": fontname = "hebo"
-                elif fontname == "tiro": fontname = "tibo"
-                elif fontname == "cour": fontname = "cobo"
-            if (flags & 2) or "italic" in fname or "oblique" in fname:
-                if fontname == "helv": fontname = "heit"
-                elif fontname == "hebo": fontname = "hebi"
-                elif fontname == "tiro": fontname = "tiit"
-                elif fontname == "tibo": fontname = "tibi"
-                elif fontname == "cour": fontname = "coit"
-                elif fontname == "cobo": fontname = "cobi"
+            is_bold = bool((flags & 16) or "bold" in font_req.lower())
+            is_italic = bool((flags & 2) or "italic" in font_req.lower() or "oblique" in font_req.lower())
+
+            ttf_path = find_system_font_file(font_req, bold=is_bold, italic=is_italic)
+
+            if ttf_path and os.path.isfile(ttf_path):
+                fontname = "user_font"
+                fontfile_arg = ttf_path
+                embedded_font = True
+            else:
+                fontfile_arg = None
+                fname = font_req.lower()
+                if "times" in fname or "serif" in fname or "roman" in fname:
+                    fontname = "tiro"
+                elif "mono" in fname or "courier" in fname or "consol" in fname:
+                    fontname = "cour"
+                else:
+                    fontname = "helv"
+                if is_bold:
+                    if fontname == "helv": fontname = "hebo"
+                    elif fontname == "tiro": fontname = "tibo"
+                    elif fontname == "cour": fontname = "cobo"
+                if is_italic:
+                    if fontname == "helv": fontname = "heit"
+                    elif fontname == "hebo": fontname = "hebi"
+                    elif fontname == "tiro": fontname = "tiit"
+                    elif fontname == "tibo": fontname = "tibi"
+                    elif fontname == "cour": fontname = "coit"
+                    elif fontname == "cobo": fontname = "cobi"
+
             c = e.get("color", (0, 0, 0))
             if isinstance(c, (list, tuple)) and len(c) >= 3:
                 color = tuple(float(x) for x in c[:3])
@@ -485,6 +500,9 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                 "fill_opacity": op,
                 "overlay": overlay_flag,
             }
+            if fontfile_arg:
+                kw["fontfile"] = fontfile_arg
+
             if rot or flip_h or flip_v:
                 rr = fitz.Rect(e["rect"]) if e.get("rect") else None
                 if rr:
@@ -494,7 +512,7 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                     cx, cy = float(pt.x), float(pt.y)
                 kw["morph"] = (fitz.Point(cx, cy), _build_transform_matrix(fitz, rot, flip_h, flip_v))
             pg.insert_text(e["point"], e["text"], **kw)
-            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted text '{e.get('text', '')[:20]}' on page {p_idx + 1}", flush=True)
+            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted text '{e.get('text', '')[:20]}' on page {p_idx + 1} with font '{font_req}'", flush=True)
 
         elif etype in ("image", "signature"):
             path = e.get("path", "")

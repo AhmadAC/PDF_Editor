@@ -12,6 +12,7 @@ from app.constants import ACCENT, TEXT_SEC
 from app.i18n import t
 from app.editor.canvas_overlay1 import overlay_pdf_rect, rects_close
 from app.editor.canvas_render1 import _NOTE_ICON_SIZE, _load_overlay_pixmap
+from app.editor.canvas_text1 import _resolve_font_family
 
 
 def _draw_selection_box(p: QPainter, qr: QRect, handle_size: int = 8, draw_handles: bool = True, is_locked: bool = False) -> None:
@@ -312,7 +313,8 @@ class CanvasPainter:
                     p.setOpacity(op)
                     p.setPen(QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255)))
                     fname = e.get("font", "Helvetica")
-                    f2 = QFont(fname)
+                    resolved_fam = _resolve_font_family(fname)
+                    f2 = QFont(resolved_fam)
                     f2.setPointSizeF(max(4.0, float(e.get("size", 12)) * z * 0.75))
                     flags = int(e.get("flags", 0) or 0)
                     if (flags & 16) or "bold" in fname.lower():
@@ -402,7 +404,8 @@ class CanvasPainter:
                     p.setPen(col)
 
                     fname = e.get("font", "Helvetica")
-                    fnt = QFont(fname)
+                    resolved_fam = _resolve_font_family(fname)
+                    fnt = QFont(resolved_fam)
                     sz = float(e.get("font_size", e.get("size", 12)))
                     fnt.setPointSizeF(max(4.0, sz * z * 0.75))
                     flags = int(e.get("flags", 0) or 0)

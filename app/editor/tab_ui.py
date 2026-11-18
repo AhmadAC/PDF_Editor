@@ -1,3 +1,4 @@
+
 # app/editor/tab_ui.py
 """PDF_Editor – tab_ui: UI builder and styling manager for TabEditar with Fill & Sign check/cross tools using SVG icons."""
 
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
 from app.constants import ACCENT, TEXT_PRI, TEXT_SEC, DESKTOP, BG_INNER, _LN, _LP, _LQ
 from app.utils import (
     ToolHeader, ActionBar, info_lbl, svg_for_name, svg_icon,
+    get_system_font_families,
     SVG_BOLD, SVG_CHECK, SVG_CLOSE, SVG_COPY, SVG_EDIT, SVG_ERASER,
     SVG_HIGHLIGHTER, SVG_ITALIC, SVG_PLUS, SVG_ROTATE_LEFT, SVG_ROTATE_RIGHT,
     SVG_CHEVRON_LEFT, SVG_CHEVRON_RIGHT, SVG_SIGNATURE, SVG_TRASH,
@@ -458,10 +460,8 @@ def _build_mode_options(tab) -> None:
     font_row = QHBoxLayout()
     font_row.addWidget(QLabel("Font:"))
     tab._text_font = FocusComboBox()
-    tab._text_font.addItems([
-        "Helvetica", "Arial", "Times New Roman", "Courier New",
-        "Segoe UI", "Georgia", "Calibri", "Verdana", "Trebuchet MS"
-    ])
+    tab._text_font.setMaxVisibleItems(20)
+    tab._text_font.addItems(get_system_font_families())
     tab._text_font.currentTextChanged.connect(tab._on_text_format_changed)
     font_row.addWidget(tab._text_font, 1)
     v1.addLayout(font_row)
@@ -808,3 +808,4 @@ def update_tab_theme(tab, dark: bool) -> None:
                 if dark else
                 f"background:#D6E8FA; border:1px solid #70A7DB; color:{ACCENT}; border-radius:6px;"
             )
+

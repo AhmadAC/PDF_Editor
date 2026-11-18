@@ -120,7 +120,7 @@ def _find_system_font_file(family: str, bold: bool = False, italic: bool = False
                                 r"\s*\((TrueType|OpenType)\)\s*$", "", name, flags=re.IGNORECASE
                             ).strip()
                             nl = name_clean.lower()
-                            if nl != fam_lower and not nl.startswith(fam_lower + " "):
+                            if nl != fam_lower and not nl.startswith(fam_lower + " ") and fam_lower not in nl:
                                 continue
 
                             has_bold = "bold" in nl
@@ -150,8 +150,41 @@ def _find_system_font_file(family: str, bold: bool = False, italic: bool = False
             if candidates:
                 candidates.sort(key=lambda x: x[0], reverse=True)
                 return candidates[0][1]
+
+            norm_fam = re.sub(r"[^a-zA-Z0-9]", "", fam_lower)
+            for fdir in (local_fonts_dir, win_fonts_dir):
+                if not os.path.isdir(fdir):
+                    continue
+                with contextlib.suppress(Exception):
+                    for fn in os.listdir(fdir):
+                        ext = os.path.splitext(fn)[1].lower()
+                        if ext in (".ttf", ".otf"):
+                            stem = re.sub(r"[^a-zA-Z0-9]", "", os.path.splitext(fn)[0].lower())
+                            if stem == norm_fam or stem.startswith(norm_fam):
+                                fp = os.path.join(fdir, fn)
+                                if os.path.isfile(fp):
+                                    return fp
         except Exception:
             pass
+    elif sys.platform == "darwin":
+        mac_dirs = [
+            os.path.expanduser("~/Library/Fonts"),
+            "/Library/Fonts",
+            "/System/Library/Fonts",
+        ]
+        norm_fam = re.sub(r"[^a-zA-Z0-9]", "", fam_lower)
+        for fdir in mac_dirs:
+            if not os.path.isdir(fdir):
+                continue
+            with contextlib.suppress(Exception):
+                for fn in os.listdir(fdir):
+                    ext = os.path.splitext(fn)[1].lower()
+                    if ext in (".ttf", ".otf"):
+                        stem = re.sub(r"[^a-zA-Z0-9]", "", os.path.splitext(fn)[0].lower())
+                        if stem == norm_fam or stem.startswith(norm_fam):
+                            fp = os.path.join(fdir, fn)
+                            if os.path.isfile(fp):
+                                return fp
     else:
         fc_bin = shutil.which("fc-match")
         if fc_bin:
@@ -180,7 +213,7 @@ def _find_system_font_file(family: str, bold: bool = False, italic: bool = False
 def _get_fitz_font_args(fitz_mod, family: str, bold: bool, italic: bool):
     """Return (fontname, fontfile, fitz.Font) for exact text placement and embedding."""
     ttf_path = _find_system_font_file(family, bold, italic)
-    if ttf_path:
+    if ttf_path and os.path.isfile(ttf_path):
         try:
             f_obj = fitz_mod.Font(fontfile=ttf_path)
             if f_obj:
@@ -257,14 +290,15 @@ class TabPageNumbers(BasePage):
         self.cmb_position.currentIndexChanged.connect(self._on_option_changed)
         form.addRow(t("tool.page_numbers.position"), self.cmb_position)
 
-        # Font selector
+        # Font selector populated with all installed system fonts
         self.cmb_font = FocusComboBox()
-        self.cmb_font.setMaxVisibleItems(16)
+        self.cmb_font.setMaxVisibleItems(20)
         try:
             sys_families = [
                 fam for fam in QFontDatabase.families()
                 if not fam.startswith("@") and fam not in _STANDARD_FONTS
             ]
+            sys_families.sort(key=lambda s: s.lower())
         except Exception:
             sys_families = []
         self.cmb_font.addItems(_STANDARD_FONTS + sys_families)

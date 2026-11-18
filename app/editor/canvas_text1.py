@@ -1,19 +1,35 @@
+
+
 # app/editor/canvas_text1.py
 
-"""Inline text editor controller for Foxit-style in-place editing & insertion."""
+"""Inline text editor controller for Foxit-style in-place editing & insertion with installed system font support."""
 
 from __future__ import annotations
 
 import fitz
 from PySide6.QtCore import Qt, QEvent
-from PySide6.QtGui import QFont, QFontMetrics
+from PySide6.QtGui import QFont, QFontMetrics, QFontDatabase
 from PySide6.QtWidgets import QLineEdit
 
 from app.constants import ACCENT
 
 
 def _resolve_font_family(fname: str) -> str:
-    fn = (fname or "Helvetica").lower()
+    """Resolve font name to an installed system font family or suitable fallback."""
+    if not fname:
+        return "Arial"
+    try:
+        fams = QFontDatabase.families()
+        if fname in fams:
+            return fname
+        fn = fname.strip().lower()
+        for fam in fams:
+            if fam.lower() == fn:
+                return fam
+    except Exception:
+        pass
+
+    fn = fname.strip().lower()
     if "times" in fn or "serif" in fn or "roman" in fn:
         return "Times New Roman"
     if "mono" in fn or "courier" in fn or "consol" in fn:
@@ -28,7 +44,11 @@ def _resolve_font_family(fname: str) -> str:
         return "Verdana"
     if "trebuchet" in fn:
         return "Trebuchet MS"
-    return "Arial"
+    if "comic" in fn:
+        return "Comic Sans MS"
+    if "arial" in fn or "helvetica" in fn:
+        return "Arial"
+    return fname
 
 
 class CanvasInlineTextManager:
@@ -54,7 +74,7 @@ class CanvasInlineTextManager:
     def _resolve_font_family(fname: str) -> str:
         return _resolve_font_family(fname)
 
-    def begin_edit(self, span: dict, page_idx: int):
+    def begin_edit(self, span: dict, page_idx: int, target_overlay: dict | None = None):
         if self.edit.isVisible():
             self.commit()
         self.mode = "edit"
@@ -180,7 +200,7 @@ class CanvasInlineTextManager:
         style_str = "italic" if italic else "normal"
         self.edit.setStyleSheet(
             f"QLineEdit {{ background: #FFFFFF; color: #{r:02x}{g:02x}{b:02x};"
-            f" font-family: '{family}'; font-size: {px_size}px;"
+            f" font-family: '{family}', Arial, sans-serif; font-size: {px_size}px;"
             f" font-weight: {weight_str}; font-style: {style_str};"
             f" border: 1.5px solid {ACCENT}; border-radius: 2px; padding: 0px 2px; }}"
         )
@@ -216,7 +236,7 @@ class CanvasInlineTextManager:
         style_str = "italic" if italic else "normal"
         self.edit.setStyleSheet(
             f"QLineEdit {{ background: #FFFFFF; color: #{r:02x}{g:02x}{b:02x};"
-            f" font-family: '{family}'; font-size: {px_size}px;"
+            f" font-family: '{family}', Arial, sans-serif; font-size: {px_size}px;"
             f" font-weight: {weight_str}; font-style: {style_str};"
             f" border: 1.5px solid {ACCENT}; border-radius: 2px; padding: 0px 2px; }}"
         )
@@ -358,3 +378,4 @@ class CanvasInlineTextManager:
                 self.commit()
                 return False
         return False
+
