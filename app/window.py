@@ -1,5 +1,3 @@
-#################### START OF FILE: app\window.py ####################
-
 # app/window.py
 """PDF_Editor – MainWindow: application main window facade with Alt+P Command Palette and Selection Pane integration."""
 
@@ -477,7 +475,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         QShortcut(QKeySequence("Alt+P"), self, self._show_command_palette)
         QShortcut(QKeySequence("Ctrl+Shift+P"), self, self._show_command_palette)
         QShortcut(QKeySequence("F5"), self, self._start_presentation)
-        QShortcut(QKeySequence("Ctrl+1"), self, self._start_presentation)
+        QShortcut(QKeySequence("Ctrl+1"), self, lambda: self._handle_ctrl_digit(1))
         QShortcut(QKeySequence("F11"), self, self._toggle_fullscreen)
         QShortcut(QKeySequence("Ctrl+O"), self, self._open_pdf)
         sc_hist = QShortcut(QKeySequence("Ctrl+H"), self, self._show_recent_files_menu)
@@ -488,7 +486,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         sc_zi2 = QShortcut(QKeySequence("Ctrl+="), self, self._zoom_in_current)
         sc_zo1 = QShortcut(QKeySequence("Ctrl+-"), self, self._zoom_out_current)
         sc_zo2 = QShortcut(QKeySequence("Ctrl+_"), self, self._zoom_out_current)
-        sc_zr = QShortcut(QKeySequence("Ctrl+0"), self, self._zoom_reset_current)
+        sc_zr = QShortcut(QKeySequence("Ctrl+0"), self, lambda: self._handle_ctrl_digit(0))
         for sc in (sc_zi1, sc_zi2, sc_zo1, sc_zo2, sc_zr):
             sc.setContext(Qt.ShortcutContext.WindowShortcut)
 
@@ -509,7 +507,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
             if idx == 0:
                 continue
             elif idx < 9:
-                QShortcut(QKeySequence(f"Ctrl+{idx+1}"), self, lambda i=idx: self._activate_tool(i))
+                QShortcut(QKeySequence(f"Ctrl+{idx+1}"), self, lambda d=idx + 1: self._handle_ctrl_digit(d))
             elif idx < 18:
                 QShortcut(QKeySequence(f"Ctrl+Shift+{idx-8}"), self, lambda i=idx: self._activate_tool(i))
         self._fullscreen = False
@@ -522,6 +520,24 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
 
         self._instance_server = SingleInstanceServer(self)
         self._instance_server.new_paths.connect(self._on_second_instance)
+
+    def _handle_ctrl_digit(self, digit: int) -> None:
+        """In Edit mode, Ctrl+1..0 apply color shortcuts to selected text (or all text boxes if none selected)."""
+        edit_idx = self._edit_tool_idx()
+        if self._current_tool == edit_idx and edit_idx >= 0:
+            edit_w: Any = self._get_or_create_tool(edit_idx)
+            apply_fn = getattr(edit_w, "_apply_color_shortcut", None)
+            if callable(apply_fn) and apply_fn(digit):
+                return
+
+        if digit == 0:
+            self._zoom_reset_current()
+        elif digit == 1:
+            self._start_presentation()
+        else:
+            tool_idx = digit - 1
+            if 0 <= tool_idx < len(NAV_ITEMS):
+                self._activate_tool(tool_idx)
 
     def _open_selection_pane(self):
         """Open the Selection Pane inspector for the active PDF in Edit mode."""

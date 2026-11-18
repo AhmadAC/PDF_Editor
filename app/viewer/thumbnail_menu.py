@@ -78,6 +78,22 @@ class _SpinEnterFilter(QObject):
         return super().eventFilter(obj, event)
 
 
+class _RowClickFilter(QObject):
+    """Trigger the menu row action when clicking anywhere on the row or shortcut label (outside the spinbox)."""
+
+    def __init__(self, callback, spin_widget, parent=None) -> None:
+        super().__init__(parent)
+        self._cb = callback
+        self._spin = spin_widget
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+            if obj is not self._spin:
+                self._cb()
+                return True
+        return super().eventFilter(obj, event)
+
+
 def _add_counted_action(
     root_menu: QMenu,
     target_menu: QMenu,
@@ -127,8 +143,10 @@ def _add_counted_action(
     )
 
     h.addWidget(btn, 1)
+    sc_lbl = None
     if shortcut_text:
         sc_lbl = QLabel(shortcut_text, row_w)
+        sc_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
         sc_lbl.setStyleSheet(
             f"color: {sec_fg}; font-size: 9.5pt; background: transparent; padding-right: 4px;"
         )
@@ -138,6 +156,8 @@ def _add_counted_action(
     chosen_result = {"triggered": False, "count": 1}
 
     def _trigger():
+        if chosen_result["triggered"]:
+            return
         with contextlib.suppress(Exception):
             spin.interpretText()
         chosen_result["triggered"] = True
@@ -147,6 +167,13 @@ def _add_counted_action(
         root_menu.close()
 
     btn.clicked.connect(_trigger)
+    wa.triggered.connect(_trigger)
+
+    click_flt = _RowClickFilter(_trigger, spin, row_w)
+    row_w.installEventFilter(click_flt)
+    if sc_lbl is not None:
+        sc_lbl.installEventFilter(click_flt)
+
     le = spin.lineEdit()
     flt = _SpinEnterFilter(_trigger, spin)
     spin.installEventFilter(flt)

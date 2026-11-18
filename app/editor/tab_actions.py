@@ -1,5 +1,5 @@
 # app/editor/tab_actions.py
-"""PDF_Editor – Editing modes, typography formatters, draw tools, stamps, and element selections for TabEditar."""
+"""PDF_Editor – Editing modes, typography formatters, color shortcuts, draw tools, stamps, and element selections for TabEditar."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 
 from app.constants import ACCENT, TEXT_SEC, _LQ
+from app.editor.canvas_overlay1 import snapshot_overlay
 from app.editor.tab_constants import (
     _MODE_DRAW,
     _MODE_FORMS,
@@ -38,9 +39,22 @@ if TYPE_CHECKING:
 else:
     _Base = object
 
+_COLOR_SHORTCUTS: dict[int, tuple[str, tuple[float, float, float]]] = {
+    1: ("Green",  (0.06, 0.72, 0.50)),
+    2: ("Red",    (0.94, 0.27, 0.27)),
+    3: ("Yellow", (0.95, 0.77, 0.06)),
+    4: ("Pink",   (0.95, 0.45, 0.71)),
+    5: ("Blue",   (0.15, 0.45, 0.96)),
+    6: ("Orange", (0.97, 0.45, 0.09)),
+    7: ("Purple", (0.55, 0.36, 0.96)),
+    8: ("Cyan",   (0.02, 0.71, 0.83)),
+    9: ("Grey",   (0.42, 0.45, 0.50)),
+    0: ("Black",  (0.00, 0.00, 0.00)),
+}
+
 
 class TabActionsMixin(_Base):
-    """Mixin containing mode handlers, typography events, stamps, and selection manipulations."""
+    """Mixin containing mode handlers, typography events, color shortcuts, stamps, and selection manipulations."""
 
     if TYPE_CHECKING:
         _mode_idx: int
@@ -52,6 +66,7 @@ class TabActionsMixin(_Base):
         _btn_redo: Any
         _canvas: PdfEditCanvas
         _history: TabHistoryManager
+        _pending: list[dict]
         _draw_color_cb: Any
         _draw_width_slider: Any
         _draw_width_lbl: Any
@@ -85,6 +100,98 @@ class TabActionsMixin(_Base):
         def _update_nav(self) -> None: ...
         def _status(self, msg: str) -> None: ...
         def _sync_thumbnails(self, affected_pages: set[int] | list[int] | None = None) -> None: ...
+
+    def _apply_color_shortcut(self, digit: int) -> bool:
+        """Apply Ctrl+1..0 color shortcut to active inline text, selected overlay, or all text boxes if none selected."""
+        entry = _COLOR_SHORTCUTS.get(digit)
+        if entry is None:
+            return False
+        color_name, col = entry
+        c = getattr(self, "_canvas", None)
+        if c is None or not getattr(c, "_doc", None):
+            return False
+
+        # 1. Active inline text editor open -> update its color immediately
+        inline_edit = getattr(c, "_inline_edit", None)
+        if inline_edit is not None and inline_edit.isVisible():
+            if hasattr(self, "_text_color"):
+                self._text_color.blockSignals(True)
+                self._text_color.set_color(col)
+                self._text_color.blockSignals(False)
+            self._on_text_format_changed()
+            self._status(f"Text color: {color_name}")
+            return True
+
+        # 2. A canvas overlay is currently selected -> update its color immediately
+        sel_idx = getattr(c, "_selected_overlay_idx", -1)
+        if 0 <= sel_idx < len(c._overlays):
+            ov = c._overlays[sel_idx]
+            if not ov.get("_deleted") and ov.get("type") in ("text", "text_edit", "check", "cross", "draw", "highlight"):
+                before_snap = snapshot_overlay(ov)
+                was_untouched = bool(ov.get("_existing") and not ov.get("_dirty"))
+                ov["color"] = col
+                if ov.get("type") == "text_edit":
+                    ov["_font_changed"] = True
+                if ov.get("type") in ("text", "text_edit") and hasattr(self, "_text_color"):
+                    self._text_color.blockSignals(True)
+                    self._text_color.set_color(col)
+                    self._text_color.blockSignals(False)
+
+                if was_untouched:
+                    ov["_dirty"] = True
+                    self._on_overlay_committed(ov)
+                else:
+                    self._on_overlay_transformed(ov, before_snap)
+
+                if was_untouched or ov.get("_z_back"):
+                    c.refresh_pages({ov.get("page", 0)})
+                c.overlay_changed.emit()
+                c.update()
+                self._status(f"Changed selected object color to {color_name}")
+                return True
+
+        # 3. No text box selected -> update ALL user text boxes immediately + active text color
+        targets = [
+            ov for ov in self._pending
+            if not ov.get("_deleted")
+            and ov.get("type") in ("text", "text_edit")
+            and (not ov.get("_existing") or ov.get("_dirty"))
+        ]
+        if targets:
+            if hasattr(self, "_text_color"):
+                self._text_color.blockSignals(True)
+                self._text_color.set_color(col)
+                self._text_color.blockSignals(False)
+            affected_pages: set[int] = set()
+            refresh_pages: set[int] = set()
+            for ov in targets:
+                before_snap = snapshot_overlay(ov)
+                ov["color"] = col
+                if ov.get("type") == "text_edit":
+                    ov["_font_changed"] = True
+                self._history.handle_overlay_transformed(ov, before_snap)
+                pg = ov.get("page", 0)
+                affected_pages.add(pg)
+                if ov.get("_z_back"):
+                    refresh_pages.add(pg)
+            if refresh_pages:
+                c.refresh_pages(refresh_pages)
+            c.overlay_changed.emit()
+            c.update()
+            if hasattr(self, "_sync_thumbnails"):
+                self._sync_thumbnails(affected_pages)
+            self._status(f"Changed all text ({len(targets)}) to {color_name}")
+            return True
+
+        if digit == 0 and self._mode_idx != _MODE_TEXT:
+            return False
+
+        if hasattr(self, "_text_color"):
+            self._text_color.blockSignals(True)
+            self._text_color.set_color(col)
+            self._text_color.blockSignals(False)
+        self._status(f"Text color set to {color_name}")
+        return True
 
     def _set_mode_by_idx(self, idx: int):
         if 0 <= idx < len(self._mode_btns):
@@ -382,7 +489,6 @@ class TabActionsMixin(_Base):
         if hasattr(self, "_canvas") and self._canvas._selected_overlay_idx >= 0:
             ov = self._canvas._overlays[self._canvas._selected_overlay_idx]
             if ov.get("type") in ("text", "text_edit"):
-                from app.editor.canvas_overlay1 import snapshot_overlay
                 before_snap = snapshot_overlay(ov)
                 was_untouched = bool(ov.get("_existing") and not ov.get("_dirty"))
                 ov["new_text"] = new_txt
@@ -810,3 +916,4 @@ class TabActionsMixin(_Base):
         self._history.handle_note_deleted(overlay)
         if hasattr(self, "_sync_thumbnails"):
             self._sync_thumbnails({page_idx})
+
