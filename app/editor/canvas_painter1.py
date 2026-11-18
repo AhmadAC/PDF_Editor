@@ -1,5 +1,4 @@
 # app/editor/canvas_painter1.py
-
 """Canvas painter: renders pages, overlays, vector drawings, opacity, rotation, flips, check/cross stamps, text, notes, and strokes."""
 
 from __future__ import annotations
@@ -15,12 +14,24 @@ from app.editor.canvas_overlay1 import overlay_pdf_rect, rects_close
 from app.editor.canvas_render1 import _NOTE_ICON_SIZE, _load_overlay_pixmap
 
 
-def _draw_selection_box(p: QPainter, qr: QRect, handle_size: int = 8, draw_handles: bool = True) -> None:
-    p.setPen(QPen(QColor(ACCENT), 1.5, Qt.PenStyle.DashLine))
+def _draw_selection_box(p: QPainter, qr: QRect, handle_size: int = 8, draw_handles: bool = True, is_locked: bool = False) -> None:
+    if is_locked:
+        p.setPen(QPen(QColor("#F59E0B"), 1.8, Qt.PenStyle.DashDotLine))
+    else:
+        p.setPen(QPen(QColor(ACCENT), 1.5, Qt.PenStyle.DashLine))
     p.setBrush(Qt.BrushStyle.NoBrush)
     p.drawRect(qr)
-    if not draw_handles:
+
+    if not draw_handles or is_locked:
+        if is_locked:
+            p.setPen(QColor("#F59E0B"))
+            f = QFont()
+            f.setPointSize(8)
+            f.setBold(True)
+            p.setFont(f)
+            p.drawText(qr.right() - 42, qr.top() - 4, "[LOCKED]")
         return
+
     hs = handle_size
     p.setBrush(QColor("#FFFFFF"))
     p.setPen(QPen(QColor(ACCENT), 1.5))
@@ -97,20 +108,22 @@ class CanvasPainter:
         for ov_idx, e in enumerate(canvas._overlays):
             if e.get("_deleted"):
                 continue
+            if not e.get("_visible", True):
+                continue
+
             pg = e.get("page", 0)
             if pg >= len(canvas._page_offsets):
                 continue
             yo = canvas._page_offsets[pg][0]
             etype = e["type"]
             is_selected = (ov_idx == canvas._selected_overlay_idx)
+            is_locked = bool(e.get("_locked", False))
             op = max(0.0, min(1.0, float(e.get("opacity", 1.0))))
             rot = int(e.get("rotation", 0)) % 360
             flip_h = bool(e.get("flip_h", False))
             flip_v = bool(e.get("flip_v", False))
             is_z_back = bool(e.get("_z_back", False))
 
-            # Items sent to back are already rendered behind PDF content in the page pixmap;
-            # only draw their body temporarily on top while actively dragging/resizing them.
             skip_body_for_z_back = bool(is_z_back and not (is_selected and is_actively_dragging))
 
             if etype == "redact":
@@ -124,7 +137,7 @@ class CanvasPainter:
                     p.drawRect(qr)
                     p.restore()
                 if is_selected:
-                    _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
+                    _draw_selection_box(p, qr, handle_size=8, draw_handles=True, is_locked=is_locked)
 
             elif etype == "check":
                 r = e["rect"]
@@ -156,7 +169,7 @@ class CanvasPainter:
                     p.drawPath(check_path)
                     p.restore()
                 if is_selected:
-                    _draw_selection_box(p, QRect(int(sx0) - 2, int(sy0) - 2, int(sw) + 4, int(sh) + 4), handle_size=8, draw_handles=True)
+                    _draw_selection_box(p, QRect(int(sx0) - 2, int(sy0) - 2, int(sw) + 4, int(sh) + 4), handle_size=8, draw_handles=True, is_locked=is_locked)
 
             elif etype == "cross":
                 r = e["rect"]
@@ -182,7 +195,7 @@ class CanvasPainter:
                     p.drawLine(QPointF(bx + 0.80 * sw, by + 0.20 * sh), QPointF(bx + 0.20 * sw, by + 0.80 * sh))
                     p.restore()
                 if is_selected:
-                    _draw_selection_box(p, QRect(int(sx0) - 2, int(sy0) - 2, int(sw) + 4, int(sh) + 4), handle_size=8, draw_handles=True)
+                    _draw_selection_box(p, QRect(int(sx0) - 2, int(sy0) - 2, int(sw) + 4, int(sh) + 4), handle_size=8, draw_handles=True, is_locked=is_locked)
 
             elif etype == "drawing":
                 new_r = fitz.Rect(e["rect"])
@@ -267,7 +280,7 @@ class CanvasPainter:
                         max(1, int(new_r.width * z)) + pad * 2,
                         max(1, int(new_r.height * z)) + pad * 2,
                     )
-                    _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
+                    _draw_selection_box(p, qr, handle_size=8, draw_handles=True, is_locked=is_locked)
 
             elif etype == "highlight":
                 c = e.get("color", (1, 1, 0))
@@ -282,14 +295,14 @@ class CanvasPainter:
                         ur = overlay_pdf_rect(e, zoom=z)
                         if ur:
                             uqr = QRect(int(ur.x0*z), yo+int(ur.y0*z), max(1,int(ur.width*z)), max(1,int(ur.height*z)))
-                            _draw_selection_box(p, uqr, handle_size=8, draw_handles=False)
+                            _draw_selection_box(p, uqr, handle_size=8, draw_handles=False, is_locked=is_locked)
                 elif "rect" in e:
                     r = e["rect"]
                     qr = QRect(int(r.x0*z), yo+int(r.y0*z), max(1,int(r.width*z)), max(1,int(r.height*z)))
                     if not skip_body_for_z_back:
                         p.fillRect(qr, col)
                     if is_selected:
-                        _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
+                        _draw_selection_box(p, qr, handle_size=8, draw_handles=True, is_locked=is_locked)
 
             elif etype == "text":
                 pt = e["point"]; c = e["color"]
@@ -318,7 +331,7 @@ class CanvasPainter:
 
                 if is_selected and r:
                     qr = QRect(int(r.x0*z) - 2, yo+int(r.y0*z) - 2, max(1,int(r.width*z)) + 4, max(1,int(r.height*z)) + 4)
-                    _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
+                    _draw_selection_box(p, qr, handle_size=8, draw_handles=True, is_locked=is_locked)
 
             elif etype in ("image", "signature"):
                 r = e["rect"]
@@ -357,7 +370,7 @@ class CanvasPainter:
                         p.restore()
 
                 if is_selected:
-                    _draw_selection_box(p, qr, handle_size=10, draw_handles=True)
+                    _draw_selection_box(p, qr, handle_size=10, draw_handles=True, is_locked=is_locked)
 
             elif etype == "text_edit":
                 r = e["bbox"]
@@ -412,7 +425,7 @@ class CanvasPainter:
                     p.restore()
 
                 if is_selected:
-                    _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
+                    _draw_selection_box(p, qr, handle_size=8, draw_handles=True, is_locked=is_locked)
 
             elif etype == "note":
                 pt = e["point"]
@@ -424,7 +437,7 @@ class CanvasPainter:
                 fi = QFont(); fi.setPointSize(10); fi.setBold(True); p.setFont(fi)
                 p.setPen(QColor("#1C1917")); p.drawText(icon_r, Qt.AlignmentFlag.AlignCenter, "N")
                 if is_selected:
-                    _draw_selection_box(p, icon_r.adjusted(-2, -2, 2, 2), handle_size=6, draw_handles=False)
+                    _draw_selection_box(p, icon_r.adjusted(-2, -2, 2, 2), handle_size=6, draw_handles=False, is_locked=is_locked)
                 if canvas._open_note == note_idx:
                     bx = px + _NOTE_ICON_SIZE + 6
                     by = py - _NOTE_ICON_SIZE - 4
@@ -481,7 +494,7 @@ class CanvasPainter:
                         r = overlay_pdf_rect(e, zoom=z)
                         if r:
                             qr = QRect(int(r.x0*z), yo+int(r.y0*z), max(1,int(r.width*z)), max(1,int(r.height*z)))
-                            _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
+                            _draw_selection_box(p, qr, handle_size=8, draw_handles=True, is_locked=is_locked)
 
         # 3. Interactive signature follow preview
         if canvas._placing_signature and canvas._sig_cursor_pos and canvas._placing_sig_pixmap:
@@ -586,4 +599,4 @@ class CanvasPainter:
                 p.setPen(QPen(QColor(ACCENT), 1.5, Qt.PenStyle.DashLine))
                 p.setBrush(QColor(59, 130, 246, 35))
                 p.drawRect(qr)
-                _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
+                _draw_selection_box(p, qr, handle_size=8, draw_handles=True, is_locked=False)

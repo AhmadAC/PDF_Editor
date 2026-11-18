@@ -1,3 +1,5 @@
+#################### START OF FILE: app\tools\watermark_page.py ####################
+
 # app/tools/watermark_page.py
 """TabMarcaDagua page controller coordinating UI, open tabs, background watermarking, and JSON settings persistence."""
 
@@ -302,6 +304,16 @@ class TabMarcaDagua(BasePage):
         widget.setValue(value)
         widget.blockSignals(False)
 
+    def _set_base_opacity_value(self, val: int) -> None:
+        val = max(0, min(100, int(val)))
+        self._sync_paired(self.slider_base_opacity, val)
+        self._sync_paired(self.spin_base_opacity, val)
+
+    def _set_stamp_opacity_value(self, val: int) -> None:
+        val = max(0, min(100, int(val)))
+        self._sync_paired(self.slider_opacity, val)
+        self._sync_paired(self.spin_opacity, val)
+
     def _sync_base_opacity_from_slider(self, value: int) -> None:
         self._sync_paired(self.spin_base_opacity, value)
         self._save_settings()
@@ -394,11 +406,11 @@ class TabMarcaDagua(BasePage):
             if "base_opacity" in data:
                 with contextlib.suppress(Exception):
                     bo = max(0, min(100, int(data["base_opacity"])))
-                    self._sync_base_opacity_from_spin(bo)
+                    self._set_base_opacity_value(bo)
             if "stamp_opacity" in data:
                 with contextlib.suppress(Exception):
                     so = max(0, min(100, int(data["stamp_opacity"])))
-                    self._sync_stamp_opacity_from_spin(so)
+                    self._set_stamp_opacity_value(so)
             if "transparent_white" in data:
                 self.chk_transparent_white.setChecked(bool(data["transparent_white"]))
         finally:

@@ -1,4 +1,4 @@
-
+#################### START OF FILE: app\editor\tab.py ####################
 
 # app/editor/tab.py
 """PDF_Editor – TabEditar facade: visual PDF editor tab with Fill & Sign, Foxit-style object editing, and typography styling."""
@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QTreeWidget,
     QWidget,
 )
+from shiboken6 import isValid
 
 from app.editor.canvas import PdfEditCanvas
 from app.editor.tab_actions import TabActionsMixin
@@ -175,6 +176,7 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
         self._last_selected_page: int = -1
         self._last_selected_rect: fitz.Rect | None = None
         self._last_selected_original_text: str = ""
+        self._selection_pane = None
 
         self._doc_states: dict[str, dict] = {}
         self._history = TabHistoryManager(self)
@@ -189,7 +191,7 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
         self._canvas.text_edit_started.connect(self._on_text_edit_started)
         self._canvas.signature_added.connect(self._on_signature_added)
         self._canvas.stamp_added.connect(self._on_stamp_added)
-        self._canvas.overlay_changed.connect(self.update)
+        self._canvas.overlay_changed.connect(self._on_canvas_overlay_changed)
         self._canvas.overlay_committed.connect(self._on_overlay_committed)
         self._canvas.overlay_transformed.connect(self._on_overlay_transformed)
         self._canvas.overlay_arranged.connect(self._on_overlay_arranged)
@@ -208,6 +210,27 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
         self._set_text_submode("edit")
         self._on_mode_btn(self._mode_btns[_MODE_TEXT])
         self._update_nav()
+
+    def _on_canvas_overlay_changed(self):
+        self.update()
+        if self._selection_pane is not None and isValid(self._selection_pane):
+            self._selection_pane.refresh()
+
+    def open_selection_pane(self):
+        """Open or raise the Selection Pane inspector window."""
+        from app.selection_pane import SelectionPane
+        if self._selection_pane is not None and isValid(self._selection_pane):
+            self._selection_pane.refresh()
+            self._selection_pane.raise_()
+            self._selection_pane.activateWindow()
+            return self._selection_pane
+
+        pane = SelectionPane(self, parent=self.window())
+        self._selection_pane = pane
+        pane.show()
+        pane.raise_()
+        pane.activateWindow()
+        return pane
 
     def _sync_thumbnails(self, affected_pages: set[int] | list[int] | None = None) -> None:
         """Propagate current visual edits to the ThumbnailPanel so the preview reflects deletions, moves, and additions."""
@@ -245,6 +268,10 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
         self._update_text_submode_styles()
         if hasattr(self, "_thumbnails"):
             self._thumbnails.update_theme(dark)
+        if self._selection_pane is not None and isValid(self._selection_pane):
+            self._selection_pane._dark = dark
+            self._selection_pane._apply_theme()
+            self._selection_pane.refresh()
 
     def paintEvent(self, event):
         _paint_bg(self)
@@ -309,7 +336,9 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
         apply_visual_edits_and_save(self, out)
 
     def closeEvent(self, event):
+        if self._selection_pane is not None and isValid(self._selection_pane):
+            self._selection_pane.close()
+            self._selection_pane = None
         if hasattr(self, "_thumbnails"):
             self._thumbnails.clear()
         super().closeEvent(event)
-

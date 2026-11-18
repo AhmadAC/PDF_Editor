@@ -1,5 +1,7 @@
+#################### START OF FILE: app\editor\canvas.py ####################
+
 # app/editor/canvas.py
-"""PDF_Editor – PdfEditCanvas facade: visual PDF edit canvas with live background refresh, z-order, rotate/flip, opacity, and object manipulation."""
+"""PDF_Editor – PdfEditCanvas facade: visual PDF edit canvas with live background refresh, z-order, rotate/flip, opacity, lock, and object manipulation."""
 
 from __future__ import annotations
 
@@ -224,6 +226,24 @@ class PdfEditCanvas(QWidget):
             self._selected_overlay_idx = -1
         self.update()
 
+    def select_overlay_by_index(self, idx: int) -> None:
+        """Select an overlay by index (used by SelectionPane) and jump to its page if needed."""
+        if 0 <= idx < len(self._overlays):
+            ov = self._overlays[idx]
+            self._selected_overlay_idx = idx
+            target_p = ov.get("page", 0)
+            if target_p != self._page_idx:
+                self.set_page(target_p)
+                parent_tab = self.parentWidget()
+                while parent_tab and not hasattr(parent_tab, "_scroll_to"):
+                    parent_tab = parent_tab.parentWidget()
+                if parent_tab and hasattr(parent_tab, "_scroll_to"):
+                    parent_tab._scroll_to(target_p)
+            self.update()
+        else:
+            self._selected_overlay_idx = -1
+            self.update()
+
     def refresh_pages(self, page_indices: set[int] | list[int] | None = None) -> None:
         """Synchronously re-render the specified pages' background pixmaps with current removals and _z_back layers."""
         if not self._doc or not self._page_pixmaps:
@@ -281,14 +301,20 @@ class PdfEditCanvas(QWidget):
 
     def arrange_selected_overlay(self, mode: str, idx: int | None = None) -> None:
         target = self._selected_overlay_idx if idx is None else idx
+        if 0 <= target < len(self._overlays) and self._overlays[target].get("_locked"):
+            return
         self._overlay_mgr.arrange_overlay(target, mode)
 
     def rotate_selected_overlay(self, delta_deg: int, idx: int | None = None) -> None:
         target = self._selected_overlay_idx if idx is None else idx
+        if 0 <= target < len(self._overlays) and self._overlays[target].get("_locked"):
+            return
         self._overlay_mgr.rotate_overlay(target, delta_deg)
 
     def flip_selected_overlay(self, horizontal: bool, idx: int | None = None) -> None:
         target = self._selected_overlay_idx if idx is None else idx
+        if 0 <= target < len(self._overlays) and self._overlays[target].get("_locked"):
+            return
         self._overlay_mgr.flip_overlay(target, horizontal)
 
     def set_selected_overlay_opacity(self, opacity: float, idx: int | None = None) -> None:
@@ -299,7 +325,7 @@ class PdfEditCanvas(QWidget):
         if not (0 <= self._selected_overlay_idx < len(self._overlays)):
             return False
         ov = self._overlays[self._selected_overlay_idx]
-        if ov.get("_deleted"):
+        if ov.get("_deleted") or ov.get("_locked"):
             return False
 
         r = overlay_pdf_rect(ov, zoom=self._zoom or 1.0)
@@ -376,6 +402,9 @@ class PdfEditCanvas(QWidget):
         self._overlay_mgr.cancel_signature_placement()
 
     def delete_selected_overlay(self) -> dict | None:
+        if 0 <= self._selected_overlay_idx < len(self._overlays):
+            if self._overlays[self._selected_overlay_idx].get("_locked"):
+                return None
         return self._overlay_mgr.delete_selected_overlay()
 
     def duplicate_selected_overlay(self) -> None:

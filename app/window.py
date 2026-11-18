@@ -1,41 +1,48 @@
-# app/window.py
-"""PDF_Editor – MainWindow: application main window facade with SVG icons."""
-import os
-import json
-from typing import cast, Any
+#################### START OF FILE: app\window.py ####################
 
-from PySide6.QtCore import Qt, QSize, QTimer, QRect, QModelIndex
+# app/window.py
+"""PDF_Editor – MainWindow: application main window facade with Alt+P Command Palette and Selection Pane integration."""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from typing import Any, cast
+
+from PySide6.QtCore import QModelIndex, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import (
-    QIcon, QColor, QShortcut, QKeySequence,
-    QPixmap, QPainter, QImage, QFont, QPen
+    QColor, QFont, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 )
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QListWidget, QListWidgetItem, QStackedWidget, QSplitter, QStatusBar,
-    QFrame, QApplication, QLineEdit, QMessageBox, QStyledItemDelegate, QStyle
+    QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSplitter,
+    QStackedWidget, QStatusBar, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget
 )
 from shiboken6 import isValid
 
-from app.constants import ACCENT, TEXT_PRI, TEXT_SEC, _LQ, DESKTOP, APP_VERSION
-from app.i18n import t, _CONFIG_PATH
-from app.styles import STYLE, STYLE_LIGHT
-from app.utils import resource_path, _make_palette, svg_for_name
-from app.widgets import DropFileEdit
+from app.base import BasePage
+from app.command_palette import CommandPalette
+from app.constants import ACCENT, APP_VERSION, DESKTOP, TEXT_PRI, TEXT_SEC, _LQ
+from app.i18n import _CONFIG_PATH, t
+from app.nav_config import NAV_ITEMS, _NAV_GROUPS, _NAV_KEYS
 from app.single_instance import SingleInstanceServer
+from app.styles import STYLE, STYLE_LIGHT
 from app.update_controller import UpdateController
+from app.utils import _make_palette, resource_path, svg_for_name
+from app.viewer.canvas_1 import _SelectCanvas
 from app.viewer.panel import PdfViewerPanel
 from app.viewer.panel_page_ops import cleanup_page_clipboard
 from app.viewer.thumbnails import ThumbnailPanel
-from app.viewer.canvas_1 import _SelectCanvas
-from app.base import BasePage
-from app.workspace_bar import WorkspaceBar
-from app.nav_config import _NAV_GROUPS, _NAV_KEYS, NAV_ITEMS
-
-from app.window_tabs import _ViewerTabBar, WindowTabsMixin as _WindowTabsMixin
+from app.widgets import DropFileEdit
+from app.window_actions import (
+    WindowActionsMixin as _WindowActionsMixin,
+    _has_dirty_user_pending,
+)
 from app.window_pipeline import WindowPipelineMixin as _WindowPipelineMixin
-from app.window_actions import WindowActionsMixin as _WindowActionsMixin, _has_dirty_user_pending
-
+from app.window_tabs import _ViewerTabBar, WindowTabsMixin as _WindowTabsMixin
+from app.workspace_bar import WorkspaceBar
 
 _NAV_ICON_CACHE: dict[tuple[str, str], QIcon] = {}
 
@@ -269,7 +276,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
             _w = _h
             _ico_path = resource_path("icon.ico")
             _app_pix = QPixmap(_ico_path).scaled(
-                int(_w * dpr), int(_h * dpr), Qt.AspectRatioMode.KeepAspectRatio,
+                int(_w * dpr), int(_w * dpr), Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation)
             _app_pix.setDevicePixelRatio(dpr)
         ico_lbl.setPixmap(_app_pix)
@@ -466,6 +473,9 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         self.nav.itemClicked.connect(self._on_nav_clicked)
         self._pipeline_state: dict[int, dict] = {}
 
+        # ── Global Keyboard Shortcuts ─────────────────────────────────────
+        QShortcut(QKeySequence("Alt+P"), self, self._show_command_palette)
+        QShortcut(QKeySequence("Ctrl+Shift+P"), self, self._show_command_palette)
         QShortcut(QKeySequence("F5"), self, self._start_presentation)
         QShortcut(QKeySequence("Ctrl+1"), self, self._start_presentation)
         QShortcut(QKeySequence("F11"), self, self._toggle_fullscreen)
@@ -512,6 +522,276 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
 
         self._instance_server = SingleInstanceServer(self)
         self._instance_server.new_paths.connect(self._on_second_instance)
+
+    def _open_selection_pane(self):
+        """Open the Selection Pane inspector for the active PDF in Edit mode."""
+        edit_idx = self._edit_tool_idx()
+        if self._current_tool != edit_idx:
+            self._open_tool_by_name(t("nav.edit"))
+        edit_w: Any = self._get_or_create_tool(edit_idx)
+        if edit_w and hasattr(edit_w, "open_selection_pane"):
+            return edit_w.open_selection_pane()
+        return None
+
+    def _show_command_palette(self):
+        """Build actions list and present the Alt+P Command Palette."""
+        commands: list[dict[str, Any]] = [
+            {
+                "name": "Selection Pane (Manage Layers, Opacity, Lock & Visibility)",
+                "category": "Edit",
+                "action": self._open_selection_pane,
+                "shortcut": "Alt+P",
+                "icon": svg_for_name("fa5s.th-large", ACCENT, 18),
+            },
+            {
+                "name": "Edit PDF (Visual Objects, Text, Drawing & Fill)",
+                "category": "Tools",
+                "action": lambda: self._open_tool_by_name(t("nav.edit")),
+                "shortcut": "Ctrl+15",
+                "icon": svg_for_name("fa5s.edit", ACCENT, 18),
+            },
+            {
+                "name": "Open PDF Document...",
+                "category": "File",
+                "action": self._open_pdf,
+                "shortcut": "Ctrl+O",
+                "icon": svg_for_name("fa5s.folder-open", ACCENT, 18),
+            },
+            {
+                "name": "Recent Files History...",
+                "category": "File",
+                "action": self._show_recent_files_menu,
+                "shortcut": "Ctrl+H",
+                "icon": svg_for_name("fa5s.history", ACCENT, 18),
+            },
+            {
+                "name": "Save Changes",
+                "category": "File",
+                "action": self._save_current_tool,
+                "shortcut": "Ctrl+S",
+                "icon": svg_for_name("fa5s.save", ACCENT, 18),
+            },
+            {
+                "name": "Save As...",
+                "category": "File",
+                "action": self._save_as_current_doc,
+                "shortcut": "Ctrl+Shift+S",
+                "icon": svg_for_name("fa5s.save", ACCENT, 18),
+            },
+            {
+                "name": "Print PDF...",
+                "category": "File",
+                "action": lambda: self._viewer._print_pdf() if self._viewer else None,
+                "shortcut": "Ctrl+P",
+                "icon": svg_for_name("fa5s.print", ACCENT, 18),
+            },
+            {
+                "name": "Presentation Mode (Full Screen Slideshow)",
+                "category": "View",
+                "action": self._start_presentation,
+                "shortcut": "F5 / Ctrl+1",
+                "icon": svg_for_name("fa5s.tv", ACCENT, 18),
+            },
+            {
+                "name": "Toggle Fullscreen",
+                "category": "View",
+                "action": self._toggle_fullscreen,
+                "shortcut": "F11",
+                "icon": svg_for_name("fa5s.expand", ACCENT, 18),
+            },
+            {
+                "name": "Toggle Dark / Light Theme",
+                "category": "View",
+                "action": self._toggle_theme,
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.moon", ACCENT, 18),
+            },
+            {
+                "name": "Toggle Main Sidebar",
+                "category": "View",
+                "action": self._toggle_sidebar,
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.bars", ACCENT, 18),
+            },
+            {
+                "name": "Toggle Page Thumbnails Sidebar",
+                "category": "View",
+                "action": self._toggle_pages_sidebar,
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.th-large", ACCENT, 18),
+            },
+            {
+                "name": "Toggle Night Mode (Color Inversion)",
+                "category": "View",
+                "action": self._toggle_night_mode_top,
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.sun", ACCENT, 18),
+            },
+            {
+                "name": "Zoom In",
+                "category": "View",
+                "action": self._zoom_in_current,
+                "shortcut": "Ctrl++",
+                "icon": svg_for_name("fa5s.search-plus", ACCENT, 18),
+            },
+            {
+                "name": "Zoom Out",
+                "category": "View",
+                "action": self._zoom_out_current,
+                "shortcut": "Ctrl+-",
+                "icon": svg_for_name("fa5s.search-minus", ACCENT, 18),
+            },
+            {
+                "name": "Reset Zoom (Fit Page)",
+                "category": "View",
+                "action": self._zoom_reset_current,
+                "shortcut": "Ctrl+0",
+                "icon": svg_for_name("fa5s.compress-arrows-alt", ACCENT, 18),
+            },
+            {
+                "name": "Search in Document...",
+                "category": "View",
+                "action": lambda: self._viewer._toggle_search() if self._viewer else None,
+                "shortcut": "Ctrl+F",
+                "icon": svg_for_name("fa5s.search", ACCENT, 18),
+            },
+            {
+                "name": "Select All Text",
+                "category": "Edit",
+                "action": self._handle_global_select_all,
+                "shortcut": "Ctrl+A",
+                "icon": svg_for_name("fa5s.mouse-pointer", ACCENT, 18),
+            },
+            {
+                "name": "Undo Action",
+                "category": "Edit",
+                "action": self._handle_global_undo,
+                "shortcut": "Ctrl+Z",
+                "icon": svg_for_name("fa5s.undo", ACCENT, 18),
+            },
+            {
+                "name": "Redo Action",
+                "category": "Edit",
+                "action": self._handle_global_redo,
+                "shortcut": "Ctrl+Y",
+                "icon": svg_for_name("fa5s.redo", ACCENT, 18),
+            },
+            {
+                "name": "Close Current Tab",
+                "category": "Document",
+                "action": self._close_current_tab,
+                "shortcut": "Ctrl+W",
+                "icon": svg_for_name("fa5s.times", "#EF4444", 18),
+            },
+            {
+                "name": "Crop Pages Tool",
+                "category": "Tools",
+                "action": lambda: self._open_tool_by_name(t("nav.crop")),
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.crop-alt", ACCENT, 18),
+            },
+            {
+                "name": "Rotate Pages Tool",
+                "category": "Tools",
+                "action": lambda: self._open_tool_by_name(t("nav.rotate")),
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.sync-alt", ACCENT, 18),
+            },
+            {
+                "name": "Compress PDF Tool",
+                "category": "Tools",
+                "action": lambda: self._open_tool_by_name(t("nav.compress")),
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.compress-arrows-alt", ACCENT, 18),
+            },
+            {
+                "name": "Add Page Numbers Tool",
+                "category": "Tools",
+                "action": lambda: self._open_tool_by_name(t("nav.page_numbers")),
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.list-ol", ACCENT, 18),
+            },
+            {
+                "name": "N-Up Multiple Pages Per Sheet",
+                "category": "Tools",
+                "action": lambda: self._open_tool_by_name(t("nav.nup")),
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.th", ACCENT, 18),
+            },
+            {
+                "name": "Merge Multiple PDFs",
+                "category": "Tools",
+                "action": lambda: self._open_tool_by_name(t("nav.merge")),
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.object-group", ACCENT, 18),
+            },
+            {
+                "name": "Split PDF by Ranges",
+                "category": "Tools",
+                "action": lambda: self._open_tool_by_name(t("nav.split")),
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.cut", ACCENT, 18),
+            },
+            {
+                "name": "Extract PDF Pages",
+                "category": "Tools",
+                "action": lambda: self._open_tool_by_name(t("nav.extract")),
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.file-export", ACCENT, 18),
+            },
+            {
+                "name": "Reorder PDF Pages",
+                "category": "Tools",
+                "action": lambda: self._open_tool_by_name(t("nav.reorder")),
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.sort", ACCENT, 18),
+            },
+            {
+                "name": "Watermark PDF (Stamps & Overlays)",
+                "category": "Tools",
+                "action": lambda: self._open_tool_by_name(t("nav.watermark")),
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.stamp", ACCENT, 18),
+            },
+            {
+                "name": "Encrypt / Password Protect PDF",
+                "category": "Tools",
+                "action": lambda: self._open_tool_by_name(t("nav.encrypt")),
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.lock", ACCENT, 18),
+            },
+            {
+                "name": "OCR Text Recognition",
+                "category": "Tools",
+                "action": lambda: self._open_tool_by_name(t("nav.ocr")),
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.search", ACCENT, 18),
+            },
+            {
+                "name": "Convert PDF (DOCX, Images, PPTX, XLSX, HTML, EPUB)",
+                "category": "Tools",
+                "action": lambda: self._open_tool_by_name(t("nav.convert")),
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.exchange-alt", ACCENT, 18),
+            },
+            {
+                "name": "Import Office & Image Files to PDF",
+                "category": "Tools",
+                "action": lambda: self._open_tool_by_name(t("nav.import")),
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.file-import", ACCENT, 18),
+            },
+            {
+                "name": "Document Information & Metadata",
+                "category": "Tools",
+                "action": lambda: self._open_tool_by_name(t("nav.info")),
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.info-circle", ACCENT, 18),
+            },
+        ]
+
+        dlg = CommandPalette(commands, parent=self)
+        dlg.exec()
 
     def _get_or_create_tool(self, index: int) -> QWidget | None:
         if not (0 <= index < len(NAV_ITEMS)):
