@@ -1,7 +1,9 @@
 # app/editor/apply_edits.py
-"""PDF_Editor – Two-phase edit-application dispatcher supporting moving/deleting images, annotations, vector drawings, text, stamps, and highlights."""
+"""PDF_Editor – Two-phase edit-application dispatcher supporting z-order, opacity, rotation, flip, and surgical image/drawing removal."""
 
+import io
 import os
+import re
 import logging
 from dataclasses import dataclass, field
 
@@ -32,28 +34,160 @@ def _scale_drawing_pt(pt: tuple[float, float], orig_r, new_r) -> tuple[float, fl
     )
 
 
+def _build_transform_matrix(fitz, rotation: int = 0, flip_h: bool = False, flip_v: bool = False):
+    """Build a 2x2 linear fitz.Matrix for clockwise rotation followed by horizontal/vertical flip."""
+    rot = int(rotation) % 360
+    if rot == 90:
+        a, b, c, d = 0.0, 1.0, -1.0, 0.0
+    elif rot == 180:
+        a, b, c, d = -1.0, 0.0, 0.0, -1.0
+    elif rot == 270:
+        a, b, c, d = 0.0, -1.0, 1.0, 0.0
+    else:
+        a, b, c, d = 1.0, 0.0, 0.0, 1.0
+
+    if flip_h:
+        a, c = -a, -c
+    if flip_v:
+        b, d = -b, -d
+    return fitz.Matrix(a, b, c, d, 0.0, 0.0)
+
+
+def _prepare_image_bytes(
+    fitz,
+    path: str,
+    rotation: int = 0,
+    flip_h: bool = False,
+    flip_v: bool = False,
+    opacity: float = 1.0,
+) -> bytes | None:
+    """Return PNG byte stream if SVG or image transforms (rotate/flip/opacity) are needed, else None."""
+    rot = int(rotation) % 360
+    op = max(0.0, min(1.0, float(opacity)))
+    needs_transform = bool(rot != 0 or flip_h or flip_v or op < 0.999)
+    is_svg = path.lower().endswith((".svg", ".svgz"))
+
+    raw_bytes: bytes | None = None
+    if is_svg:
+        try:
+            sdoc = fitz.open(path)
+            spix = sdoc[0].get_pixmap(dpi=300, alpha=True)
+            raw_bytes = spix.tobytes("png")
+            sdoc.close()
+        except Exception:
+            try:
+                from PySide6.QtSvg import QSvgRenderer
+                from PySide6.QtGui import QImage, QPainter
+                from PySide6.QtCore import QByteArray, QBuffer, QIODevice, Qt
+                renderer = QSvgRenderer(path)
+                if renderer.isValid():
+                    ds = renderer.defaultSize()
+                    w = 1200
+                    h = max(10, int(w * (ds.height() / ds.width()))) if ds.width() > 0 else 400
+                    qimg = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
+                    qimg.fill(Qt.GlobalColor.transparent)
+                    qp = QPainter(qimg)
+                    renderer.render(qp)
+                    qp.end()
+                    ba = QByteArray()
+                    buf = QBuffer(ba)
+                    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                    qimg.save(buf, b"PNG")
+                    raw_bytes = bytes(ba.data())
+            except Exception:
+                raw_bytes = None
+
+    if not needs_transform:
+        return raw_bytes
+
+    try:
+        from PIL import Image
+        if raw_bytes is not None:
+            img = Image.open(io.BytesIO(raw_bytes)).convert("RGBA")
+        else:
+            img = Image.open(path).convert("RGBA")
+
+        if rot != 0:
+            img = img.rotate(-rot, expand=True)
+        if flip_h:
+            img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        if flip_v:
+            img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+        if op < 0.999:
+            r_c, g_c, b_c, a_c = img.split()
+            a_c = a_c.point(lambda a: int(round(a * op)))
+            img.putalpha(a_c)
+
+        out_buf = io.BytesIO()
+        img.save(out_buf, format="PNG")
+        return out_buf.getvalue()
+    except Exception:
+        _log.exception("Failed to transform image %s", path)
+        return raw_bytes
+
+
+def _remove_single_image_do_from_page(doc, pg, xref: int) -> bool:
+    """Remove a single /Name Do image invocation directly from page content streams
+    so other pages sharing xref and overlapping background images stay intact."""
+    try:
+        infos = [im for im in pg.get_images(full=True) if im[0] == xref]
+        if len(infos) != 1:
+            return False
+        if len(pg.get_image_rects(xref)) != 1:
+            return False
+        img_name = infos[0][7]
+        ref_xref = infos[0][9] if len(infos[0]) > 9 else 0
+        if not img_name or ref_xref != 0:
+            return False
+
+        pattern = re.compile(rb"/" + re.escape(img_name.encode("latin-1")) + rb"\s+Do\b")
+        contents_xrefs = pg.get_contents() or []
+        matches: list[tuple[int, bytes, int]] = []
+        total_hits = 0
+        for cxref in contents_xrefs:
+            stream = doc.xref_stream(cxref)
+            if not stream:
+                continue
+            hits = len(pattern.findall(stream))
+            if hits > 0:
+                total_hits += hits
+                matches.append((cxref, stream, hits))
+
+        if total_hits != 1 or len(matches) != 1:
+            return False
+
+        cxref, stream, _ = matches[0]
+        new_stream = pattern.sub(b"", stream, count=1)
+        doc.update_stream(cxref, new_stream)
+        return True
+    except Exception:
+        return False
+
+
 def _insert_drawing_overlay(fitz, pg, e: dict) -> None:
     new_r = fitz.Rect(e["rect"])
-    orig_raw = e.get("_orig_rect")
+    orig_raw = e.get("_items_rect") or e.get("_orig_rect")
     orig_r = fitz.Rect(orig_raw) if orig_raw else fitz.Rect(new_r)
+    op = max(0.0, min(1.0, float(e.get("opacity", 1.0))))
+    overlay_flag = not bool(e.get("_z_back", False))
 
     shape = pg.new_shape()
     for item in e.get("items", []):
-        op = item[0]
-        if op == "l":
+        op_code = item[0]
+        if op_code == "l":
             p1 = fitz.Point(*_scale_drawing_pt(item[1], orig_r, new_r))
             p2 = fitz.Point(*_scale_drawing_pt(item[2], orig_r, new_r))
             shape.draw_line(p1, p2)
-        elif op == "re":
+        elif op_code == "re":
             rx0, ry0, rx1, ry1 = item[1]
             tl = _scale_drawing_pt((rx0, ry0), orig_r, new_r)
             br = _scale_drawing_pt((rx1, ry1), orig_r, new_r)
             shape.draw_rect(fitz.Rect(tl[0], tl[1], br[0], br[1]).normalize())
-        elif op == "qu":
+        elif op_code == "qu":
             pts = [fitz.Point(*_scale_drawing_pt(pt, orig_r, new_r)) for pt in item[1]]
             if len(pts) == 4:
                 shape.draw_quad(fitz.Quad(pts[0], pts[1], pts[3], pts[2]))
-        elif op == "c":
+        elif op_code == "c":
             p1 = fitz.Point(*_scale_drawing_pt(item[1], orig_r, new_r))
             p2 = fitz.Point(*_scale_drawing_pt(item[2], orig_r, new_r))
             p3 = fitz.Point(*_scale_drawing_pt(item[3], orig_r, new_r))
@@ -69,17 +203,18 @@ def _insert_drawing_overlay(fitz, pg, e: dict) -> None:
     stroke_rgb = tuple(float(x) for x in stroke_col[:3]) if stroke_col else None
     fill_rgb = tuple(float(x) for x in fill_col[:3]) if fill_col else None
 
+    base_fo = float(e["fill_opacity"]) if e.get("fill_opacity") is not None else 1.0
+    base_so = float(e["stroke_opacity"]) if e.get("stroke_opacity") is not None else 1.0
+
     finish_kw: dict = {
         "color": stroke_rgb,
         "fill": fill_rgb,
         "width": max(0.5, float(e.get("width", 1.0)) * avg_scale),
         "even_odd": bool(e.get("even_odd", False)),
         "closePath": bool(e.get("closePath", False)),
+        "fill_opacity": max(0.0, min(1.0, base_fo * op)),
+        "stroke_opacity": max(0.0, min(1.0, base_so * op)),
     }
-    if e.get("fill_opacity") is not None:
-        finish_kw["fill_opacity"] = max(0.0, min(1.0, float(e["fill_opacity"])))
-    if e.get("stroke_opacity") is not None:
-        finish_kw["stroke_opacity"] = max(0.0, min(1.0, float(e["stroke_opacity"])))
 
     lc = e.get("lineCap")
     if isinstance(lc, (tuple, list)) and lc:
@@ -96,7 +231,7 @@ def _insert_drawing_overlay(fitz, pg, e: dict) -> None:
         finish_kw["dashes"] = dashes
 
     shape.finish(**finish_kw)
-    shape.commit()
+    shape.commit(overlay=overlay_flag)
 
 
 def _delete_existing_annot(fitz, pg, e: dict) -> bool:
@@ -169,7 +304,7 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
 
             if etype in ("image", "signature") and e.get("_orig_rect"):
                 xref = e.get("_existing_xref")
-                removed_via_xref = False
+                removed_cleanly = False
                 if xref:
                     try:
                         used_elsewhere = any(
@@ -179,10 +314,12 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                         same_pg_rects = pg.get_image_rects(xref)
                         if not used_elsewhere and len(same_pg_rects) <= 1 and hasattr(pg, "delete_image"):
                             pg.delete_image(xref)
-                            removed_via_xref = True
+                            removed_cleanly = True
+                        else:
+                            removed_cleanly = _remove_single_image_do_from_page(doc, pg, xref)
                     except Exception:
-                        removed_via_xref = False
-                if not removed_via_xref:
+                        removed_cleanly = False
+                if not removed_cleanly:
                     try:
                         pg.add_redact_annot(fitz.Rect(e["_orig_rect"]), fill=False, cross_out=False)
                         pg.apply_redactions(images=img_remove, graphics=la_none, text=txt_none)
@@ -212,13 +349,20 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                 pg.add_redact_annot(redact_r, fill=(1, 1, 1))
                 pg.apply_redactions()
 
-    # Phase 2: Insert all moved, edited, or newly created elements
+    # Phase 2: Insert back-layer items first (in reverse so index 0 ends up furthest back), then foreground items in order
+    back_edits = [e for e in active_edits if not e.get("_deleted") and e.get("_z_back")]
+    front_edits = [e for e in active_edits if not e.get("_deleted") and not e.get("_z_back")]
+    ordered_phase2 = list(reversed(back_edits)) + front_edits
+
     embedded_font = False
-    for e in active_edits:
-        if e.get("_deleted"):
-            continue
+    for e in ordered_phase2:
         etype = e.get("type")
         pg = doc[e["page"]]
+        op = max(0.0, min(1.0, float(e.get("opacity", 1.0))))
+        overlay_flag = not bool(e.get("_z_back", False))
+        rot = int(e.get("rotation", 0)) % 360
+        flip_h = bool(e.get("flip_h", False))
+        flip_v = bool(e.get("flip_v", False))
 
         if etype == "redact":
             pg.add_redact_annot(e["rect"], fill=e["fill"])
@@ -228,16 +372,27 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
             r = fitz.Rect(e["rect"])
             w = r.width
             h = r.height
-            p1 = fitz.Point(r.x0 + 0.16 * w, r.y0 + 0.52 * h)
-            p2 = fitz.Point(r.x0 + 0.40 * w, r.y0 + 0.82 * h)
-            p3 = fitz.Point(r.x0 + 0.86 * w, r.y0 + 0.18 * h)
+            pts = [
+                (r.x0 + 0.16 * w, r.y0 + 0.52 * h),
+                (r.x0 + 0.40 * w, r.y0 + 0.82 * h),
+                (r.x0 + 0.86 * w, r.y0 + 0.18 * h),
+            ]
+            if rot or flip_h or flip_v:
+                cx, cy = (r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0
+                mat = _build_transform_matrix(fitz, rot, flip_h, flip_v)
+                fpts = []
+                for px, py in pts:
+                    v = fitz.Point(px - cx, py - cy) * mat
+                    fpts.append(fitz.Point(cx + v.x, cy + v.y))
+            else:
+                fpts = [fitz.Point(px, py) for px, py in pts]
             stroke_w = max(1.5, float(e.get("width", min(w, h) * 0.12)))
             color = e.get("color", (0, 0, 0))
             col = tuple(float(x) for x in color[:3]) if isinstance(color, (list, tuple)) and len(color) >= 3 else (0.0, 0.0, 0.0)
             shape = pg.new_shape()
-            shape.draw_polyline([p1, p2, p3])
-            shape.finish(color=col, width=stroke_w, lineCap=1, lineJoin=1)
-            shape.commit()
+            shape.draw_polyline(fpts)
+            shape.finish(color=col, width=stroke_w, stroke_opacity=op, lineCap=1, lineJoin=1)
+            shape.commit(overlay=overlay_flag)
 
         elif etype == "cross":
             r = fitz.Rect(e["rect"])
@@ -253,8 +408,8 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
             shape = pg.new_shape()
             shape.draw_line(p1, p2)
             shape.draw_line(p3, p4)
-            shape.finish(color=col, width=stroke_w, lineCap=1, lineJoin=1)
-            shape.commit()
+            shape.finish(color=col, width=stroke_w, stroke_opacity=op, lineCap=1, lineJoin=1)
+            shape.commit(overlay=overlay_flag)
 
         elif etype == "drawing":
             _insert_drawing_overlay(fitz, pg, e)
@@ -284,45 +439,35 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                 color = tuple(float(x) for x in c[:3])
             else:
                 color = (0.0, 0.0, 0.0)
-            pg.insert_text(e["point"], e["text"], fontsize=e.get("size", 12),
-                           color=color, fontname=fontname)
+
+            kw: dict = {
+                "fontsize": e.get("size", 12),
+                "color": color,
+                "fontname": fontname,
+                "fill_opacity": op,
+                "overlay": overlay_flag,
+            }
+            if rot or flip_h or flip_v:
+                rr = fitz.Rect(e["rect"]) if e.get("rect") else None
+                if rr:
+                    cx, cy = (rr.x0 + rr.x1) / 2.0, (rr.y0 + rr.y1) / 2.0
+                else:
+                    pt = e["point"]
+                    cx, cy = float(pt.x), float(pt.y)
+                kw["morph"] = (fitz.Point(cx, cy), _build_transform_matrix(fitz, rot, flip_h, flip_v))
+            pg.insert_text(e["point"], e["text"], **kw)
 
         elif etype in ("image", "signature"):
             path = e.get("path", "")
             if not path or not os.path.isfile(path):
                 continue
-            if path.lower().endswith((".svg", ".svgz")):
-                try:
-                    sdoc = fitz.open(path)
-                    spix = sdoc[0].get_pixmap(dpi=300, alpha=True)
-                    pg.insert_image(e["rect"], stream=spix.tobytes("png"))
-                    sdoc.close()
-                except Exception:
-                    try:
-                        from PySide6.QtSvg import QSvgRenderer
-                        from PySide6.QtGui import QImage, QPainter
-                        from PySide6.QtCore import QByteArray, QBuffer, QIODevice, Qt
-                        renderer = QSvgRenderer(path)
-                        if renderer.isValid():
-                            ds = renderer.defaultSize()
-                            w = 1200
-                            h = max(10, int(w * (ds.height() / ds.width()))) if ds.width() > 0 else 400
-                            qimg = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
-                            qimg.fill(Qt.GlobalColor.transparent)
-                            qp = QPainter(qimg)
-                            renderer.render(qp)
-                            qp.end()
-                            ba = QByteArray()
-                            buf = QBuffer(ba)
-                            buf.open(QIODevice.OpenModeFlag.WriteOnly)
-                            qimg.save(buf, b"PNG")
-                            pg.insert_image(e["rect"], stream=ba.data())
-                        else:
-                            pg.insert_image(e["rect"], filename=path)
-                    except Exception:
-                        pg.insert_image(e["rect"], filename=path)
+            stream_bytes = _prepare_image_bytes(
+                fitz, path, rotation=rot, flip_h=flip_h, flip_v=flip_v, opacity=op
+            )
+            if stream_bytes is not None:
+                pg.insert_image(e["rect"], stream=stream_bytes, overlay=overlay_flag, keep_proportion=False)
             else:
-                pg.insert_image(e["rect"], filename=path)
+                pg.insert_image(e["rect"], filename=path, overlay=overlay_flag, keep_proportion=False)
 
         elif etype == "highlight":
             rects = e.get("rects")
@@ -331,23 +476,31 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                 for r_item in rects:
                     a = pg.add_highlight_annot(fitz.Rect(r_item))
                     a.set_colors(stroke=stroke_color)
-                    a.update()
+                    if op < 0.999:
+                        a.update(opacity=op)
+                    else:
+                        a.update()
             elif "rect" in e:
                 a = pg.add_highlight_annot(fitz.Rect(e["rect"]))
                 a.set_colors(stroke=stroke_color)
-                a.update()
+                if op < 0.999:
+                    a.update(opacity=op)
+                else:
+                    a.update()
 
         elif etype == "note":
             pg.add_text_annot(e["point"], e["text"])
 
         elif etype == "draw":
-            stroke = [(float(x), float(y))
-                      for x, y in e.get("points", [])]
+            stroke = [(float(x), float(y)) for x, y in e.get("points", [])]
             if len(stroke) >= 2:
                 annot = pg.add_ink_annot([stroke])
                 annot.set_colors(stroke=e.get("color", (1, 0, 0)))
                 annot.set_border(width=max(1, int(e.get("width", 2))))
-                annot.update()
+                if op < 0.999:
+                    annot.update(opacity=op)
+                else:
+                    annot.update()
 
         elif etype == "delete_annot":
             target_type = e.get("annot_type")

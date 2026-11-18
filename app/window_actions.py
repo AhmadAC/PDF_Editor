@@ -1,5 +1,6 @@
+
 # app/window_actions.py
-"""PDF_Editor – WindowActionsMixin facade: navigation, themes, presentation mode, and viewer UI interactions."""
+"""PDF_Editor – WindowActionsMixin facade: navigation, themes, unsaved dirty indicators, presentation mode, and viewer UI interactions."""
 
 from __future__ import annotations
 
@@ -50,8 +51,15 @@ else:
     _Base = object
 
 
+def _has_dirty_user_pending(pending_list: list) -> bool:
+    for e in pending_list or []:
+        if not e.get("_existing") or e.get("_dirty") or e.get("_deleted") or e.get("type") == "delete_annot":
+            return True
+    return False
+
+
 class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsRouterMixin, _Base):
-    """Facade orchestrating zoom actions, theme switching, presentation launch, and file drag-and-drop."""
+    """Facade orchestrating zoom actions, theme switching, dirty indicators, presentation launch, and file drag-and-drop."""
 
     if TYPE_CHECKING:
         stack: QStackedWidget
@@ -107,6 +115,76 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
         def _update_tab_bar_visibility(self) -> None: ...
         def _wait_for_workers_on_all_pages(self) -> None: ...
         def _wipe_all_pdf_passwords(self) -> None: ...
+
+    def _edit_has_unsaved_for_path(self, path: str) -> bool:
+        if not path:
+            return False
+        edit_idx = self._edit_tool_idx() if hasattr(self, "_edit_tool_idx") else -1
+        if edit_idx < 0 or edit_idx >= self.stack.count():
+            return False
+        edit_w = self.stack.widget(edit_idx)
+        if edit_w is None or getattr(edit_w, "_is_lazy_placeholder", False):
+            return False
+        norm_p = os.path.normcase(os.path.normpath(os.path.abspath(path)))
+        cur_edit_p = getattr(edit_w, "_doc_path", None)
+        if cur_edit_p and os.path.normcase(os.path.normpath(os.path.abspath(cur_edit_p))) == norm_p:
+            return bool(getattr(edit_w, "_user_pending", None))
+        doc_states = getattr(edit_w, "_doc_states", None)
+        if isinstance(doc_states, dict):
+            for k, state in doc_states.items():
+                if os.path.normcase(os.path.normpath(os.path.abspath(k))) == norm_p:
+                    return _has_dirty_user_pending(state.get("pending", []))
+        return False
+
+    def _is_viewer_dirty(self, viewer) -> bool:
+        if viewer is None:
+            return False
+        ps_map = getattr(self, "_pipeline_state", {})
+        ps = ps_map.get(id(viewer)) if isinstance(ps_map, dict) else None
+        if ps and ps.get("temp_path"):
+            return True
+        curr_p = viewer.current_path() if hasattr(viewer, "current_path") else ""
+        orig_p = getattr(viewer, "_original_doc_path", "") or curr_p
+        return bool(self._edit_has_unsaved_for_path(curr_p) or self._edit_has_unsaved_for_path(orig_p))
+
+    def _sync_edit_dirty_indicator(self) -> None:
+        if hasattr(self, "_tab_bar") and hasattr(self, "_viewers"):
+            ps_map = getattr(self, "_pipeline_state", {})
+            for idx, v in enumerate(self._viewers):
+                curr_p = v.current_path() if hasattr(v, "current_path") else ""
+                ps = ps_map.get(id(v)) if isinstance(ps_map, dict) else None
+                disp_path = (ps.get("original_path") if ps else None) or getattr(v, "_original_doc_path", "") or curr_p
+                if not disp_path:
+                    continue
+                base_name = os.path.basename(disp_path)
+                dirty = self._is_viewer_dirty(v)
+                self._tab_bar.setTabText(idx, f"* {base_name}" if dirty else base_name)
+                self._tab_bar.setTabToolTip(idx, f"{disp_path} (unsaved changes)" if dirty else disp_path)
+
+        active_v = getattr(self, "_viewer", None)
+        active_dirty = False
+        active_name = ""
+        if active_v and active_v.current_path():
+            ps_map = getattr(self, "_pipeline_state", {})
+            ps = ps_map.get(id(active_v)) if isinstance(ps_map, dict) else None
+            disp_path = (ps.get("original_path") if ps else None) or getattr(active_v, "_original_doc_path", "") or active_v.current_path()
+            active_name = os.path.basename(disp_path)
+            active_dirty = self._is_viewer_dirty(active_v)
+        else:
+            edit_idx = self._edit_tool_idx() if hasattr(self, "_edit_tool_idx") else -1
+            if edit_idx >= 0 and self._current_tool == edit_idx:
+                edit_w = self.stack.widget(edit_idx)
+                ep = getattr(edit_w, "_doc_path", None) if edit_w and not getattr(edit_w, "_is_lazy_placeholder", False) else None
+                if ep:
+                    active_name = os.path.basename(ep)
+                    active_dirty = bool(getattr(edit_w, "_user_pending", None))
+
+        if hasattr(self, "setWindowTitle"):
+            if active_name:
+                self.setWindowTitle(f"{t('app.name')} - {'* ' if active_dirty else ''}{active_name}")
+            else:
+                self.setWindowTitle(t("app.name"))
+        self._update_breadcrumb()
 
     def _zoom_in_current(self):
         pres = getattr(self, "_presentation", None)
@@ -208,15 +286,19 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
 
     def _update_breadcrumb(self):
         full_path = ""
+        is_dirty = False
         viewer = self._viewer
         if viewer and viewer.current_path():
             ps_map = getattr(self, "_pipeline_state", {})
             ps = ps_map.get(id(viewer)) if isinstance(ps_map, dict) else None
             if ps and ps.get("original_path"):
                 raw_path = ps["original_path"]
+                is_dirty = bool(ps.get("temp_path"))
             else:
                 raw_path = getattr(viewer, "_original_doc_path", "") or viewer.current_path()
             full_path = os.path.normpath(raw_path) if raw_path else ""
+            if self._is_viewer_dirty(viewer):
+                is_dirty = True
 
         edit_idx = self._edit_tool_idx() if hasattr(self, "_edit_tool_idx") else -1
         if getattr(self, "_current_tool", -1) == edit_idx and edit_idx >= 0:
@@ -225,15 +307,17 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
                 edit_path = getattr(edit_w, "_doc_path", None)
                 if edit_path:
                     full_path = os.path.normpath(edit_path)
+                    is_dirty = is_dirty or bool(getattr(edit_w, "_user_pending", None))
 
+        prefix = "* " if is_dirty else ""
         if getattr(self, "_current_tool", -1) >= 0 and self._current_tool < len(NAV_ITEMS):
             tool_name = NAV_ITEMS[self._current_tool][0]
             if full_path:
-                self._breadcrumb.setText(f"{full_path}  >  {tool_name}")
+                self._breadcrumb.setText(f"{prefix}{full_path}  >  {tool_name}")
             else:
-                self._breadcrumb.setText(tool_name)
+                self._breadcrumb.setText(f"{prefix}{tool_name}")
         elif full_path:
-            self._breadcrumb.setText(full_path)
+            self._breadcrumb.setText(f"{prefix}{full_path}")
         else:
             self._breadcrumb.setText("")
 
@@ -260,9 +344,9 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
             self._undo_top_btn.setVisible(True)
             self._redo_top_btn.setVisible(True)
             edit_w: Any = self._get_or_create_tool(edit_idx)
-            pending = getattr(edit_w, "_pending", None)
+            user_pending = getattr(edit_w, "_user_pending", None)
             redo_stack = getattr(edit_w, "_redo_stack", None)
-            self._undo_top_btn.setEnabled(bool(pending))
+            self._undo_top_btn.setEnabled(bool(user_pending))
             self._redo_top_btn.setEnabled(bool(redo_stack))
         elif self._current_tool in (crop_idx, page_numbers_idx):
             self._undo_top_btn.setVisible(True)
@@ -346,6 +430,9 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
             self.showNormal()
         self.raise_()
         self.activateWindow()
+
+    def _on_status(self, msg: str):
+        self._sb.showMessage(msg)
 
     def _set_status(self, msg: str):
         self._sb.showMessage(msg)
@@ -625,3 +712,4 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
         pres = getattr(self, "_presentation", None)
         if pres is not None and isValid(pres):
             pres.update_theme(self._dark_mode)
+

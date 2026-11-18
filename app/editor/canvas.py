@@ -1,5 +1,5 @@
 # app/editor/canvas.py
-"""PDF_Editor – PdfEditCanvas facade: visual PDF edit canvas with Foxit-style object manipulation, stamps, drawing, and highlights."""
+"""PDF_Editor – PdfEditCanvas facade: visual PDF edit canvas with live background refresh, z-order, rotate/flip, opacity, and object manipulation."""
 
 from __future__ import annotations
 
@@ -17,9 +17,11 @@ try:
         _PAGE_GAP, _BUFFER_PGS, _MAX_THREADS,
         _EditRenderSignals, _EditPageJob,
         _get_icon_cursor, clear_overlay_pixmap_cache,
+        render_single_page_pixmap,
     )
     from app.editor.canvas_overlay1 import (
         CanvasOverlayManager,
+        get_page_preview_ops,
         overlay_pdf_rect,
         snapshot_overlay,
     )
@@ -31,9 +33,11 @@ except ImportError:
         _PAGE_GAP, _BUFFER_PGS, _MAX_THREADS,
         _EditRenderSignals, _EditPageJob,
         _get_icon_cursor, clear_overlay_pixmap_cache,
+        render_single_page_pixmap,
     )
     from .canvas_overlay1 import (  # type: ignore
         CanvasOverlayManager,
+        get_page_preview_ops,
         overlay_pdf_rect,
         snapshot_overlay,
     )
@@ -56,6 +60,7 @@ class PdfEditCanvas(QWidget):
     overlay_changed               = Signal()
     overlay_committed             = Signal(dict)               # (overlay_dict)
     overlay_transformed           = Signal(dict, dict)         # (overlay_dict, before_snapshot)
+    overlay_arranged              = Signal(dict)               # (arrange_info_dict)
     overlay_duplicated            = Signal(dict)               # (new_overlay_dict)
     overlay_deleted               = Signal(int, dict)          # (index, overlay_dict)
     delete_selection_requested    = Signal()
@@ -219,6 +224,27 @@ class PdfEditCanvas(QWidget):
             self._selected_overlay_idx = -1
         self.update()
 
+    def refresh_pages(self, page_indices: set[int] | list[int] | None = None) -> None:
+        """Synchronously re-render the specified pages' background pixmaps with current removals and _z_back layers."""
+        if not self._doc or not self._page_pixmaps:
+            return
+        if page_indices is None:
+            targets = list(range(len(self._page_pixmaps)))
+        else:
+            targets = sorted({int(p) for p in page_indices if 0 <= int(p) < len(self._page_pixmaps)})
+        if not targets:
+            return
+        dpr = self.devicePixelRatioF() or 1.0
+        for idx in targets:
+            ops = get_page_preview_ops(self._overlays, idx)
+            qp = render_single_page_pixmap(self._doc, idx, self._zoom, dpr, page_ops=ops)
+            if qp is not None:
+                self._page_pixmaps[idx] = qp
+                if idx < len(self._page_prev_pixmaps):
+                    self._page_prev_pixmaps[idx] = None
+                self._pending.discard(idx)
+        self.update()
+
     def begin_stamp_placement(self, stamp_type: str, color=(0.0, 0.0, 0.0), size=20.0):
         self.cancel_signature_placement()
         self.clear_active_selection()
@@ -252,6 +278,22 @@ class PdfEditCanvas(QWidget):
             return self.delete_selected_overlay()
         if self._active_sel_rect is not None:
             self.delete_selection_requested.emit()
+
+    def arrange_selected_overlay(self, mode: str, idx: int | None = None) -> None:
+        target = self._selected_overlay_idx if idx is None else idx
+        self._overlay_mgr.arrange_overlay(target, mode)
+
+    def rotate_selected_overlay(self, delta_deg: int, idx: int | None = None) -> None:
+        target = self._selected_overlay_idx if idx is None else idx
+        self._overlay_mgr.rotate_overlay(target, delta_deg)
+
+    def flip_selected_overlay(self, horizontal: bool, idx: int | None = None) -> None:
+        target = self._selected_overlay_idx if idx is None else idx
+        self._overlay_mgr.flip_overlay(target, horizontal)
+
+    def set_selected_overlay_opacity(self, opacity: float, idx: int | None = None) -> None:
+        target = self._selected_overlay_idx if idx is None else idx
+        self._overlay_mgr.set_overlay_opacity(target, opacity)
 
     def scale_selected_overlay(self, factor: float) -> bool:
         if not (0 <= self._selected_overlay_idx < len(self._overlays)):
@@ -317,6 +359,8 @@ class PdfEditCanvas(QWidget):
             self.overlay_committed.emit(ov)
         else:
             self.overlay_transformed.emit(ov, before_snap)
+        if was_untouched or ov.get("_z_back"):
+            self.refresh_pages({ov.get("page", 0)})
         self.overlay_changed.emit()
         self.update()
         return True
@@ -699,10 +743,12 @@ class PdfEditCanvas(QWidget):
         for i in range(first, last + 1):
             if self._page_pixmaps[i] is None and i not in self._pending:
                 self._pending.add(i)
+                page_ops = get_page_preview_ops(self._overlays, i)
                 pool.start(_EditPageJob(self._path, i, self._zoom, dpr,
                                         gen, self._render_signals,
                                         password=getattr(self, "_password", ""),
-                                        is_valid=lambda g=gen: g == self._gen))
+                                        is_valid=lambda g=gen: g == self._gen,
+                                        page_ops=page_ops))
 
     def _on_page_ready(self, gen: int, idx: int, pixmap):
         if gen != self._gen:

@@ -1,5 +1,5 @@
 # app/window_tabs.py
-"""PDF_Editor – Tab management and multi-viewer window mixin."""
+"""PDF_Editor – Tab management, unsaved edit checks, and multi-viewer window mixin."""
 
 from __future__ import annotations
 
@@ -195,6 +195,8 @@ class WindowTabsMixin(_Base):
         def _update_page_nav(self) -> None: ...
         def _update_breadcrumb(self) -> None: ...
         def _viewer_has_unsaved(self, viewer: Any = ...) -> bool: ...
+        def _edit_has_unsaved_for_path(self, path: str) -> bool: ...
+        def _sync_edit_dirty_indicator(self) -> None: ...
         def _save_pipeline(self, prompt_dialog: bool = ...) -> None: ...
         def _save_as_copy_for_viewer(self, viewer: Any = ...) -> None: ...
         def _cleanup_pipeline(self, viewer_id: int) -> None: ...
@@ -256,7 +258,9 @@ class WindowTabsMixin(_Base):
         has_multiple = len(self._viewers) > 1
         has_open_doc = any(bool(v.current_path()) for v in self._viewers)
         self._tab_bar.setVisible(has_multiple or has_open_doc)
-        if hasattr(self, "_update_breadcrumb"):
+        if hasattr(self, "_sync_edit_dirty_indicator"):
+            self._sync_edit_dirty_indicator()
+        elif hasattr(self, "_update_breadcrumb"):
             self._update_breadcrumb()
 
     def _close_tab(self, index: int) -> None:
@@ -264,7 +268,14 @@ class WindowTabsMixin(_Base):
             return
         viewer = self._viewers[index]
 
-        if hasattr(self, "_viewer_has_unsaved") and self._viewer_has_unsaved(viewer):
+        closed_path = viewer.current_path()
+        orig_path = getattr(viewer, "_original_doc_path", "")
+        pipe_unsaved = hasattr(self, "_viewer_has_unsaved") and self._viewer_has_unsaved(viewer)
+        edit_unsaved = hasattr(self, "_edit_has_unsaved_for_path") and (
+            self._edit_has_unsaved_for_path(closed_path) or self._edit_has_unsaved_for_path(orig_path)
+        )
+
+        if pipe_unsaved or edit_unsaved:
             ans = QMessageBox.question(
                 self,
                 t("msg.warning"),
@@ -277,10 +288,19 @@ class WindowTabsMixin(_Base):
             if ans == QMessageBox.StandardButton.Cancel:
                 return
             if ans == QMessageBox.StandardButton.Save:
-                self._save_pipeline()
+                if pipe_unsaved:
+                    self._save_pipeline()
+                if edit_unsaved:
+                    edit_idx = self._edit_tool_idx() if hasattr(self, "_edit_tool_idx") else -1
+                    edit_w: Any = self.stack.widget(edit_idx) if (0 <= edit_idx < self.stack.count()) else None
+                    if edit_w is not None and not getattr(edit_w, "_is_lazy_placeholder", False):
+                        target_p = closed_path or orig_path
+                        if target_p and getattr(edit_w, "_doc_path", None) != target_p:
+                            edit_w.auto_load(target_p)
+                        run_fn = getattr(edit_w, "_run", None)
+                        if callable(run_fn):
+                            run_fn()
 
-        closed_path = viewer.current_path()
-        orig_path = getattr(viewer, "_original_doc_path", "")
         closed_norm = {os.path.normcase(os.path.normpath(os.path.abspath(p))) for p in (closed_path, orig_path) if p}
 
         edit_idx = self._edit_tool_idx() if hasattr(self, "_edit_tool_idx") else -1
@@ -346,7 +366,9 @@ class WindowTabsMixin(_Base):
         self._update_tab_bar_visibility()
         if hasattr(self, "_update_page_nav"):
             self._update_page_nav()
-        if hasattr(self, "_update_breadcrumb"):
+        if hasattr(self, "_sync_edit_dirty_indicator"):
+            self._sync_edit_dirty_indicator()
+        elif hasattr(self, "_update_breadcrumb"):
             self._update_breadcrumb()
         if hasattr(self, "_refresh_viewer_top_buttons"):
             self._refresh_viewer_top_buttons()
@@ -362,11 +384,6 @@ class WindowTabsMixin(_Base):
             self._update_tab_bar_visibility()
             if hasattr(self, "_update_page_nav"):
                 self._update_page_nav()
-            if hasattr(self, "_update_breadcrumb"):
-                self._update_breadcrumb()
-            if hasattr(self, "setWindowTitle"):
-                doc_name = os.path.basename(viewer._original_doc_path or viewer.current_path()) if viewer.current_path() else ""
-                self.setWindowTitle(f"{t('app.name')} - {doc_name}" if doc_name else t("app.name"))
 
             if getattr(self, "_current_tool", -1) >= 0:
                 tool_w = self.stack.widget(self._current_tool)
@@ -376,6 +393,9 @@ class WindowTabsMixin(_Base):
                     fn(cur_path)
             elif hasattr(self, "_setup_zoom_bar"):
                 self._setup_zoom_bar(True, canvas=viewer._canvas)
+
+            if hasattr(self, "_sync_edit_dirty_indicator"):
+                self._sync_edit_dirty_indicator()
 
     def _on_tab_context_menu(self, point: QPoint) -> None:
         tab_idx = self._tab_bar.tabAt(point)
@@ -471,13 +491,13 @@ class WindowTabsMixin(_Base):
                 self._update_tab_bar_visibility()
                 if hasattr(self, "_update_page_nav"):
                     self._update_page_nav()
-                if hasattr(self, "_update_breadcrumb"):
-                    self._update_breadcrumb()
                 if getattr(self, "_current_tool", -1) >= 0:
                     tool_w = self.stack.widget(self._current_tool)
                     fn = getattr(tool_w, "auto_load", None)
                     if callable(fn):
                         fn(curr_p or orig_p)
+                if hasattr(self, "_sync_edit_dirty_indicator"):
+                    self._sync_edit_dirty_indicator()
                 return v
 
         is_pdf = norm_path.lower().endswith(".pdf")
@@ -528,8 +548,6 @@ class WindowTabsMixin(_Base):
         self._tab_bar.setTabText(idx, tab_title)
         self._tab_bar.setTabToolTip(idx, tooltip)
         self._update_tab_bar_visibility()
-        if hasattr(self, "_update_breadcrumb"):
-            self._update_breadcrumb()
         if hasattr(self, "_update_page_nav"):
             self._update_page_nav()
 
@@ -538,6 +556,9 @@ class WindowTabsMixin(_Base):
             fn = getattr(tool_w, "auto_load", None)
             if callable(fn):
                 fn(target_load_path)
+
+        if hasattr(self, "_sync_edit_dirty_indicator"):
+            self._sync_edit_dirty_indicator()
 
         if temp_pdf and hasattr(self, "_set_status"):
             self._set_status(f"Converted {os.path.basename(norm_path)} to PDF (Ctrl+S to save as PDF)")

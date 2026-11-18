@@ -1,13 +1,12 @@
-
 # app/editor/canvas_painter1.py
 
-"""Canvas painter: renders pages, overlays, vector drawings, check/cross stamps, text modifications, notes, and smoothed freehand drawings."""
+"""Canvas painter: renders pages, overlays, vector drawings, opacity, rotation, flips, check/cross stamps, text, notes, and strokes."""
 
 from __future__ import annotations
 
 import os
 import fitz
-from PySide6.QtCore import Qt, QRect, QPoint, QPointF
+from PySide6.QtCore import Qt, QRect, QRectF, QPoint, QPointF
 from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPixmap, QPainterPath
 
 from app.constants import ACCENT, TEXT_SEC
@@ -42,6 +41,14 @@ def _map_pt(x: float, y: float, orig_r: fitz.Rect, new_r: fitz.Rect, z: float, y
     return QPointF(nx * z, yo + ny * z)
 
 
+def _apply_center_transform(p: QPainter, cx: float, cy: float, rotation: int, flip_h: bool, flip_v: bool) -> None:
+    p.translate(cx, cy)
+    if flip_h or flip_v:
+        p.scale(-1.0 if flip_h else 1.0, -1.0 if flip_v else 1.0)
+    if rotation % 360:
+        p.rotate(float(rotation % 360))
+
+
 class CanvasPainter:
     @staticmethod
     def paint(canvas, painter: QPainter):
@@ -56,7 +63,7 @@ class CanvasPainter:
             p.drawText(canvas.rect(), Qt.AlignmentFlag.AlignCenter, t("edit.open_prompt"))
             return
 
-        # 1. Render pages
+        # 1. Render pages (already includes live Phase-1 removals and _z_back items)
         for i, qpix in enumerate(canvas._page_pixmaps):
             yo, pw, ph = canvas._page_offsets[i]
             page_r = QRect(0, yo, pw, ph)
@@ -80,52 +87,13 @@ class CanvasPainter:
             p.setPen(QColor("#E0E0E0"))
             p.drawRect(QRect(0, yo, pw - 1, ph - 1))
 
-        # 2a. Mask original regions of existing elements that were deleted, edited, or moved
+        # 2. Render active overlays
         z = canvas._zoom
-        for e in canvas._overlays:
-            pg = e.get("page", 0)
-            if pg >= len(canvas._page_offsets):
-                continue
-            yo = canvas._page_offsets[pg][0]
-            etype = e.get("type")
+        is_actively_dragging = bool(
+            getattr(canvas, "_moving_overlay", False)
+            or getattr(canvas, "_drag_handle", 0) != getattr(canvas, "HANDLE_NONE", 0)
+        )
 
-            if etype == "delete_annot" and e.get("bbox"):
-                ob = fitz.Rect(e["bbox"])
-                qr = QRect(
-                    int(ob.x0 * z) - 2, yo + int(ob.y0 * z) - 2,
-                    max(2, int(ob.width * z)) + 4, max(2, int(ob.height * z)) + 4,
-                )
-                p.fillRect(qr, QColor("#FFFFFF"))
-                continue
-
-            if not e.get("_existing"):
-                continue
-
-            orig_raw = e.get("_orig_rect") or e.get("_annot_bbox")
-            if not orig_raw:
-                continue
-            orig_r = fitz.Rect(orig_raw)
-            cur_r = overlay_pdf_rect(e, zoom=z)
-            should_mask = bool(
-                e.get("_deleted")
-                or etype == "text_edit"
-                or (cur_r is not None and not rects_close(cur_r, orig_r, tol=0.25))
-            )
-            if not should_mask:
-                continue
-
-            bg_rgb = e.get("_bg_color", (255, 255, 255))
-            bg_qcol = QColor(int(bg_rgb[0]), int(bg_rgb[1]), int(bg_rgb[2]))
-            extra_pad = int(round(max(1.0, float(e.get("width", 1.0)) * 0.75 * z))) + 2 if etype == "drawing" else 1
-            qr = QRect(
-                int(orig_r.x0 * z) - extra_pad,
-                yo + int(orig_r.y0 * z) - extra_pad,
-                max(2, int(orig_r.width * z)) + extra_pad * 2,
-                max(2, int(orig_r.height * z)) + extra_pad * 2,
-            )
-            p.fillRect(qr, bg_qcol)
-
-        # 2b. Render active overlays
         for ov_idx, e in enumerate(canvas._overlays):
             if e.get("_deleted"):
                 continue
@@ -135,66 +103,101 @@ class CanvasPainter:
             yo = canvas._page_offsets[pg][0]
             etype = e["type"]
             is_selected = (ov_idx == canvas._selected_overlay_idx)
+            op = max(0.0, min(1.0, float(e.get("opacity", 1.0))))
+            rot = int(e.get("rotation", 0)) % 360
+            flip_h = bool(e.get("flip_h", False))
+            flip_v = bool(e.get("flip_v", False))
+            is_z_back = bool(e.get("_z_back", False))
+
+            # Items sent to back are already rendered behind PDF content in the page pixmap;
+            # only draw their body temporarily on top while actively dragging/resizing them.
+            skip_body_for_z_back = bool(is_z_back and not (is_selected and is_actively_dragging))
 
             if etype == "redact":
                 r = e["rect"]; fill = e["fill"]
                 qr = QRect(int(r.x0*z), yo+int(r.y0*z), max(1,int(r.width*z)), max(1,int(r.height*z)))
-                p.fillRect(qr, QColor(int(fill[0]*255), int(fill[1]*255), int(fill[2]*255), 210))
-                p.setPen(QPen(QColor("#EF4444"), 1)); p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawRect(qr)
+                if not skip_body_for_z_back:
+                    p.save()
+                    p.setOpacity(op)
+                    p.fillRect(qr, QColor(int(fill[0]*255), int(fill[1]*255), int(fill[2]*255), 210))
+                    p.setPen(QPen(QColor("#EF4444"), 1)); p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawRect(qr)
+                    p.restore()
                 if is_selected:
                     _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
 
             elif etype == "check":
                 r = e["rect"]
-                sx0 = int(r.x0 * z)
-                sy0 = yo + int(r.y0 * z)
-                sw = max(4, int(r.width * z))
-                sh = max(4, int(r.height * z))
-                c = e.get("color", (0, 0, 0))
-                col = QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255))
-                stroke_w = max(1.5, float(e.get("width", min(sw, sh) * 0.12)) * z)
-                pen = QPen(col, stroke_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-                p.setPen(pen)
-                p.setBrush(Qt.BrushStyle.NoBrush)
-                p1 = QPointF(sx0 + 0.16 * sw, sy0 + 0.52 * sh)
-                p2 = QPointF(sx0 + 0.40 * sw, sy0 + 0.82 * sh)
-                p3 = QPointF(sx0 + 0.86 * sw, sy0 + 0.18 * sh)
-                check_path = QPainterPath()
-                check_path.moveTo(p1)
-                check_path.lineTo(p2)
-                check_path.lineTo(p3)
-                p.drawPath(check_path)
-
+                sx0 = r.x0 * z
+                sy0 = yo + r.y0 * z
+                sw = max(4.0, r.width * z)
+                sh = max(4.0, r.height * z)
+                if not skip_body_for_z_back:
+                    p.save()
+                    p.setOpacity(op)
+                    if rot or flip_h or flip_v:
+                        _apply_center_transform(p, sx0 + sw / 2.0, sy0 + sh / 2.0, rot, flip_h, flip_v)
+                        bx, by = -sw / 2.0, -sh / 2.0
+                    else:
+                        bx, by = sx0, sy0
+                    c = e.get("color", (0, 0, 0))
+                    col = QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255))
+                    stroke_w = max(1.5, float(e.get("width", min(sw, sh) * 0.12)) * z)
+                    pen = QPen(col, stroke_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+                    p.setPen(pen)
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p1 = QPointF(bx + 0.16 * sw, by + 0.52 * sh)
+                    p2 = QPointF(bx + 0.40 * sw, by + 0.82 * sh)
+                    p3 = QPointF(bx + 0.86 * sw, by + 0.18 * sh)
+                    check_path = QPainterPath()
+                    check_path.moveTo(p1)
+                    check_path.lineTo(p2)
+                    check_path.lineTo(p3)
+                    p.drawPath(check_path)
+                    p.restore()
                 if is_selected:
-                    _draw_selection_box(p, QRect(sx0 - 2, sy0 - 2, sw + 4, sh + 4), handle_size=8, draw_handles=True)
+                    _draw_selection_box(p, QRect(int(sx0) - 2, int(sy0) - 2, int(sw) + 4, int(sh) + 4), handle_size=8, draw_handles=True)
 
             elif etype == "cross":
                 r = e["rect"]
-                sx0 = int(r.x0 * z)
-                sy0 = yo + int(r.y0 * z)
-                sw = max(4, int(r.width * z))
-                sh = max(4, int(r.height * z))
-                c = e.get("color", (0, 0, 0))
-                col = QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255))
-                stroke_w = max(1.5, float(e.get("width", min(sw, sh) * 0.12)) * z)
-                pen = QPen(col, stroke_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-                p.setPen(pen)
-                p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawLine(QPointF(sx0 + 0.20 * sw, sy0 + 0.20 * sh), QPointF(sx0 + 0.80 * sw, sy0 + 0.80 * sh))
-                p.drawLine(QPointF(sx0 + 0.80 * sw, sy0 + 0.20 * sh), QPointF(sx0 + 0.20 * sw, sy0 + 0.80 * sh))
-
+                sx0 = r.x0 * z
+                sy0 = yo + r.y0 * z
+                sw = max(4.0, r.width * z)
+                sh = max(4.0, r.height * z)
+                if not skip_body_for_z_back:
+                    p.save()
+                    p.setOpacity(op)
+                    if rot or flip_h or flip_v:
+                        _apply_center_transform(p, sx0 + sw / 2.0, sy0 + sh / 2.0, rot, flip_h, flip_v)
+                        bx, by = -sw / 2.0, -sh / 2.0
+                    else:
+                        bx, by = sx0, sy0
+                    c = e.get("color", (0, 0, 0))
+                    col = QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255))
+                    stroke_w = max(1.5, float(e.get("width", min(sw, sh) * 0.12)) * z)
+                    pen = QPen(col, stroke_w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+                    p.setPen(pen)
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawLine(QPointF(bx + 0.20 * sw, by + 0.20 * sh), QPointF(bx + 0.80 * sw, by + 0.80 * sh))
+                    p.drawLine(QPointF(bx + 0.80 * sw, by + 0.20 * sh), QPointF(bx + 0.20 * sw, by + 0.80 * sh))
+                    p.restore()
                 if is_selected:
-                    _draw_selection_box(p, QRect(sx0 - 2, sy0 - 2, sw + 4, sh + 4), handle_size=8, draw_handles=True)
+                    _draw_selection_box(p, QRect(int(sx0) - 2, int(sy0) - 2, int(sw) + 4, int(sh) + 4), handle_size=8, draw_handles=True)
 
             elif etype == "drawing":
                 new_r = fitz.Rect(e["rect"])
-                orig_raw = e.get("_orig_rect")
-                orig_r = fitz.Rect(orig_raw) if orig_raw else fitz.Rect(new_r)
+                items_raw = e.get("_items_rect") or e.get("_orig_rect")
+                orig_r = fitz.Rect(items_raw) if items_raw else fitz.Rect(new_r)
 
-                # Skip re-drawing untouched existing vector if it's still sitting at orig_rect
-                is_moved_or_resized = not (e.get("_existing") and rects_close(new_r, orig_r, tol=0.25))
-                if is_moved_or_resized:
+                is_untouched_existing = bool(
+                    e.get("_existing")
+                    and not e.get("_dirty")
+                    and rects_close(new_r, orig_r, tol=0.25)
+                    and op >= 0.999
+                )
+                if not is_untouched_existing and not skip_body_for_z_back:
+                    p.save()
+                    p.setOpacity(op)
                     qpath = QPainterPath()
                     if e.get("even_odd"):
                         qpath.setFillRule(Qt.FillRule.OddEvenFill)
@@ -202,24 +205,24 @@ class CanvasPainter:
                         qpath.setFillRule(Qt.FillRule.WindingFill)
 
                     for item in e.get("items", []):
-                        op = item[0]
-                        if op == "l":
+                        op_code = item[0]
+                        if op_code == "l":
                             p1 = _map_pt(item[1][0], item[1][1], orig_r, new_r, z, yo)
                             p2 = _map_pt(item[2][0], item[2][1], orig_r, new_r, z, yo)
                             qpath.moveTo(p1)
                             qpath.lineTo(p2)
-                        elif op == "re":
+                        elif op_code == "re":
                             rx0, ry0, rx1, ry1 = item[1]
                             tl = _map_pt(rx0, ry0, orig_r, new_r, z, yo)
                             br = _map_pt(rx1, ry1, orig_r, new_r, z, yo)
                             qpath.addRect(tl.x(), tl.y(), max(0.5, br.x() - tl.x()), max(0.5, br.y() - tl.y()))
-                        elif op == "qu":
+                        elif op_code == "qu":
                             pts = [_map_pt(pt[0], pt[1], orig_r, new_r, z, yo) for pt in item[1]]
                             qpath.moveTo(pts[0])
                             for pt in pts[1:]:
                                 qpath.lineTo(pt)
                             qpath.closeSubpath()
-                        elif op == "c":
+                        elif op_code == "c":
                             p1 = _map_pt(item[1][0], item[1][1], orig_r, new_r, z, yo)
                             p2 = _map_pt(item[2][0], item[2][1], orig_r, new_r, z, yo)
                             p3 = _map_pt(item[3][0], item[3][1], orig_r, new_r, z, yo)
@@ -254,6 +257,7 @@ class CanvasPainter:
                         p.setPen(Qt.PenStyle.NoPen)
 
                     p.drawPath(qpath)
+                    p.restore()
 
                 if is_selected:
                     pad = 4 if (new_r.width < 4 or new_r.height < 4) else 0
@@ -267,12 +271,13 @@ class CanvasPainter:
 
             elif etype == "highlight":
                 c = e.get("color", (1, 1, 0))
-                col = QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255), 120)
+                col = QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255), int(round(120 * op)))
                 rects = e.get("rects")
                 if rects:
-                    for r_item in rects:
-                        qr = QRect(int(r_item.x0*z), yo+int(r_item.y0*z), max(1,int(r_item.width*z)), max(1,int(r_item.height*z)))
-                        p.fillRect(qr, col)
+                    if not skip_body_for_z_back:
+                        for r_item in rects:
+                            qr = QRect(int(r_item.x0*z), yo+int(r_item.y0*z), max(1,int(r_item.width*z)), max(1,int(r_item.height*z)))
+                            p.fillRect(qr, col)
                     if is_selected:
                         ur = overlay_pdf_rect(e, zoom=z)
                         if ur:
@@ -281,37 +286,56 @@ class CanvasPainter:
                 elif "rect" in e:
                     r = e["rect"]
                     qr = QRect(int(r.x0*z), yo+int(r.y0*z), max(1,int(r.width*z)), max(1,int(r.height*z)))
-                    p.fillRect(qr, col)
+                    if not skip_body_for_z_back:
+                        p.fillRect(qr, col)
                     if is_selected:
                         _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
 
             elif etype == "text":
                 pt = e["point"]; c = e["color"]
-                p.setPen(QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255)))
-                fname = e.get("font", "Helvetica")
-                f2 = QFont(fname)
-                f2.setPointSizeF(max(4.0, float(e.get("size", 12)) * z * 0.75))
-                flags = int(e.get("flags", 0) or 0)
-                if (flags & 16) or "bold" in fname.lower():
-                    f2.setBold(True)
-                if (flags & 2) or "italic" in fname.lower() or "oblique" in fname.lower():
-                    f2.setItalic(True)
-                p.setFont(f2)
-                p.drawText(int(pt.x*z), yo+int(pt.y*z), e["text"])
+                r = overlay_pdf_rect(e, zoom=z)
+                if not skip_body_for_z_back:
+                    p.save()
+                    p.setOpacity(op)
+                    p.setPen(QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255)))
+                    fname = e.get("font", "Helvetica")
+                    f2 = QFont(fname)
+                    f2.setPointSizeF(max(4.0, float(e.get("size", 12)) * z * 0.75))
+                    flags = int(e.get("flags", 0) or 0)
+                    if (flags & 16) or "bold" in fname.lower():
+                        f2.setBold(True)
+                    if (flags & 2) or "italic" in fname.lower() or "oblique" in fname.lower():
+                        f2.setItalic(True)
+                    p.setFont(f2)
+                    if (rot or flip_h or flip_v) and r is not None:
+                        cx = (r.x0 + r.x1) * 0.5 * z
+                        cy = yo + (r.y0 + r.y1) * 0.5 * z
+                        _apply_center_transform(p, cx, cy, rot, flip_h, flip_v)
+                        p.drawText(QPointF(pt.x * z - cx, (yo + pt.y * z) - cy), e["text"])
+                    else:
+                        p.drawText(int(pt.x*z), yo+int(pt.y*z), e["text"])
+                    p.restore()
 
-                if is_selected:
-                    r = overlay_pdf_rect(e, zoom=z)
-                    if r:
-                        qr = QRect(int(r.x0*z) - 2, yo+int(r.y0*z) - 2, max(1,int(r.width*z)) + 4, max(1,int(r.height*z)) + 4)
-                        _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
+                if is_selected and r:
+                    qr = QRect(int(r.x0*z) - 2, yo+int(r.y0*z) - 2, max(1,int(r.width*z)) + 4, max(1,int(r.height*z)) + 4)
+                    _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
 
             elif etype in ("image", "signature"):
                 r = e["rect"]
                 qr = QRect(int(r.x0*z), yo+int(r.y0*z), max(1,int(r.width*z)), max(1,int(r.height*z)))
                 orig_raw = e.get("_orig_rect") or e.get("_annot_bbox")
-                is_untouched_existing = bool(e.get("_existing") and orig_raw and rects_close(r, orig_raw, tol=0.25))
+                is_untouched_existing = bool(
+                    e.get("_existing")
+                    and not e.get("_dirty")
+                    and orig_raw
+                    and rects_close(r, orig_raw, tol=0.25)
+                    and op >= 0.999
+                    and rot == 0
+                    and not flip_h
+                    and not flip_v
+                )
 
-                if not is_untouched_existing:
+                if not is_untouched_existing and not skip_body_for_z_back:
                     path = e["path"]
                     try:
                         mtime = os.path.getmtime(path)
@@ -319,7 +343,18 @@ class CanvasPainter:
                     except OSError:
                         img_px = QPixmap(path)
                     if not img_px.isNull():
-                        p.drawPixmap(qr, img_px)
+                        p.save()
+                        p.setOpacity(op)
+                        if rot or flip_h or flip_v:
+                            cx = qr.x() + qr.width() / 2.0
+                            cy = qr.y() + qr.height() / 2.0
+                            _apply_center_transform(p, cx, cy, rot, flip_h, flip_v)
+                            dw = float(qr.height()) if rot in (90, 270) else float(qr.width())
+                            dh = float(qr.width()) if rot in (90, 270) else float(qr.height())
+                            p.drawPixmap(QRectF(-dw / 2.0, -dh / 2.0, dw, dh), img_px, QRectF(img_px.rect()))
+                        else:
+                            p.drawPixmap(qr, img_px)
+                        p.restore()
 
                 if is_selected:
                     _draw_selection_box(p, qr, handle_size=10, draw_handles=True)
@@ -328,9 +363,22 @@ class CanvasPainter:
                 r = e["bbox"]
                 qr = QRect(int(r[0]*z) - 1, yo+int(r[1]*z) - 1,
                            max(1, int((r[2]-r[0])*z)) + 2, max(1, int((r[3]-r[1])*z)) + 2)
+                orig_raw = e.get("_orig_rect")
+                is_untouched_existing = bool(
+                    e.get("_existing")
+                    and not e.get("_dirty")
+                    and orig_raw
+                    and rects_close(r, orig_raw, tol=0.25)
+                    and op >= 0.999
+                    and rot == 0
+                    and not flip_h
+                    and not flip_v
+                )
 
                 new_txt = e.get("new_text", "")
-                if new_txt:
+                if new_txt and not is_untouched_existing and not skip_body_for_z_back:
+                    p.save()
+                    p.setOpacity(op)
                     c = e.get("color", 0)
                     if isinstance(c, int):
                         col = QColor((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF)
@@ -352,9 +400,16 @@ class CanvasPainter:
                     p.setFont(fnt)
 
                     origin = e.get("origin", [r[0], r[3]])
-                    baseline_x = int(origin[0] * z)
-                    baseline_y = yo + int(origin[1] * z)
-                    p.drawText(baseline_x, baseline_y, new_txt)
+                    baseline_x = origin[0] * z
+                    baseline_y = yo + origin[1] * z
+                    if rot or flip_h or flip_v:
+                        cx = (r[0] + r[2]) * 0.5 * z
+                        cy = yo + (r[1] + r[3]) * 0.5 * z
+                        _apply_center_transform(p, cx, cy, rot, flip_h, flip_v)
+                        p.drawText(QPointF(baseline_x - cx, baseline_y - cy), new_txt)
+                    else:
+                        p.drawText(int(baseline_x), int(baseline_y), new_txt)
+                    p.restore()
 
                 if is_selected:
                     _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
@@ -392,31 +447,35 @@ class CanvasPainter:
             elif etype == "draw":
                 pts = e.get("points", [])
                 if len(pts) >= 2:
-                    col = e.get("color", (1, 0, 0))
-                    w = max(1, int(e.get("width", 2)))
-                    pen = QPen(QColor(int(col[0]*255), int(col[1]*255), int(col[2]*255)),
-                               max(1, int(w * z)))
-                    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-                    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-                    p.setPen(pen)
-                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    if not skip_body_for_z_back:
+                        p.save()
+                        p.setOpacity(op)
+                        col = e.get("color", (1, 0, 0))
+                        w = max(1, int(e.get("width", 2)))
+                        pen = QPen(QColor(int(col[0]*255), int(col[1]*255), int(col[2]*255)),
+                                   max(1, int(w * z)))
+                        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+                        p.setPen(pen)
+                        p.setBrush(Qt.BrushStyle.NoBrush)
 
-                    path = QPainterPath()
-                    p0 = (pts[0][0] * z, yo + pts[0][1] * z)
-                    path.moveTo(p0[0], p0[1])
-                    if len(pts) == 2:
-                        p1 = (pts[1][0] * z, yo + pts[1][1] * z)
-                        path.lineTo(p1[0], p1[1])
-                    else:
-                        for i in range(1, len(pts) - 1):
-                            cur = (pts[i][0] * z, yo + pts[i][1] * z)
-                            nxt = (pts[i + 1][0] * z, yo + pts[i + 1][1] * z)
-                            mid_x = (cur[0] + nxt[0]) / 2.0
-                            mid_y = (cur[1] + nxt[1]) / 2.0
-                            path.quadTo(cur[0], cur[1], mid_x, mid_y)
-                        p_last = (pts[-1][0] * z, yo + pts[-1][1] * z)
-                        path.lineTo(p_last[0], p_last[1])
-                    p.drawPath(path)
+                        path = QPainterPath()
+                        p0 = (pts[0][0] * z, yo + pts[0][1] * z)
+                        path.moveTo(p0[0], p0[1])
+                        if len(pts) == 2:
+                            p1 = (pts[1][0] * z, yo + pts[1][1] * z)
+                            path.lineTo(p1[0], p1[1])
+                        else:
+                            for i in range(1, len(pts) - 1):
+                                cur = (pts[i][0] * z, yo + pts[i][1] * z)
+                                nxt = (pts[i + 1][0] * z, yo + pts[i + 1][1] * z)
+                                mid_x = (cur[0] + nxt[0]) / 2.0
+                                mid_y = (cur[1] + nxt[1]) / 2.0
+                                path.quadTo(cur[0], cur[1], mid_x, mid_y)
+                            p_last = (pts[-1][0] * z, yo + pts[-1][1] * z)
+                            path.lineTo(p_last[0], p_last[1])
+                        p.drawPath(path)
+                        p.restore()
 
                     if is_selected:
                         r = overlay_pdf_rect(e, zoom=z)
@@ -528,4 +587,3 @@ class CanvasPainter:
                 p.setBrush(QColor(59, 130, 246, 35))
                 p.drawRect(qr)
                 _draw_selection_box(p, qr, handle_size=8, draw_handles=True)
-

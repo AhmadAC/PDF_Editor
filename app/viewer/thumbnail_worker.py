@@ -1,5 +1,5 @@
 # app/viewer/thumbnail_worker.py
-"""Thumbnail background rendering worker, file logging, and geometry sizing constants."""
+"""Thumbnail background rendering worker, live edit preview support, file logging, and geometry sizing constants."""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ def _install_debug_log() -> None:
 
 
 class ThumbnailWorker(QThread):
-    """Render a batch of page thumbnails in a background thread with rotation and crop support."""
+    """Render a batch of page thumbnails in a background thread with rotation, crop, and live pending-edit support."""
 
     thumbnail_ready = Signal(int, QImage, int)
     render_failed = Signal(int, str)
@@ -79,6 +79,7 @@ class ThumbnailWorker(QThread):
         rotations: dict[int, int] | None = None,
         crops: dict[int, tuple[float, float, float, float]] | None = None,
         page_order: list[int] | None = None,
+        page_edits: dict[int, list[dict]] | None = None,
         thumb_w: int = DEFAULT_THUMB_WIDTH,
         thumb_h: int = DEFAULT_THUMB_HEIGHT,
         parent=None,
@@ -92,6 +93,11 @@ class ThumbnailWorker(QThread):
         self._rotations = dict(rotations) if rotations else {}
         self._crops = dict(crops) if crops else {}
         self._page_order = list(page_order) if page_order is not None else None
+        self._page_edits = (
+            {int(k): [dict(e) for e in v] for k, v in page_edits.items() if v}
+            if page_edits
+            else {}
+        )
         self._thumb_w = thumb_w
         self._thumb_h = thumb_h
         self._cancelled = False
@@ -129,6 +135,7 @@ class ThumbnailWorker(QThread):
                 )
                 if src_idx < 0 or src_idx >= page_count:
                     continue
+                tmp_doc = None
                 try:
                     _log.debug(
                         "ThumbnailWorker: rendering pos %d (page %d/%d)",
@@ -136,7 +143,17 @@ class ThumbnailWorker(QThread):
                         src_idx + 1,
                         page_count,
                     )
-                    page = doc[src_idx]
+                    edits = self._page_edits.get(src_idx)
+                    if edits:
+                        from app.editor.apply_edits import apply_pending_edits
+                        tmp_doc = fitz.open()
+                        tmp_doc.insert_pdf(doc, from_page=src_idx, to_page=src_idx)
+                        pg_edits = [dict(e, page=0) for e in edits]
+                        apply_pending_edits(tmp_doc, pg_edits)
+                        page = tmp_doc[0]
+                    else:
+                        page = doc[src_idx]
+
                     if self._crops and src_idx in self._crops:
                         crop_rect = fitz.Rect(self._crops[src_idx]) & page.mediabox
                         if (
@@ -181,6 +198,10 @@ class ThumbnailWorker(QThread):
                         exc,
                     )
                     continue
+                finally:
+                    if tmp_doc is not None:
+                        with contextlib.suppress(Exception):
+                            tmp_doc.close()
         except Exception as exc:
             _log.error(
                 "ThumbnailWorker: fatal error, no thumbnails produced: %s",

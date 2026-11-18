@@ -1,3 +1,4 @@
+
 # app/editor/tab_actions.py
 """PDF_Editor – Editing modes, typography formatters, draw tools, stamps, and element selections for TabEditar."""
 
@@ -712,6 +713,9 @@ class TabActionsMixin(_Base):
 
     def _on_overlay_transformed(self, edit: dict, before_snap: dict):
         self._history.handle_overlay_transformed(edit, before_snap)
+
+    def _on_overlay_arranged(self, info: dict):
+        self._history.handle_overlay_arranged(info)
 
     def _on_overlay_duplicated(self, new_edit: dict):
         self._history.handle_overlay_duplicated(new_edit)

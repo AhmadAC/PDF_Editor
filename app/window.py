@@ -34,7 +34,7 @@ from app.nav_config import _NAV_GROUPS, _NAV_KEYS, NAV_ITEMS
 
 from app.window_tabs import _ViewerTabBar, WindowTabsMixin as _WindowTabsMixin
 from app.window_pipeline import WindowPipelineMixin as _WindowPipelineMixin
-from app.window_actions import WindowActionsMixin as _WindowActionsMixin
+from app.window_actions import WindowActionsMixin as _WindowActionsMixin, _has_dirty_user_pending
 
 
 _NAV_ICON_CACHE: dict[tuple[str, str], QIcon] = {}
@@ -573,16 +573,30 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
                 break
         edit_idx = self._edit_tool_idx()
         if edit_idx >= 0:
-            edit_w = self.stack.widget(edit_idx)
-            if edit_w and not isinstance(edit_w, _LazyPlaceholderWidget) and getattr(edit_w, "_user_pending", None):
-                ans = QMessageBox.question(
-                    self, t("msg.warning"), t("pipeline.unsaved_prompt"),
-                    QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
-                    QMessageBox.StandardButton.Cancel
-                )
-                if ans == QMessageBox.StandardButton.Cancel:
-                    event.ignore()
-                    return
+            edit_w: Any = self.stack.widget(edit_idx)
+            if edit_w and not isinstance(edit_w, _LazyPlaceholderWidget):
+                has_cur_dirty = bool(getattr(edit_w, "_user_pending", None))
+                dirty_cached = [
+                    st_path for st_path, st in getattr(edit_w, "_doc_states", {}).items()
+                    if _has_dirty_user_pending(st.get("pending", []))
+                ]
+                if has_cur_dirty or dirty_cached:
+                    ans = QMessageBox.question(
+                        self, t("msg.warning"), t("pipeline.unsaved_prompt"),
+                        QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                        QMessageBox.StandardButton.Cancel
+                    )
+                    if ans == QMessageBox.StandardButton.Cancel:
+                        event.ignore()
+                        return
+                    if ans == QMessageBox.StandardButton.Save:
+                        if has_cur_dirty:
+                            edit_w._run()
+                        for st_path in dirty_cached:
+                            if os.path.isfile(st_path) and os.path.abspath(st_path) != os.path.abspath(getattr(edit_w, "_doc_path", "") or ""):
+                                edit_w.auto_load(st_path)
+                                if getattr(edit_w, "_user_pending", None):
+                                    edit_w._run()
         for v in list(self._viewers):
             self._cleanup_pipeline(id(v))
         cleanup_page_clipboard()
