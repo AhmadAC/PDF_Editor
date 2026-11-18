@@ -494,6 +494,9 @@ class PdfEditCanvas(QWidget):
         self._zoom_factor = initial_zoom_factor if initial_zoom_factor is not None else 1.0
         self._gen += 1
         self._pending.clear()
+        self._page_offsets.clear()
+        self._page_pixmaps.clear()
+        self._page_prev_pixmaps.clear()
         self._pending_anchor = initial_anchor
         self._pending_pixmaps = list(initial_pixmaps) if initial_pixmaps is not None else None
         self.cancel_signature_placement()
@@ -501,8 +504,13 @@ class PdfEditCanvas(QWidget):
         self.clear_active_selection()
         self._selected_overlay_idx = -1
         self._drag_before_snapshot = None
-        self._page_prev_pixmaps.clear()
-        QTimer.singleShot(0, self._layout_and_schedule)
+        QTimer.singleShot(0, self._on_initial_layout)
+
+    def _on_initial_layout(self):
+        if not self._doc:
+            return
+        if not self._page_offsets or self._pending_anchor is not None or self._pending_pixmaps is not None:
+            self._layout_and_schedule()
 
     def apply_view_state(
         self,
@@ -518,16 +526,18 @@ class PdfEditCanvas(QWidget):
         target_zf = float(zoom_factor) if zoom_factor and zoom_factor > 0 else 1.0
         zoom_changed = abs(self._zoom_factor - target_zf) > 1e-4
         self._zoom_factor = target_zf
+        self._pending_anchor = anchor
 
-        if zoom_changed or not self._page_offsets:
-            self._pending_anchor = anchor
+        if not self._page_offsets:
+            return
+
+        if zoom_changed:
             self._invalidate_and_relayout(anchor=anchor)
             return
 
         if anchor is None:
             return
 
-        self._pending_anchor = anchor
         sa = self._get_scroll_area()
         if not sa:
             return
@@ -543,7 +553,7 @@ class PdfEditCanvas(QWidget):
             if sb_v:
                 sb_v.setValue(max(0, min(ty, sb_v.maximum())))
             vp = sa.viewport()
-            if vp and vp.width() > 100 and vp.height() > 100:
+            if self.isVisible() and vp and vp.width() > 200 and vp.height() > 150:
                 self._pending_anchor = None
 
     def zoom_in(self, anchor_pos: QPoint | None = None):
@@ -728,6 +738,14 @@ class PdfEditCanvas(QWidget):
     def relayout_to_viewport(self):
         if not self._doc:
             return
+        sa = self._get_scroll_area()
+        if sa and sa.viewport() and sa.viewport().width() > 100:
+            avail = sa.viewport().width() - 8
+        else:
+            avail = self.width() - 8
+        avail = max(avail, 300)
+        if self._page_offsets and abs(avail - self._base_avail) <= 2 and self._pending_anchor is None:
+            return
         anchor = self._pending_anchor if self._pending_anchor is not None else self._calc_anchor()
         old_pixmaps = [
             p if p is not None else prev
@@ -770,6 +788,11 @@ class PdfEditCanvas(QWidget):
         if old_pixmaps is None and self._pending_pixmaps is not None:
             old_pixmaps = self._pending_pixmaps
             self._pending_pixmaps = None
+        if old_pixmaps is None and (self._page_pixmaps or self._page_prev_pixmaps):
+            old_pixmaps = [
+                p if p is not None else prev
+                for p, prev in zip(self._page_pixmaps, self._page_prev_pixmaps)
+            ]
         if anchor is None and self._pending_anchor is not None:
             anchor = self._pending_anchor
 
@@ -830,7 +853,12 @@ class PdfEditCanvas(QWidget):
                     if sb_v:
                         sb_v.setValue(max(0, min(target_scroll_y, max_scroll_y)))
                     self._page_idx = target_page
-                    if vp.width() > 100 and vp.height() > 100 and anchor == self._pending_anchor:
+                    if (
+                        self.isVisible()
+                        and vp.width() > 200
+                        and vp.height() > 150
+                        and anchor == self._pending_anchor
+                    ):
                         self._pending_anchor = None
 
         self.zoom_changed.emit(round(self._zoom_factor * 100))

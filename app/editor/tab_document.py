@@ -146,12 +146,21 @@ class TabDocumentMixin(_Base):
         target_page = int(viewer_view.get("page_idx", 0) or 0)
         target_zf = float(viewer_view.get("zoom_factor", 1.0) or 1.0)
         anchor = viewer_view.get("anchor")
+        pixmaps = viewer_view.get("pixmaps")
+
+        if pixmaps is not None and not self._canvas._page_pixmaps and self._canvas._pending_pixmaps is None:
+            self._canvas._pending_pixmaps = list(pixmaps)
 
         self._page_idx = target_page
         self._canvas.apply_view_state(target_zf, target_page, anchor)
         self._update_nav()
         if hasattr(self, "_thumbnails"):
+            self._thumbnails.blockSignals(True)
             self._thumbnails.set_current_page(self._page_idx)
+            self._thumbnails.blockSignals(False)
+        win: Any = self.window() if hasattr(self, "window") else None
+        if win and hasattr(win, "_update_page_nav"):
+            win._update_page_nav()
 
     def _save_current_doc_state(self):
         """Save the current document's pending edits, scroll, zoom, and active page before switching away."""
@@ -284,15 +293,21 @@ class TabDocumentMixin(_Base):
         self._update_nav()
 
         if hasattr(self, "_thumbnails"):
+            self._thumbnails.blockSignals(True)
             self._thumbnails.set_document(p, n, password=self._pdf_password)
             self._thumbnails.set_current_page(self._page_idx)
+            self._thumbnails.blockSignals(False)
             if hasattr(self, "_sync_thumbnails"):
                 self._sync_thumbnails()
 
         if hasattr(self, "_populate_toc"):
             self._populate_toc(self._canvas._doc)
 
-        if saved:
+        win: Any = self.window() if hasattr(self, "window") else None
+        if win and hasattr(win, "_update_page_nav"):
+            win._update_page_nav()
+
+        if saved and viewer_view is None:
             v_val = saved.get("scroll_v", 0)
             h_val = saved.get("scroll_h", 0)
             QTimer.singleShot(
@@ -301,7 +316,7 @@ class TabDocumentMixin(_Base):
                     self._restore_scroll(v, h, token=tok) if isValid(self) else None
                 ),
             )
-        else:
+        elif not saved:
             QTimer.singleShot(100, lambda: self._load_existing_annotations() if isValid(self) else None)
 
         QTimer.singleShot(200, lambda: self._load_form_fields(p) if isValid(self) else None)
