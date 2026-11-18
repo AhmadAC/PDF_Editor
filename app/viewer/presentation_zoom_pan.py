@@ -59,6 +59,10 @@ class PresentationZoomPanMixin(_Base):
         ph = info["ph"]
         info["offset_x"] = float(self._pan_x) if pw > self.width() else (self.width() - pw) / 2.0
         info["offset_y"] = float(self._pan_y) if ph > self.height() else (self.height() - ph) / 2.0
+        
+        # Keep annotation overlay geometry and transformation explicitly locked to the rendered page surface
+        if hasattr(self, "_overlay") and self._overlay is not None:
+            self._overlay.setGeometry(self.rect())
 
     def _zoom_in(self, anchor_pos: QPoint | None = None):
         old_zoom = self._zoom if self._zoom and self._zoom > 0 else self._base_fit_zoom

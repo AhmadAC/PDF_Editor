@@ -1,4 +1,4 @@
-# app\viewer\annotation_layer.py
+# app/viewer/annotation_layer.py
 """PDF_Editor – Annotation overlay for presentation mode (pen, highlighter, eraser, laser, type)."""
 
 from __future__ import annotations
@@ -138,7 +138,6 @@ def auto_fit_box_to_text(box: TextBox, overlay_width: float, overlay_height: flo
     x0 = box.rect.left()
     y0 = box.rect.top()
 
-    # Shift left if the expanded box reaches past the right boundary of the window
     if x0 + needed_w > overlay_width - 10.0:
         x0 = max(10.0, overlay_width - 10.0 - needed_w)
 
@@ -152,7 +151,6 @@ def auto_fit_box_to_text(box: TextBox, overlay_width: float, overlay_height: flo
 
 
 def _draw_edge_type_icon(painter: QPainter, size: int, color: QColor) -> None:
-    """Draw the Microsoft Edge-style [T] icon: rounded square with serif T."""
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     pen = QPen(color, max(1.5, size * 0.08), Qt.PenStyle.SolidLine,
                Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
@@ -180,7 +178,6 @@ def _draw_edge_type_icon(painter: QPainter, size: int, color: QColor) -> None:
 
 
 def _draw_stroke_btn_icon(painter: QPainter, size: int, color: QColor) -> None:
-    """Draw icon representing text outline stroke: stylized double-contoured T."""
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     pen = QPen(color, max(1.6, size * 0.08), Qt.PenStyle.SolidLine,
                Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
@@ -201,7 +198,6 @@ def _draw_stroke_btn_icon(painter: QPainter, size: int, color: QColor) -> None:
 
 
 def _draw_cloud_btn_icon(painter: QPainter, size: int, color: QColor) -> None:
-    """Draw a clean cloud icon representing the 40% translucent background."""
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     pen = QPen(color, max(1.6, size * 0.08), Qt.PenStyle.SolidLine,
                Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
@@ -315,7 +311,6 @@ class AnnotationOverlay(QWidget):
         self._current_page: int = 0
         self._laser_pos: QPoint | None = None
 
-        # Text tool state
         self._active_box: TextBox | None = None
         self._cursor_pos: int = 0
         self._cursor_visible: bool = True
@@ -326,7 +321,6 @@ class AnnotationOverlay(QWidget):
         self._drag_start_rect: QRectF = QRectF()
         self._moving_box: bool = False
 
-        # Defaults for new boxes
         self._default_text_stroke: bool = False
         self._default_text_cloud: bool = False
 
@@ -334,7 +328,6 @@ class AnnotationOverlay(QWidget):
         self._blink_timer.setInterval(500)
         self._blink_timer.timeout.connect(self._toggle_cursor_blink)
 
-        # Undo / Redo stacks
         self._undo_stack: list[dict] = []
         self._redo_stack: list[dict] = []
 
@@ -344,8 +337,6 @@ class AnnotationOverlay(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self._apply_cursor()
-
-    # ── Public API ────────────────────────────────────────────────────────
 
     def set_tool(self, tool: int) -> None:
         new_tool = ToolMode(int(tool))
@@ -432,10 +423,7 @@ class AnnotationOverlay(QWidget):
         self._laser_pos = QPoint(pos) if pos is not None else None
         self.update()
 
-    # ── Stroke & Cloud Toggles ────────────────────────────────────────────
-
     def toggle_text_stroke(self) -> bool:
-        """Toggle the 1-pixel black text outline on active box or default for new boxes."""
         self._push_undo()
         if self._active_box:
             self._active_box.has_stroke = not self._active_box.has_stroke
@@ -447,7 +435,6 @@ class AnnotationOverlay(QWidget):
         return res
 
     def toggle_text_cloud(self) -> bool:
-        """Toggle the 40% white opacity background on active box or default for new boxes."""
         self._push_undo()
         if self._active_box:
             self._active_box.has_cloud = not self._active_box.has_cloud
@@ -467,8 +454,6 @@ class AnnotationOverlay(QWidget):
         if self._active_box:
             return self._active_box.has_cloud
         return self._default_text_cloud
-
-    # ── Undo / Redo ───────────────────────────────────────────────────────
 
     def _push_undo(self) -> None:
         page_state = {
@@ -521,8 +506,6 @@ class AnnotationOverlay(QWidget):
         self.update()
         return True
 
-    # ── Text Box Internals ────────────────────────────────────────────────
-
     def _has_text_selection(self) -> bool:
         return (self._sel_start != -1 and self._sel_end != -1 and self._sel_start != self._sel_end)
 
@@ -569,15 +552,21 @@ class AnnotationOverlay(QWidget):
                 return box
         return None
 
-    # ── Cursors & Tools ───────────────────────────────────────────────────
-
     def _apply_cursor(self) -> None:
         if self._tool == ToolMode.POINTER:
             self.unsetCursor()
             return
         self.setCursor(_cursor_for_tool(self._tool, dark=self._dark_mode))
 
+    def _untransformed_point(self, pos: QPoint) -> QPoint:
+        """Convert screen/widget mouse position into unpanned page canvas coordinates."""
+        parent = self.parentWidget()
+        if parent is not None and hasattr(parent, "_pan_x") and hasattr(parent, "_pan_y"):
+            return QPoint(pos.x() - int(parent._pan_x), pos.y() - int(parent._pan_y))
+        return pos
+
     def _new_stroke(self, start: QPoint) -> Stroke:
+        unpanned_start = self._untransformed_point(start)
         if self._tool == ToolMode.HIGHLIGHTER:
             color = QColor(self._highlighter_color)
             width = self._highlighter_width
@@ -587,11 +576,12 @@ class AnnotationOverlay(QWidget):
             width = self._pen_width
             kind = ToolMode.PEN
         path = QPainterPath()
-        path.moveTo(start)
+        path.moveTo(unpanned_start)
         return Stroke(path=path, color=color, width=width, kind=kind,
-                      points=[QPoint(start)])
+                      points=[QPoint(unpanned_start)])
 
     def _erase_at(self, pos: QPoint) -> bool:
+        unpanned_pos = self._untransformed_point(pos)
         page_strokes = self._strokes.get(self._current_page)
         hit_stroke = False
         if page_strokes:
@@ -602,7 +592,7 @@ class AnnotationOverlay(QWidget):
                 stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
                 stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
                 outline = stroker.createStroke(s.path)
-                if outline.contains(pos):
+                if outline.contains(unpanned_pos):
                     self._push_undo()
                     page_strokes.pop(i)
                     if not page_strokes:
@@ -612,7 +602,7 @@ class AnnotationOverlay(QWidget):
 
         page_boxes = self._text_boxes.get(self._current_page, [])
         for i in range(len(page_boxes) - 1, -1, -1):
-            if page_boxes[i].rect.contains(pos):
+            if page_boxes[i].rect.contains(unpanned_pos):
                 self._push_undo()
                 if self._active_box is page_boxes[i]:
                     self._active_box = None
@@ -624,42 +614,39 @@ class AnnotationOverlay(QWidget):
 
         return hit_stroke
 
-    # ── Events ────────────────────────────────────────────────────────────
-
     def mousePressEvent(self, e):
         if e.button() != Qt.MouseButton.LeftButton:
             super().mousePressEvent(e)
             return
         pos = e.position().toPoint()
         pos_f = QPointF(pos)
+        unpanned_pos_f = QPointF(self._untransformed_point(pos))
 
         parent = self.parentWidget()
         show_hud_fn = getattr(parent, "_show_hud", None)
         if callable(show_hud_fn):
             show_hud_fn()
 
-        # Check resize handles on active box
         if self._active_box is not None:
-            handle = self._handle_at(self._active_box, pos_f)
+            handle = self._handle_at(self._active_box, unpanned_pos_f)
             if handle != self.HANDLE_NONE:
                 self._drag_handle = handle
-                self._drag_start_pos = pos_f
+                self._drag_start_pos = unpanned_pos_f
                 self._drag_start_rect = QRectF(self._active_box.rect)
                 e.accept()
                 return
-            if self._active_box.rect.contains(pos_f):
+            if self._active_box.rect.contains(unpanned_pos_f):
                 self._clear_text_selection()
                 self._cursor_pos = len(self._active_box.text)
                 self._moving_box = True
-                self._drag_start_pos = pos_f
+                self._drag_start_pos = unpanned_pos_f
                 self._drag_start_rect = QRectF(self._active_box.rect)
                 self.update()
                 e.accept()
                 return
 
-        # Check existing text box selection in TYPE or POINTER mode
         if self._tool in (ToolMode.TYPE, ToolMode.POINTER):
-            hit_box = self._find_box_at(pos_f)
+            hit_box = self._find_box_at(unpanned_pos_f)
             if hit_box:
                 if self._active_box and not self._active_box.text.strip() and self._active_box is not hit_box:
                     self._remove_box(self._active_box)
@@ -669,13 +656,12 @@ class AnnotationOverlay(QWidget):
                 self._cursor_visible = True
                 self._blink_timer.start()
                 self._moving_box = True
-                self._drag_start_pos = pos_f
+                self._drag_start_pos = unpanned_pos_f
                 self._drag_start_rect = QRectF(hit_box.rect)
                 self.update()
                 e.accept()
                 return
 
-        # Clicking on empty space in TYPE mode -> create snug text box that expands as you type
         if self._tool == ToolMode.TYPE:
             if self._active_box and not self._active_box.text.strip():
                 self._remove_box(self._active_box)
@@ -687,12 +673,17 @@ class AnnotationOverlay(QWidget):
             init_w = max(52.0, fm.averageCharWidth() * 3 + 16.0)
             init_h = max(34.0, fm.lineSpacing() + 12.0)
 
-            x_init = pos_f.x()
-            y_init = pos_f.y()
-            if x_init + init_w > self.width() - 10:
-                x_init = max(10.0, self.width() - init_w - 10)
-            if y_init + init_h > self.height() - 10:
-                y_init = max(10.0, self.height() - init_h - 10)
+            x_init = unpanned_pos_f.x()
+            y_init = unpanned_pos_f.y()
+            
+            # Bound inside rendered page dimensions if available
+            pw = getattr(parent, "_rendered_pw", float(self.width())) if parent else float(self.width())
+            ph = getattr(parent, "_rendered_ph", float(self.height())) if parent else float(self.height())
+
+            if x_init + init_w > pw - 10:
+                x_init = max(10.0, pw - init_w - 10)
+            if y_init + init_h > ph - 10:
+                y_init = max(10.0, ph - init_h - 10)
 
             new_box = TextBox(
                 rect=QRectF(x_init, y_init, init_w, init_h),
@@ -714,7 +705,6 @@ class AnnotationOverlay(QWidget):
             e.accept()
             return
 
-        # Deselect active box if clicking elsewhere
         if self._active_box is not None:
             if not self._active_box.text.strip():
                 self._remove_box(self._active_box)
@@ -744,11 +734,11 @@ class AnnotationOverlay(QWidget):
             show_hud_fn()
         pos = e.position().toPoint()
         pos_f = QPointF(pos)
+        unpanned_pos_f = QPointF(self._untransformed_point(pos))
 
-        # Resizing text box with dynamic font scaling
         if self._active_box and self._drag_handle != self.HANDLE_NONE:
-            dx = pos_f.x() - self._drag_start_pos.x()
-            dy = pos_f.y() - self._drag_start_pos.y()
+            dx = unpanned_pos_f.x() - self._drag_start_pos.x()
+            dy = unpanned_pos_f.y() - self._drag_start_pos.y()
             r = QRectF(self._drag_start_rect)
             min_w, min_h = 36.0, 24.0
 
@@ -766,15 +756,16 @@ class AnnotationOverlay(QWidget):
                 r.setTop(min(r.bottom() - min_h, r.top() + dy))
 
             self._active_box.rect = r
+            pw = getattr(parent, "_rendered_pw", float(self.width())) if parent else float(self.width())
+            ph = getattr(parent, "_rendered_ph", float(self.height())) if parent else float(self.height())
             self._active_box.font_size = fit_font_size(self._active_box.text, r)
             self.update()
             e.accept()
             return
 
-        # Moving active text box
         if self._active_box and self._moving_box and (e.buttons() & Qt.MouseButton.LeftButton):
-            dx = pos_f.x() - self._drag_start_pos.x()
-            dy = pos_f.y() - self._drag_start_pos.y()
+            dx = unpanned_pos_f.x() - self._drag_start_pos.x()
+            dy = unpanned_pos_f.y() - self._drag_start_pos.y()
             r = QRectF(self._drag_start_rect)
             r.translate(dx, dy)
             self._active_box.rect = r
@@ -782,16 +773,15 @@ class AnnotationOverlay(QWidget):
             e.accept()
             return
 
-        # Hover cursors for handles and boxes
         if self._active_box and self._tool in (ToolMode.TYPE, ToolMode.POINTER):
-            handle = self._handle_at(self._active_box, pos_f)
+            handle = self._handle_at(self._active_box, unpanned_pos_f)
             if handle in (self.HANDLE_TL, self.HANDLE_BR):
                 self.setCursor(Qt.CursorShape.SizeFDiagCursor)
                 return
             if handle in (self.HANDLE_TR, self.HANDLE_BL):
                 self.setCursor(Qt.CursorShape.SizeBDiagCursor)
                 return
-            if self._active_box.rect.contains(pos_f):
+            if self._active_box.rect.contains(unpanned_pos_f):
                 self.setCursor(Qt.CursorShape.SizeAllCursor)
                 return
             self._apply_cursor()
@@ -803,12 +793,13 @@ class AnnotationOverlay(QWidget):
             return
 
         if self._current_stroke is not None and (e.buttons() & Qt.MouseButton.LeftButton):
+            unpanned_curr = self._untransformed_point(pos)
             last = self._current_stroke.points[-1]
-            dx = pos.x() - last.x()
-            dy = pos.y() - last.y()
+            dx = unpanned_curr.x() - last.x()
+            dy = unpanned_curr.y() - last.y()
             if dx * dx + dy * dy >= _POINT_MERGE_SQ:
-                self._current_stroke.path.lineTo(pos)
-                self._current_stroke.points.append(QPoint(pos))
+                self._current_stroke.path.lineTo(unpanned_curr)
+                self._current_stroke.points.append(QPoint(unpanned_curr))
                 self.update()
             e.accept()
             return
@@ -849,7 +840,6 @@ class AnnotationOverlay(QWidget):
         key = e.key()
         modifiers = e.modifiers()
 
-        # Global Undo/Redo shortcuts
         if modifiers & Qt.KeyboardModifier.ControlModifier:
             if key == Qt.Key.Key_Z:
                 if modifiers & Qt.KeyboardModifier.ShiftModifier:
@@ -863,9 +853,11 @@ class AnnotationOverlay(QWidget):
                 e.accept()
                 return
 
-        # Typing in active text box with dynamic auto-expansion
         if self._active_box is not None:
-            # Ctrl+A Select All in text box
+            parent = self.parentWidget()
+            pw = getattr(parent, "_rendered_pw", float(self.width())) if parent else float(self.width())
+            ph = getattr(parent, "_rendered_ph", float(self.height())) if parent else float(self.height())
+
             if (modifiers & Qt.KeyboardModifier.ControlModifier) and key == Qt.Key.Key_A:
                 self._sel_start = 0
                 self._sel_end = len(self._active_box.text)
@@ -875,7 +867,6 @@ class AnnotationOverlay(QWidget):
                 e.accept()
                 return
 
-            # Pressing Enter adds newline and expands text box downward
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self._push_undo()
                 t_str = self._active_box.text
@@ -884,7 +875,7 @@ class AnnotationOverlay(QWidget):
                 self._active_box.text = t_str
                 self._cursor_pos = s_min + 1
                 self._clear_text_selection()
-                auto_fit_box_to_text(self._active_box, self.width(), self.height())
+                auto_fit_box_to_text(self._active_box, pw, ph)
                 self._cursor_visible = True
                 self.update()
                 e.accept()
@@ -901,7 +892,7 @@ class AnnotationOverlay(QWidget):
                 elif self._cursor_pos > 0:
                     self._active_box.text = t_str[:self._cursor_pos - 1] + t_str[self._cursor_pos:]
                     self._cursor_pos -= 1
-                auto_fit_box_to_text(self._active_box, self.width(), self.height())
+                auto_fit_box_to_text(self._active_box, pw, ph)
                 self._cursor_visible = True
                 self.update()
                 e.accept()
@@ -915,13 +906,13 @@ class AnnotationOverlay(QWidget):
                     self._active_box.text = t_str[:s_min] + t_str[s_max:]
                     self._cursor_pos = s_min
                     self._clear_text_selection()
-                    auto_fit_box_to_text(self._active_box, self.width(), self.height())
+                    auto_fit_box_to_text(self._active_box, pw, ph)
                     self._cursor_visible = True
                     self.update()
                 elif self._cursor_pos < len(t_str):
                     self._push_undo()
                     self._active_box.text = t_str[:self._cursor_pos] + t_str[self._cursor_pos + 1:]
-                    auto_fit_box_to_text(self._active_box, self.width(), self.height())
+                    auto_fit_box_to_text(self._active_box, pw, ph)
                     self._cursor_visible = True
                     self.update()
                 e.accept()
@@ -975,7 +966,6 @@ class AnnotationOverlay(QWidget):
                 e.accept()
                 return
 
-            # Clipboard Copy
             if (modifiers & Qt.KeyboardModifier.ControlModifier) and key == Qt.Key.Key_C:
                 if self._has_text_selection():
                     s_min, s_max = self._get_selection_range()
@@ -985,7 +975,6 @@ class AnnotationOverlay(QWidget):
                 e.accept()
                 return
 
-            # Clipboard Paste
             if (modifiers & Qt.KeyboardModifier.ControlModifier) and key == Qt.Key.Key_V:
                 clip_text = QApplication.clipboard().text()
                 if clip_text:
@@ -996,13 +985,12 @@ class AnnotationOverlay(QWidget):
                     self._active_box.text = t_str
                     self._cursor_pos = s_min + len(clip_text)
                     self._clear_text_selection()
-                    auto_fit_box_to_text(self._active_box, self.width(), self.height())
+                    auto_fit_box_to_text(self._active_box, pw, ph)
                     self._cursor_visible = True
                     self.update()
                 e.accept()
                 return
 
-            # Typing printable characters expands the box width in real time
             char = e.text()
             if char and char.isprintable():
                 self._push_undo()
@@ -1012,7 +1000,7 @@ class AnnotationOverlay(QWidget):
                 self._active_box.text = t_str
                 self._cursor_pos = s_min + len(char)
                 self._clear_text_selection()
-                auto_fit_box_to_text(self._active_box, self.width(), self.height())
+                auto_fit_box_to_text(self._active_box, pw, ph)
                 self._cursor_visible = True
                 self.update()
                 e.accept()
@@ -1031,7 +1019,12 @@ class AnnotationOverlay(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setBrush(Qt.BrushStyle.NoBrush)
 
-        # 1. Draw strokes
+        # Draw strokes fixed in page canvas space (transforming with pan offsets)
+        p.save()
+        parent = self.parentWidget()
+        if parent is not None and hasattr(parent, "_pan_x") and hasattr(parent, "_pan_y"):
+            p.translate(float(parent._pan_x), float(parent._pan_y))
+
         for s in self._strokes.get(self._current_page, ()):
             pen = QPen(s.color, s.width)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -1047,7 +1040,6 @@ class AnnotationOverlay(QWidget):
             p.setPen(pen)
             p.drawPath(s.path)
 
-        # 2. Draw text boxes
         for box in self._text_boxes.get(self._current_page, []):
             is_active = (box is self._active_box)
             font = QFont("Segoe UI", int(box.font_size))
@@ -1055,7 +1047,6 @@ class AnnotationOverlay(QWidget):
             p.setFont(font)
             fm = QFontMetricsF(font)
 
-            # Cloud background: 40% white opacity
             if box.has_cloud:
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(QColor(255, 255, 255, 102))
@@ -1064,7 +1055,6 @@ class AnnotationOverlay(QWidget):
 
             inner_rect = box.rect.adjusted(7, 5, -7, -5)
 
-            # 1-pixel black outline stroke if enabled
             if box.has_stroke:
                 p.setPen(QPen(QColor("#000000")))
                 for dx, dy in _OUTLINE_OFFSETS:
@@ -1074,7 +1064,6 @@ class AnnotationOverlay(QWidget):
                         box.text,
                     )
 
-            # Draw text
             p.setPen(QPen(box.color))
             p.drawText(
                 inner_rect,
@@ -1082,19 +1071,16 @@ class AnnotationOverlay(QWidget):
                 box.text,
             )
 
-            # Active selection frame and handles (PyperPoint Fluent Blue)
             if is_active:
                 p.setPen(QPen(QColor(ACCENT), 1.5, Qt.PenStyle.DashLine))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRect(box.rect)
 
-                # Resize handles at 4 corners
                 for h_rect in self._box_handles(box.rect).values():
                     p.setPen(QPen(QColor(ACCENT), 1.5))
                     p.setBrush(QColor("#FFFFFF"))
                     p.drawRect(h_rect)
 
-                # Selection text highlight (Ctrl+A)
                 if self._has_text_selection():
                     s_min, s_max = self._get_selection_range()
                     selected_chars = box.text[s_min:s_max]
@@ -1108,7 +1094,6 @@ class AnnotationOverlay(QWidget):
                     sh = fm.height()
                     p.fillRect(QRectF(sx, sy, sw, sh), QColor(0, 120, 212, 90))
 
-                # Blinking text cursor
                 elif self._cursor_visible and self.hasFocus():
                     before_cursor = box.text[:self._cursor_pos]
                     lines = before_cursor.split("\n")
@@ -1121,7 +1106,9 @@ class AnnotationOverlay(QWidget):
                     p.setPen(QPen(box.color, 1.8))
                     p.drawLine(QPointF(cx, cy), QPointF(cx, cy + cursor_h))
 
-        # 3. Draw laser pointer (20% opacity)
+        p.restore()
+
+        # 3. Draw laser pointer (20% opacity) in screen space
         if self._tool == ToolMode.LASER and self._laser_pos is not None:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(239, 68, 68, 51))
