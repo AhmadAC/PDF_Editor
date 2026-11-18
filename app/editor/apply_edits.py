@@ -1,4 +1,3 @@
-
 # app/editor/apply_edits.py
 """PDF_Editor – Two-phase edit-application dispatcher supporting multi-color text runs, grouped objects, z-order, opacity, rotation, flip, and batched surgical image/drawing removal."""
 
