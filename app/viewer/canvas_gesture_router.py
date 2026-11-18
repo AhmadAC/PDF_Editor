@@ -1,5 +1,3 @@
-
-
 # app/viewer/canvas_gesture_router.py
 """PDF_Editor – Mouse gesture routing for canvas interactions (signatures, crop, drag-to-highlight)."""
 
@@ -293,7 +291,7 @@ class CanvasGestureRouter:
                 e.accept()
                 return
 
-        # Direct Draw Highlight (Rectangle) committing to PDF
+        # Direct Draw Highlight (Rectangle) committing to PDF with crisp rectangular geometry on top
         if getattr(c, "_rect_hi_mode", False) and getattr(c, "_rect_hi_drag_start", None):
             start = c._rect_hi_drag_start
             end = e.position().toPoint()
@@ -319,9 +317,11 @@ class CanvasGestureRouter:
                         if c._password and doc.needs_pass:
                             doc.authenticate(c._password)
                         page = doc[page_idx]
-                        annot = page.add_highlight_annot(pdf_rect)
-                        annot.set_colors(stroke=hi_color)
-                        annot.update()
+                        col = tuple(float(x) for x in hi_color[:3]) if isinstance(hi_color, (list, tuple)) and len(hi_color) >= 3 else (1.0, 1.0, 0.0)
+                        shape = page.new_shape()
+                        shape.draw_rect(pdf_rect)
+                        shape.finish(color=None, fill=col, fill_opacity=0.45, stroke_opacity=0.0)
+                        shape.commit(overlay=True)
 
                         parent = c.parentWidget()
                         while parent and not hasattr(parent, "_save_and_reload"):

@@ -241,13 +241,15 @@ class CanvasActionMenuBuilder:
                 doc.authenticate(c._password)
 
             first_p = min(page_rects.keys())
+            col = tuple(float(x) for x in color_tuple[:3]) if isinstance(color_tuple, (list, tuple)) and len(color_tuple) >= 3 else (1.0, 1.0, 0.0)
             for p_idx, r_list in page_rects.items():
                 if 0 <= p_idx < doc.page_count:
                     page = doc[p_idx]
                     for r in r_list:
-                        annot = page.add_highlight_annot(r)
-                        annot.set_colors(stroke=color_tuple)
-                        annot.update()
+                        shape = page.new_shape()
+                        shape.draw_rect(r)
+                        shape.finish(color=None, fill=col, fill_opacity=0.45, stroke_opacity=0.0)
+                        shape.commit(overlay=True)
 
             parent = c.parentWidget()
             while parent and not hasattr(parent, "_save_and_reload"):
@@ -312,7 +314,6 @@ class CanvasActionMenuBuilder:
         if not hasattr(win, "_open_tool_by_name"):
             return
 
-        # Capture the exact viewer state and clicked PDF position BEFORE switching tools
         click_src_page: int | None = None
         click_pdf_pt: fitz.Point | None = None
         viewer_ref = getattr(win, "_viewer", None)

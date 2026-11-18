@@ -454,10 +454,11 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
     for p_idx, pairs in text_redactions.items():
         _apply_batched_redactions(doc[p_idx], pairs, images=img_none, graphics=la_none, text=txt_remove)
 
-    # Phase 2: Insert back-layer items first, then foreground items
+    # Phase 2: Insert back-layer items first, then foreground items.
+    # Highlights are strictly placed in front_edits so they always stay on top.
     visible_edits = [e for e in active_edits if not e.get("_deleted") and e.get("_visible", True)]
-    back_edits = [e for e in visible_edits if e.get("_z_back")]
-    front_edits = [e for e in visible_edits if not e.get("_z_back")]
+    back_edits = [e for e in visible_edits if e.get("_z_back") and e.get("type") != "highlight"]
+    front_edits = [e for e in visible_edits if not e.get("_z_back") or e.get("type") == "highlight"]
     ordered_phase2 = list(reversed(back_edits)) + front_edits
 
     embedded_font = False
@@ -595,23 +596,21 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                 pg.insert_image(e["rect"], filename=path, overlay=overlay_flag, keep_proportion=False)
 
         elif etype == "highlight":
-            rects = e.get("rects")
             stroke_color = e.get("color", (1, 1, 0))
-            if rects:
-                for r_item in rects:
-                    a = pg.add_highlight_annot(fitz.Rect(r_item))
-                    a.set_colors(stroke=stroke_color)
-                    if op < 0.999:
-                        a.update(opacity=op)
-                    else:
-                        a.update()
-            elif "rect" in e:
-                a = pg.add_highlight_annot(fitz.Rect(e["rect"]))
-                a.set_colors(stroke=stroke_color)
-                if op < 0.999:
-                    a.update(opacity=op)
-                else:
-                    a.update()
+            col = tuple(float(x) for x in stroke_color[:3]) if isinstance(stroke_color, (list, tuple)) and len(stroke_color) >= 3 else (1.0, 1.0, 0.0)
+            rects = e.get("rects")
+            target_rects = [fitz.Rect(r) for r in rects] if rects else ([fitz.Rect(e["rect"])] if "rect" in e else [])
+            fill_alpha = max(0.05, min(1.0, 0.45 * op))
+            for r_item in target_rects:
+                shape = pg.new_shape()
+                shape.draw_rect(r_item)
+                shape.finish(
+                    color=None,
+                    fill=col,
+                    fill_opacity=fill_alpha,
+                    stroke_opacity=0.0,
+                )
+                shape.commit(overlay=True)
 
         elif etype == "note":
             pg.add_text_annot(e["point"], e["text"])

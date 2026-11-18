@@ -237,7 +237,7 @@ class CanvasInlineTextManager:
         self.edit.hide()
         self.edit.installEventFilter(canvas)
         self.edit.returnPressed.connect(self.commit)
-        self.edit.textChanged.connect(lambda _: self.reposition() if self.mode in ("insert", "edit") else None)
+        self.edit.textChanged.connect(lambda *args: self.reposition() if self.mode in ("insert", "edit") else None)
 
         self.mode: str | None = None
         self.span: dict | None = None
