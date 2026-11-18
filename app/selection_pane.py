@@ -1,5 +1,3 @@
-
-
 # app/selection_pane.py
 """PDF_Editor – Selection Pane: inspector window for object layer order, opacity, locking, visibility, and renaming."""
 
@@ -30,7 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.constants import ACCENT, ACCENT_H, BG_CARD, BG_INPUT, BORDER, TEXT_PRI, TEXT_SEC, _LP, _LQ
-from app.editor.canvas_overlay1 import snapshot_overlay
+from app.editor.canvas_overlay1 import overlay_pdf_rect, snapshot_overlay
 from app.utils import (
     SVG_ARROW_DOWN,
     SVG_ARROW_UP,
@@ -79,7 +77,7 @@ _ICON_BY_TYPE = {
 
 
 class _SelectionRowWidget(QWidget):
-    """Custom row widget inside Selection Pane with layer badge, icon, rename line edit, opacity spinbox, lock, and eye toggle."""
+    """Custom row widget inside Selection Pane with layer badge, icon, label/name, opacity spinbox, lock, and eye toggle."""
 
     visibility_toggled = Signal(bool)
     lock_toggled = Signal(bool)
@@ -98,8 +96,9 @@ class _SelectionRowWidget(QWidget):
         self._dark = dark
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 3, 6, 3)
-        layout.setSpacing(6)
+        layout.setContentsMargins(6, 4, 8, 4)
+        layout.setSpacing(8)
+        layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         fg = TEXT_PRI if dark else "#1A2B28"
         sec = TEXT_SEC if dark else "#6B7280"
@@ -120,15 +119,23 @@ class _SelectionRowWidget(QWidget):
         etype = overlay.get("type", "drawing")
         svg_src = _ICON_BY_TYPE.get(etype, SVG_FILE_PDF)
         ico_lbl = QLabel()
-        ico_lbl.setPixmap(svg_icon(svg_src, color=ACCENT if not overlay.get("_deleted") else "#9CA3AF", size=15).pixmap(15, 15))
-        ico_lbl.setFixedSize(16, 16)
+        ico_lbl.setPixmap(
+            svg_icon(svg_src, color=ACCENT if not overlay.get("_deleted") else "#9CA3AF", size=16).pixmap(16, 16)
+        )
+        ico_lbl.setFixedSize(18, 18)
+        ico_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(ico_lbl)
 
-        # 3. Editable Name Label
-        self.name_edit = QLineEdit(self._default_friendly_name(overlay))
-        self.name_edit.setReadOnly(True)
-        self.name_edit.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.name_edit.setStyleSheet("border: none; background: transparent; color: " + fg + "; font-size: 9.5pt;")
+        # 3. Clean Name Display Label (primary view)
+        disp_name = self._default_friendly_name(overlay)
+        self.name_lbl = QLabel(disp_name)
+        self.name_lbl.setToolTip(disp_name)
+        self.name_lbl.setStyleSheet(f"color: {fg}; font-size: 9.5pt; font-weight: 500; background: transparent;")
+        layout.addWidget(self.name_lbl, 1)
+
+        # Inline LineEdit (shown only while actively renaming)
+        self.name_edit = QLineEdit(disp_name)
+        self.name_edit.setVisible(False)
         self.name_edit.editingFinished.connect(self._on_name_editing_finished)
         layout.addWidget(self.name_edit, 1)
 
@@ -138,12 +145,12 @@ class _SelectionRowWidget(QWidget):
         self.spin_opacity.setRange(0, 100)
         self.spin_opacity.setSuffix("%")
         self.spin_opacity.setValue(op_val)
-        self.spin_opacity.setFixedWidth(56)
+        self.spin_opacity.setFixedWidth(54)
         self.spin_opacity.setFixedHeight(22)
         self.spin_opacity.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.spin_opacity.setStyleSheet(
             f"QSpinBox {{ background: {inp_bg}; color: {fg}; border: 1px solid {brd}; "
-            f"border-radius: 4px; font-size: 8.5pt; padding: 0 2px; }}"
+            f"border-radius: 4px; font-size: 8.5pt; padding: 0 1px; min-height: 20px; max-height: 22px; }}"
             f"QSpinBox:focus {{ border-color: {ACCENT}; }}"
         )
         self.spin_opacity.valueChanged.connect(lambda v: self.opacity_changed.emit(v / 100.0))
@@ -174,46 +181,53 @@ class _SelectionRowWidget(QWidget):
         if ov.get("_name"):
             return str(ov["_name"])
         etype = ov.get("type", "object")
-        if etype == "text":
-            txt = (ov.get("text") or "").strip()
-            return f"Text: '{txt[:16]}...'" if len(txt) > 16 else (f"Text: '{txt}'" if txt else "Text Box")
-        if etype == "text_edit":
-            txt = (ov.get("new_text") or ov.get("old_text") or "").strip()
-            return f"Text Edit: '{txt[:16]}...'" if len(txt) > 16 else (f"Text Edit: '{txt}'" if txt else "Text Edit")
+        r = overlay_pdf_rect(ov)
+        rw = int(round(r.width)) if r else 0
+        rh = int(round(r.height)) if r else 0
+
+        if etype in ("text", "text_edit"):
+            txt = (ov.get("new_text") or ov.get("text") or ov.get("old_text") or "").strip().replace("\n", " ")
+            if txt:
+                return f"Text: \"{txt[:22]}...\"" if len(txt) > 22 else f"Text: \"{txt}\""
+            return f"Text Block ({rw}×{rh})" if rw and rh else "Text Block"
         if etype == "image":
             path = ov.get("path", "")
-            base = os.path.basename(path) if path else "Image"
-            return f"Image: {base}" if ov.get("_existing") else f"Image: {base}"
+            base = os.path.basename(path) if path else ""
+            if not ov.get("_existing") and base and not base.startswith("PDF_Editor_"):
+                return f"Image: {base}"
+            if rw and rh:
+                return f"Image ({rw}×{rh})"
+            return "Image"
         if etype == "signature":
-            return "Digital Signature"
+            return f"Signature ({rw}×{rh})" if rw and rh else "Digital Signature"
         if etype == "drawing":
             items = ov.get("items", [])
-            return f"Vector Shape ({len(items)} paths)" if items else "Vector Shape"
+            return f"Vector Shape ({rw}×{rh})" if rw and rh else f"Shape ({len(items)} paths)"
         if etype == "check":
             return "Checkmark Stamp"
         if etype == "cross":
             return "Crossmark Stamp"
         if etype == "highlight":
-            return "Highlight Rect"
+            return f"Highlight ({rw}×{rh})" if rw and rh else "Highlight"
         if etype == "redact":
-            return "Redaction Box"
+            return f"Redaction Box ({rw}×{rh})" if rw and rh else "Redaction Box"
         if etype == "note":
-            txt = (ov.get("text") or "").strip()
-            return f"Note: '{txt[:14]}...'" if len(txt) > 14 else (f"Note: '{txt}'" if txt else "Sticky Note")
+            txt = (ov.get("text") or "").strip().replace("\n", " ")
+            return f"Note: \"{txt[:18]}...\"" if len(txt) > 18 else (f"Note: \"{txt}\"" if txt else "Sticky Note")
         if etype == "draw":
             pts = ov.get("points", [])
-            return f"Pen Stroke ({len(pts)} pts)"
+            return f"Pen Drawing ({len(pts)} pts)"
         return etype.title()
 
     def _update_lock_icon(self, locked: bool) -> None:
         col = "#F59E0B" if locked else (TEXT_SEC if self._dark else _LQ)
-        self.btn_lock.setIcon(svg_icon(SVG_LOCK, color=col, size=13))
+        self.btn_lock.setIcon(svg_icon(SVG_LOCK, color=col, size=14))
         self.btn_lock.setToolTip("Locked (Cannot move/delete)" if locked else "Unlocked")
         self.btn_lock.setStyleSheet("QPushButton { border: none; background: transparent; padding: 0; }")
 
     def _update_vis_icon(self, visible: bool) -> None:
         col = ACCENT if visible else ("#EF4444" if self._dark else "#DC2626")
-        self.btn_vis.setIcon(svg_icon(SVG_EYE if visible else SVG_CLOSE, color=col, size=14))
+        self.btn_vis.setIcon(svg_icon(SVG_EYE if visible else SVG_CLOSE, color=col, size=15))
         self.btn_vis.setToolTip("Visible" if visible else "Hidden")
         self.btn_vis.setStyleSheet("QPushButton { border: none; background: transparent; padding: 0; }")
 
@@ -230,24 +244,25 @@ class _SelectionRowWidget(QWidget):
         self.visibility_toggled.emit(new_val)
 
     def start_editing(self) -> None:
-        self.name_edit.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-        self.name_edit.setReadOnly(False)
+        self.name_lbl.hide()
+        self.name_edit.setText(self.name_lbl.text())
+        self.name_edit.show()
         self.name_edit.selectAll()
         self.name_edit.setFocus()
         self.name_edit.setStyleSheet(
             f"border: 1px solid {ACCENT}; background: {'#262626' if self._dark else '#FFFFFF'}; "
-            f"color: {'#FFFFFF' if self._dark else '#000000'}; border-radius: 3px;"
+            f"color: {'#FFFFFF' if self._dark else '#000000'}; border-radius: 3px; font-size: 9.5pt; padding: 1px 4px;"
         )
 
     def _on_name_editing_finished(self) -> None:
-        self.name_edit.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.name_edit.setReadOnly(True)
-        fg = TEXT_PRI if self._dark else "#1A2B28"
-        self.name_edit.setStyleSheet("border: none; background: transparent; color: " + fg + "; font-size: 9.5pt;")
         new_name = self.name_edit.text().strip()
         if new_name:
             self.overlay["_name"] = new_name
+            self.name_lbl.setText(new_name)
+            self.name_lbl.setToolTip(new_name)
             self.name_changed.emit(new_name)
+        self.name_edit.hide()
+        self.name_lbl.show()
 
     def mousePressEvent(self, event: QMouseEvent):
         event.ignore()
@@ -255,7 +270,8 @@ class _SelectionRowWidget(QWidget):
 
 class SelectionPane(QDialog):
     """Floating inspector window for PDF objects on the active page.
-    Allows viewing all objects, reordering z-layers, adjusting opacity, locking, hiding, and renaming.
+    Automatically scans the page upon opening, shows all objects, and supports layer reordering,
+    opacity adjustment, locking, hiding, and renaming.
     """
 
     def __init__(self, tab_editar: TabEditar, parent=None):
@@ -265,12 +281,14 @@ class SelectionPane(QDialog):
 
         self.setWindowTitle("Selection Pane — Objects & Layers")
         self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
-        self.setMinimumSize(360, 500)
-        self.resize(380, 560)
+        self.setMinimumSize(420, 520)
+        self.resize(460, 580)
 
         self._dark = is_dark()
         self._page_idx = getattr(self.canvas, "_page_idx", 0)
         self._is_syncing_selection = False
+
+        self.canvas._selection_pane_active = True
 
         self._build_ui()
         self._apply_theme()
@@ -279,15 +297,15 @@ class SelectionPane(QDialog):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(8)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
 
         # ── Top Bar: Page selector & counter ─────────────────────────────
         top_bar = QHBoxLayout()
         top_bar.setSpacing(8)
 
         lbl_pg = QLabel("Page:")
-        lbl_pg.setStyleSheet(f"font-weight: 600; color: {TEXT_PRI if self._dark else _LP};")
+        lbl_pg.setStyleSheet(f"font-weight: 600; color: {TEXT_PRI if self._dark else _LP}; font-size: 10pt;")
         top_bar.addWidget(lbl_pg)
 
         self.spin_page = QSpinBox()
@@ -299,14 +317,14 @@ class SelectionPane(QDialog):
         top_bar.addWidget(self.spin_page)
 
         self.lbl_count = QLabel("0 objects")
-        self.lbl_count.setStyleSheet(f"color: {TEXT_SEC if self._dark else _LQ}; font-size: 9pt;")
+        self.lbl_count.setStyleSheet(f"color: {TEXT_SEC if self._dark else _LQ}; font-size: 9.5pt;")
         top_bar.addWidget(self.lbl_count)
         top_bar.addStretch(1)
 
         self.btn_refresh = QPushButton()
-        self.btn_refresh.setIcon(svg_icon(SVG_REFRESH, color=ACCENT, size=14))
-        self.btn_refresh.setFixedSize(26, 26)
-        self.btn_refresh.setToolTip("Refresh objects on page")
+        self.btn_refresh.setIcon(svg_icon(SVG_REFRESH, color=ACCENT, size=15))
+        self.btn_refresh.setFixedSize(28, 28)
+        self.btn_refresh.setToolTip("Rescan and refresh objects on current page")
         self.btn_refresh.clicked.connect(self.refresh)
         top_bar.addWidget(self.btn_refresh)
         root.addLayout(top_bar)
@@ -321,31 +339,35 @@ class SelectionPane(QDialog):
 
         # ── Action Buttons: Arrange & Delete ─────────────────────────────
         act_row1 = QHBoxLayout()
-        act_row1.setSpacing(4)
+        act_row1.setSpacing(6)
 
-        self.btn_front = QPushButton("Bring to Front")
+        self.btn_front = QPushButton("To Front")
         self.btn_front.setIcon(svg_icon(SVG_ARROW_UP, color=ACCENT, size=14))
+        self.btn_front.setToolTip("Bring to Front")
         self.btn_front.clicked.connect(lambda: self._arrange_selected("front"))
         act_row1.addWidget(self.btn_front)
 
         self.btn_fwd = QPushButton("Forward")
         self.btn_fwd.setIcon(svg_icon(SVG_ARROW_UP, color=TEXT_SEC, size=13))
+        self.btn_fwd.setToolTip("Bring Forward")
         self.btn_fwd.clicked.connect(lambda: self._arrange_selected("forward"))
         act_row1.addWidget(self.btn_fwd)
 
         self.btn_bwd = QPushButton("Backward")
         self.btn_bwd.setIcon(svg_icon(SVG_ARROW_DOWN, color=TEXT_SEC, size=13))
+        self.btn_bwd.setToolTip("Send Backward")
         self.btn_bwd.clicked.connect(lambda: self._arrange_selected("backward"))
         act_row1.addWidget(self.btn_bwd)
 
-        self.btn_back = QPushButton("Send to Back")
+        self.btn_back = QPushButton("To Back")
         self.btn_back.setIcon(svg_icon(SVG_ARROW_DOWN, color=ACCENT, size=14))
+        self.btn_back.setToolTip("Send to Back")
         self.btn_back.clicked.connect(lambda: self._arrange_selected("back"))
         act_row1.addWidget(self.btn_back)
         root.addLayout(act_row1)
 
         act_row2 = QHBoxLayout()
-        act_row2.setSpacing(6)
+        act_row2.setSpacing(8)
 
         self.btn_rename = QPushButton("Rename")
         self.btn_rename.setIcon(svg_icon(SVG_EDIT, color=ACCENT, size=14))
@@ -369,11 +391,11 @@ class SelectionPane(QDialog):
             f"QDialog {{ background-color: {bg_card}; color: {fg}; }}"
             f"QListWidget {{ background-color: {bg_inp}; border: 1px solid {brd}; "
             f"border-radius: 6px; outline: none; padding: 2px; }}"
-            f"QListWidget::item {{ border-radius: 5px; margin: 1px 2px; }}"
+            f"QListWidget::item {{ padding: 0px; margin: 1px 2px; border-radius: 5px; min-height: 40px; }}"
             f"QListWidget::item:selected {{ background-color: {'#264F78' if dark else '#D6E8FA'}; border: 1px solid {ACCENT}; }}"
             f"QListWidget::item:hover:!selected {{ background-color: {'#333333' if dark else '#F1F5F9'}; }}"
             f"QPushButton {{ background-color: {'#3C3F41' if dark else '#FFFFFF'}; border: 1px solid {brd}; "
-            f"border-radius: 5px; padding: 4px 8px; font-size: 9pt; color: {fg}; }}"
+            f"border-radius: 5px; padding: 5px 10px; font-size: 9.5pt; color: {fg}; }}"
             f"QPushButton:hover {{ background-color: {'#4F5254' if dark else '#F1F5F9'}; border-color: {ACCENT}; }}"
         )
 
@@ -401,7 +423,7 @@ class SelectionPane(QDialog):
         self.refresh()
 
     def refresh(self):
-        """Rebuild the object list for the current page in visual z-order (top-to-bottom)."""
+        """Scan all objects on the current page and rebuild the object list in visual z-order."""
         if self._is_syncing_selection:
             return
 
@@ -409,6 +431,10 @@ class SelectionPane(QDialog):
 
         total_p = self.canvas.page_count() or 1
         self.spin_page.setMaximum(max(1, total_p))
+
+        # Scan the page automatically to discover and register all elements
+        if hasattr(self.canvas, "_overlay_mgr") and hasattr(self.canvas._overlay_mgr, "scan_page_objects"):
+            self.canvas._overlay_mgr.scan_page_objects(self._page_idx)
 
         self.list_widget.blockSignals(True)
         self.list_widget.clear()
@@ -428,7 +454,7 @@ class SelectionPane(QDialog):
         # Show in front-to-back order (highest index = top-most layer)
         for visual_order, (global_idx, ov) in enumerate(reversed(page_items), 1):
             item = QListWidgetItem(self.list_widget)
-            item.setSizeHint(QSize(0, 36))
+            item.setSizeHint(QSize(0, 42))
             item.setData(Qt.ItemDataRole.UserRole, global_idx)
 
             row_widget = _SelectionRowWidget(
@@ -550,11 +576,17 @@ class SelectionPane(QDialog):
         menu.addSeparator()
 
         is_locked = bool(ov.get("_locked", False))
-        act_lock = menu.addAction(svg_icon(SVG_LOCK, color="#F59E0B" if is_locked else TEXT_SEC, size=14), "Unlock" if is_locked else "Lock")
+        act_lock = menu.addAction(
+            svg_icon(SVG_LOCK, color="#F59E0B" if is_locked else TEXT_SEC, size=14),
+            "Unlock" if is_locked else "Lock",
+        )
         act_lock.triggered.connect(lambda: self._toggle_object_lock(global_idx, not is_locked))
 
         is_vis = bool(ov.get("_visible", True))
-        act_vis = menu.addAction(svg_icon(SVG_EYE if is_vis else SVG_CLOSE, color=ACCENT if is_vis else "#EF4444", size=14), "Hide" if is_vis else "Show")
+        act_vis = menu.addAction(
+            svg_icon(SVG_EYE if is_vis else SVG_CLOSE, color=ACCENT if is_vis else "#EF4444", size=14),
+            "Hide" if is_vis else "Show",
+        )
         act_vis.triggered.connect(lambda: self._toggle_object_visibility(global_idx, not is_vis))
         menu.addSeparator()
 
@@ -562,3 +594,8 @@ class SelectionPane(QDialog):
         act_del.triggered.connect(self._delete_selected)
 
         menu.exec(self.list_widget.mapToGlobal(pos))
+
+    def closeEvent(self, event):
+        if hasattr(self.canvas, "_selection_pane_active"):
+            self.canvas._selection_pane_active = False
+        super().closeEvent(event)

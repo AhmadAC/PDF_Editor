@@ -58,6 +58,10 @@ class OverlayActionsMixin:
         c = self.canvas
         if not getattr(c, "_overlays", None):
             return
+        # If the Selection Pane is open, keep scanned existing elements so the inspector remains populated!
+        if getattr(c, "_selection_pane_active", False):
+            return
+
         kept: list[dict] = []
         removed_paths: list[str] = []
         selected_ov = (

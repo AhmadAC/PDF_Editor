@@ -170,6 +170,191 @@ class OverlayDetectorMixin:
         pix.save(tmp_path)
         return tmp_path
 
+    def scan_page_objects(self, page_idx: int) -> list[dict]:
+        """Scan and detect all existing objects (images, drawings, text blocks, annotations)
+        on page_idx and add any un-tracked objects into self.canvas._overlays.
+        """
+        c = self.canvas
+        if not c._doc or not (0 <= page_idx < c._doc.page_count):
+            return []
+        page = c._doc[page_idx]
+        pw = max(1.0, float(page.rect.width))
+        ph = max(1.0, float(page.rect.height))
+
+        # 1. Annotations
+        try:
+            for annot in page.annots() or []:
+                atype = annot.type[0] if isinstance(annot.type, (tuple, list)) else annot.type
+                if atype in (_PDF_ANNOT_LINK, _PDF_ANNOT_WIDGET, _PDF_ANNOT_REDACT):
+                    continue
+                if atype == _PDF_ANNOT_TEXT:
+                    continue
+                ar = fitz.Rect(annot.rect)
+                if self._is_annot_claimed(page_idx, annot) is not None:
+                    continue
+                if self._is_existing_rect_claimed(page_idx, ar) is not None:
+                    continue
+                try:
+                    pix = annot.get_pixmap(dpi=200, alpha=True)
+                    fd, tmp_path = tempfile.mkstemp(prefix="PDF_Editor_annot_", suffix=".png")
+                    os.close(fd)
+                    pix.save(tmp_path)
+                    entry = {
+                        "type": "image",
+                        "page": page_idx,
+                        "rect": fitz.Rect(ar),
+                        "path": tmp_path,
+                        "_existing": True,
+                        "_existing_annot": getattr(annot, "xref", None),
+                        "_orig_rect": [ar.x0, ar.y0, ar.x1, ar.y1],
+                        "_annot_type": atype,
+                        "_bg_color": _sample_bg_color(page, ar),
+                        "_dirty": False,
+                        "_temp_file": True,
+                        "_name": f"Annotation ({int(ar.width)}×{int(ar.height)})",
+                    }
+                    c._overlays.append(entry)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 2. Raster Images
+        try:
+            for img_info in page.get_images(full=True) or []:
+                xref = int(img_info[0])
+                smask = int(img_info[1]) if len(img_info) > 1 else 0
+                if xref <= 0:
+                    continue
+                rects = page.get_image_rects(xref) or []
+                for r in rects:
+                    rr = fitz.Rect(r)
+                    if rr.width < 2 or rr.height < 2:
+                        continue
+                    if self._is_existing_rect_claimed(page_idx, rr) is not None:
+                        continue
+                    try:
+                        tmp_path = self._extract_image_temp_png(c._doc, xref, smask)
+                        entry = {
+                            "type": "image",
+                            "page": page_idx,
+                            "rect": fitz.Rect(rr),
+                            "path": tmp_path,
+                            "_existing": True,
+                            "_existing_xref": xref,
+                            "_orig_rect": [rr.x0, rr.y0, rr.x1, rr.y1],
+                            "_bg_color": _sample_bg_color(page, rr),
+                            "_dirty": False,
+                            "_temp_file": True,
+                            "_name": f"Image ({int(rr.width)}×{int(rr.height)})",
+                        }
+                        c._overlays.append(entry)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # 3. Vector Drawings / Shapes
+        try:
+            for d in page.get_drawings() or []:
+                if d.get("fill") is None and d.get("color") is None:
+                    continue
+                r = fitz.Rect(d["rect"]).normalize()
+                if r.width >= pw * 0.98 and r.height >= ph * 0.98:
+                    continue
+                if r.width < 2.0 and r.height < 2.0:
+                    continue
+                if self._is_existing_rect_claimed(page_idx, r) is not None:
+                    continue
+                items = _serialize_drawing_items(d.get("items", []))
+                if not items:
+                    continue
+                fill_col = tuple(float(x) for x in d["fill"][:3]) if d.get("fill") else None
+                stroke_col = tuple(float(x) for x in d["color"][:3]) if d.get("color") else None
+                entry = {
+                    "type": "drawing",
+                    "page": page_idx,
+                    "rect": fitz.Rect(r),
+                    "items": items,
+                    "fill": fill_col,
+                    "color": stroke_col,
+                    "width": float(d.get("width") or 1.0),
+                    "fill_opacity": d.get("fill_opacity"),
+                    "stroke_opacity": d.get("stroke_opacity"),
+                    "even_odd": bool(d.get("even_odd", False)),
+                    "closePath": bool(d.get("closePath", False)),
+                    "dashes": d.get("dashes"),
+                    "lineCap": d.get("lineCap"),
+                    "lineJoin": d.get("lineJoin"),
+                    "_existing": True,
+                    "_orig_rect": [r.x0, r.y0, r.x1, r.y1],
+                    "_items_rect": [r.x0, r.y0, r.x1, r.y1],
+                    "_bg_color": _sample_bg_color(page, r),
+                    "_dirty": False,
+                    "_name": f"Shape ({int(r.width)}×{int(r.height)})",
+                }
+                c._overlays.append(entry)
+        except Exception:
+            pass
+
+        # 4. Text Blocks
+        try:
+            text_dict = page.get_text("dict")
+            for block in text_dict.get("blocks", []):
+                if block.get("type") != 0:
+                    continue
+                spans = [
+                    s for line in block.get("lines", [])
+                    for s in line.get("spans", [])
+                    if s.get("text", "").strip()
+                ]
+                if not spans:
+                    continue
+                full_txt = " ".join(s["text"].strip() for s in spans if s["text"].strip())
+                if not full_txt:
+                    continue
+                bb = list(block.get("bbox", [0, 0, 0, 0]))
+                r = fitz.Rect(bb)
+                if r.width < 2.0 or r.height < 2.0:
+                    continue
+                if self._is_existing_rect_claimed(page_idx, r) is not None:
+                    continue
+                first_s = spans[0]
+                sz = float(first_s.get("size") or first_s.get("font_size") or 12.0)
+                font_name = first_s.get("font") or "Helvetica"
+                color = first_s.get("color", 0)
+                flags = int(first_s.get("flags", 0) or 0)
+                origin = list(first_s.get("origin", (bb[0], bb[3])))
+                short_txt = full_txt.replace("\n", " ").strip()
+                disp_txt = f"\"{short_txt[:20]}...\"" if len(short_txt) > 20 else f"\"{short_txt}\""
+                entry = {
+                    "type": "text_edit",
+                    "page": page_idx,
+                    "bbox": bb,
+                    "old_text": full_txt,
+                    "new_text": full_txt,
+                    "size": sz,
+                    "font_size": sz,
+                    "color": color,
+                    "font": font_name,
+                    "flags": flags,
+                    "ascender": float(first_s.get("ascender") or 0.8),
+                    "descender": float(first_s.get("descender") or -0.2),
+                    "origin": origin,
+                    "_orig_origin": list(origin),
+                    "_existing": True,
+                    "_existing_span": True,
+                    "_orig_rect": list(bb),
+                    "_bg_color": _sample_bg_color(page, r),
+                    "_dirty": False,
+                    "_name": f"Text: {disp_txt}",
+                }
+                c._overlays.append(entry)
+        except Exception:
+            pass
+
+        return [o for o in c._overlays if o.get("page", 0) == page_idx and not o.get("_deleted")]
+
     def detect_existing_media_at(self, page_idx: int, pdf_pt: fitz.Point) -> dict | None:
         """Detect existing annotations or raster images at pdf_pt (smallest/top-most match wins)."""
         c = self.canvas
@@ -216,6 +401,7 @@ class OverlayDetectorMixin:
                     "_bg_color": _sample_bg_color(page, ar),
                     "_dirty": False,
                     "_temp_file": True,
+                    "_name": f"Annotation ({int(ar.width)}×{int(ar.height)})",
                 }
                 c._overlays.append(entry)
                 return entry
@@ -259,6 +445,7 @@ class OverlayDetectorMixin:
                     "_bg_color": _sample_bg_color(page, rr),
                     "_dirty": False,
                     "_temp_file": True,
+                    "_name": f"Image ({int(rr.width)}×{int(rr.height)})",
                 }
                 c._overlays.append(entry)
                 return entry
@@ -330,6 +517,7 @@ class OverlayDetectorMixin:
             "_items_rect": [r.x0, r.y0, r.x1, r.y1],
             "_bg_color": _sample_bg_color(page, r),
             "_dirty": False,
+            "_name": f"Shape ({int(r.width)}×{int(r.height)})",
         }
         c._overlays.append(entry)
         return entry
@@ -355,12 +543,15 @@ class OverlayDetectorMixin:
             span_size = max(6.0, float(bb[3] - bb[1]) * 0.75)
         font_name = span.get("font", "Helvetica")
         orig = list(span.get("origin", (bb[0], bb[3])))
+        txt = span.get("text", "")
+        short_txt = txt.replace("\n", " ").strip()
+        disp_txt = f"\"{short_txt[:20]}...\"" if len(short_txt) > 20 else f"\"{short_txt}\""
         entry = {
             "type": "text_edit",
             "page": page_idx,
             "bbox": bb,
-            "old_text": span.get("text", ""),
-            "new_text": span.get("text", ""),
+            "old_text": txt,
+            "new_text": txt,
             "size": span_size,
             "font_size": span_size,
             "color": span.get("color", 0),
@@ -375,6 +566,7 @@ class OverlayDetectorMixin:
             "_orig_rect": list(bb),
             "_bg_color": _sample_bg_color(page, fitz.Rect(bb)),
             "_dirty": False,
+            "_name": f"Text: {disp_txt}",
         }
         c._overlays.append(entry)
         return entry

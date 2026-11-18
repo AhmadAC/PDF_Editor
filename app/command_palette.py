@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import sys
 import traceback
-from typing import Any, Callable
+from typing import Any
 
 from PySide6.QtCore import QEvent, QSize, Qt
 from PySide6.QtGui import QAction, QColor, QFont, QIcon
@@ -39,20 +39,24 @@ class _CommandItemWidget(QWidget):
     ):
         super().__init__(parent)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
-        layout.setSpacing(10)
+        layout.setContentsMargins(12, 6, 14, 6)
+        layout.setSpacing(12)
+        layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         fg = TEXT_PRI if dark else "#1A2B28"
         sec = TEXT_SEC if dark else "#6B7280"
 
         if icon and not icon.isNull():
             ico_lbl = QLabel()
-            ico_lbl.setPixmap(icon.pixmap(18, 18))
-            ico_lbl.setFixedSize(20, 20)
+            ico_lbl.setPixmap(icon.pixmap(20, 20))
+            ico_lbl.setFixedSize(24, 24)
+            ico_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             layout.addWidget(ico_lbl)
 
         title_lbl = QLabel(name)
-        title_lbl.setStyleSheet(f"color: {fg}; font-size: 10.5pt; font-weight: 500; background: transparent;")
+        title_lbl.setStyleSheet(
+            f"color: {fg}; font-size: 11pt; font-weight: 500; background: transparent; padding: 0px;"
+        )
         layout.addWidget(title_lbl, 1)
 
         if category:
@@ -61,15 +65,15 @@ class _CommandItemWidget(QWidget):
             cat_fg = "#93C5FD" if dark else ACCENT
             cat_lbl.setStyleSheet(
                 f"background: {cat_bg}; color: {cat_fg}; border-radius: 4px; "
-                f"padding: 2px 6px; font-size: 8pt; font-weight: 700; letter-spacing: 0.5px;"
+                f"padding: 3px 8px; font-size: 8.5pt; font-weight: 700; letter-spacing: 0.5px;"
             )
             layout.addWidget(cat_lbl)
 
         if shortcut:
             sc_lbl = QLabel(shortcut)
             sc_lbl.setStyleSheet(
-                f"color: {sec}; font-size: 9pt; font-family: monospace; "
-                f"background: rgba(128, 128, 128, 0.15); border-radius: 3px; padding: 2px 5px;"
+                f"color: {sec}; font-size: 9.5pt; font-family: monospace; "
+                f"background: rgba(128, 128, 128, 0.16); border-radius: 4px; padding: 3px 8px;"
             )
             layout.addWidget(sc_lbl)
 
@@ -83,8 +87,8 @@ class CommandPalette(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Command Palette")
         self.setModal(True)
-        self.setMinimumSize(620, 440)
-        self.resize(680, 480)
+        self.setMinimumSize(720, 500)
+        self.resize(780, 540)
 
         self._dark = is_dark()
         self._commands = commands
@@ -96,23 +100,25 @@ class CommandPalette(QDialog):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(14, 14, 14, 12)
+        layout.setSpacing(10)
 
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Type a command (e.g. 'selection pane', 'edit', 'zoom', 'crop')...")
+        self.search_input.setPlaceholderText(
+            "Type a command (e.g. 'selection pane', 'edit', 'zoom', 'crop')..."
+        )
+        self.search_input.setFixedHeight(40)
         self.search_input.textChanged.connect(self._on_search_changed)
         self.search_input.installEventFilter(self)
         layout.addWidget(self.search_input)
 
         self.results_list = QListWidget()
         self.results_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
-        self.results_list.setUniformItemSizes(True)
         self.results_list.itemClicked.connect(self._on_item_clicked)
         layout.addWidget(self.results_list, 1)
 
         hint_lbl = QLabel("Press Enter to execute, Up/Down to navigate, Escape to close.")
-        hint_lbl.setStyleSheet(f"color: {TEXT_SEC}; font-size: 8.5pt; padding: 2px 4px;")
+        hint_lbl.setStyleSheet(f"color: {TEXT_SEC}; font-size: 9pt; padding: 2px 4px;")
         layout.addWidget(hint_lbl)
 
         self.search_input.setFocus()
@@ -127,10 +133,10 @@ class CommandPalette(QDialog):
         self.setStyleSheet(
             f"QDialog {{ background-color: {bg_card}; color: {fg}; border-radius: 8px; }}"
             f"QLineEdit {{ background-color: {bg_inp}; border: 1.5px solid {ACCENT}; "
-            f"border-radius: 6px; padding: 8px 12px; font-size: 11pt; color: {fg}; }}"
+            f"border-radius: 6px; padding: 6px 12px; font-size: 11pt; color: {fg}; }}"
             f"QListWidget {{ background-color: {bg_inp}; border: 1px solid {brd}; "
             f"border-radius: 6px; outline: none; padding: 4px; }}"
-            f"QListWidget::item {{ border-radius: 5px; margin: 1px 2px; }}"
+            f"QListWidget::item {{ padding: 0px; margin: 2px 2px; border-radius: 5px; min-height: 46px; }}"
             f"QListWidget::item:selected {{ background-color: {'#264F78' if dark else '#D6E8FA'}; border: 1px solid {ACCENT}; }}"
             f"QListWidget::item:hover:!selected {{ background-color: {'#333333' if dark else '#F1F5F9'}; }}"
         )
@@ -153,7 +159,7 @@ class CommandPalette(QDialog):
 
             self._filtered_indices.append(idx)
             item = QListWidgetItem(self.results_list)
-            item.setSizeHint(QSize(0, 38))
+            item.setSizeHint(QSize(0, 48))
             item.setData(Qt.ItemDataRole.UserRole, idx)
 
             row_widget = _CommandItemWidget(
@@ -219,4 +225,3 @@ class CommandPalette(QDialog):
                 self.reject()
                 return True
         return super().eventFilter(watched, event)
-
