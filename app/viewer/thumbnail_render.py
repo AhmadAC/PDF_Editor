@@ -1,3 +1,4 @@
+
 # app/viewer/thumbnail_render.py
 """Document synchronization, selective edit invalidation, visible range calculation, and worker orchestration for ThumbnailPanel."""
 
@@ -100,6 +101,7 @@ class ThumbnailRenderMixin:
         if not changed_rows:
             return
 
+        print(f"[DEBUG] ThumbnailPanel.set_page_edits: changed_src={changed_src}, changed_rows={changed_rows}, total_cached={len(self._model._cache)}", flush=True)
         self._stop_all_workers()
         self._epoch += 1
         self._inflight.clear()
@@ -107,7 +109,7 @@ class ThumbnailRenderMixin:
             self._model._cache.pop(row, None)
             idx = self._model.index(row)
             self._model.dataChanged.emit(idx, idx, [Qt.ItemDataRole.DecorationRole])
-        self._render_visible()
+        self._render_visible(priority_pages=changed_rows)
         vp = self._view.viewport()
         if vp is not None:
             vp.update()
@@ -211,16 +213,21 @@ class ThumbnailRenderMixin:
         last_page = min(total - 1, (last_row + 1) * cols - 1)
         return list(range(first_page, last_page + 1))
 
-    def _render_visible(self) -> None:
+    def _render_visible(self, priority_pages: list[int] | None = None) -> None:
         if not self._doc_path or self._model.rowCount() <= 0:
             return
         self._workers = [w for w in self._workers if w.isRunning()]
-        want = self._visible_range()
+        want = list(self._visible_range())
+        if priority_pages:
+            for p in priority_pages:
+                if p not in want and 0 <= p < self._model.rowCount():
+                    want.append(p)
         missing = [
             p
             for p in want
             if p not in self._inflight and not self._model.has_pixmap(p)
         ]
+        print(f"[DEBUG] ThumbnailPanel._render_visible: want={want}, missing={missing}, inflight={self._inflight}", flush=True)
         if not missing:
             return
         self._inflight.update(missing)
@@ -237,6 +244,7 @@ class ThumbnailRenderMixin:
             dpr = 1.0
         tw = int(DEFAULT_THUMB_WIDTH * self._thumb_scale)
         th = int(DEFAULT_THUMB_HEIGHT * self._thumb_scale)
+        print(f"[DEBUG] ThumbnailPanel._start_worker: starting worker for pages={[p + 1 for p in page_indices]}, epoch={self._epoch}, scale={self._thumb_scale}", flush=True)
         worker = ThumbnailWorker(
             self._doc_path,
             page_indices,
@@ -269,11 +277,13 @@ class ThumbnailRenderMixin:
     @Slot(int, QImage, int)
     def _on_image_ready(self, page_idx: int, img: QImage, epoch: int) -> None:
         if epoch != self._epoch:
+            print(f"[DEBUG] ThumbnailPanel._on_image_ready: dropped stale thumbnail for page {page_idx + 1} (epoch {epoch} != {self._epoch})", flush=True)
             return
         self._inflight.discard(page_idx)
         pix = QPixmap.fromImage(img)
         pix.setDevicePixelRatio(img.devicePixelRatio())
         self._model.cache_pixmap(page_idx, pix)
+        print(f"[DEBUG] ThumbnailPanel._on_image_ready: thumbnail updated for page {page_idx + 1} (pixmap size={pix.size()})", flush=True)
 
     @Slot(int, str)
     def _on_render_failed(self, epoch: int, reason: str) -> None:
@@ -282,6 +292,7 @@ class ThumbnailRenderMixin:
             self._release_inflight_for(worker)
         if epoch != self._epoch:
             return
+        print(f"[DEBUG] ThumbnailPanel._on_render_failed: {reason}", flush=True)
         _log.warning(
             "Thumbnail rendering failed for %r: %s",
             self._doc_path,

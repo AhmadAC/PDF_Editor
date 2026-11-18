@@ -1,3 +1,4 @@
+
 # app/editor/canvas_events_press_release.py
 """Mouse double-click, press, and release interaction handlers for PdfEditCanvas."""
 
@@ -71,6 +72,8 @@ class CanvasPressReleaseMixin:
 
     def _commit_overlay_mutation(self, ov: dict, before_snap: dict | None, force_committed: bool = False) -> None:
         c = self.canvas
+        page_idx = ov.get("page", 0)
+        print(f"[DEBUG] [CanvasEvents] _commit_overlay_mutation: page={page_idx + 1}, type='{ov.get('type')}', force_committed={force_committed}, existing={ov.get('_existing')}, dirty={ov.get('_dirty')}", flush=True)
         if force_committed or (ov.get("_existing") and not ov.get("_dirty")):
             ov["_dirty"] = True
             if hasattr(c, "overlay_committed"):
@@ -130,6 +133,7 @@ class CanvasPressReleaseMixin:
                 c._placing_sig_path = ""
                 c._sig_cursor_pos = None
                 c.setCursor(Qt.CursorShape.ArrowCursor)
+                print(f"[DEBUG] [CanvasEvents] Placed signature on page {page_idx + 1}", flush=True)
                 c.signature_added.emit(page_idx, r, sig_path)
                 if c._overlays:
                     c._selected_overlay_idx = len(c._overlays) - 1
@@ -157,6 +161,7 @@ class CanvasPressReleaseMixin:
                 c._placing_stamp_type = ""
                 c._stamp_cursor_pos = None
                 c.setCursor(Qt.CursorShape.ArrowCursor)
+                print(f"[DEBUG] [CanvasEvents] Placed stamp '{st_type}' on page {page_idx + 1}", flush=True)
                 c.stamp_added.emit(page_idx, r, st_type)
                 if c._overlays:
                     c._selected_overlay_idx = len(c._overlays) - 1
@@ -178,6 +183,7 @@ class CanvasPressReleaseMixin:
                 c._drag_before_snapshot = snapshot_overlay(cur_ov)
                 c._drag_start_rect = overlay_pdf_rect(cur_ov, zoom=c._zoom or 1.0)
                 self._started_untouched_drag = bool(cur_ov.get("_existing") and not cur_ov.get("_dirty"))
+                print(f"[DEBUG] [CanvasEvents] Drag resize started for handle {handle} on page {cur_ov.get('page', 0) + 1} (type='{cur_ov.get('type')}')", flush=True)
                 e.accept()
                 return
             if c._overlay_mgr.is_pos_inside_overlay(c._selected_overlay_idx, pos):
@@ -187,6 +193,7 @@ class CanvasPressReleaseMixin:
                 c._drag_before_snapshot = snapshot_overlay(cur_ov)
                 c._drag_start_rect = overlay_pdf_rect(cur_ov, zoom=c._zoom or 1.0)
                 self._started_untouched_drag = bool(cur_ov.get("_existing") and not cur_ov.get("_dirty"))
+                print(f"[DEBUG] [CanvasEvents] Drag move started on page {cur_ov.get('page', 0) + 1} (type='{cur_ov.get('type')}')", flush=True)
                 e.accept()
                 return
             c._selected_overlay_idx = -1
@@ -208,6 +215,7 @@ class CanvasPressReleaseMixin:
                     self._started_untouched_drag = bool(ov.get("_existing") and not ov.get("_dirty"))
                     self._emit_text_started_for_overlay(ov)
                     c._active_sel_rect = None
+                    print(f"[DEBUG] [CanvasEvents] Selected existing overlay idx={idx} on page {ov.get('page', 0) + 1} (type='{ov.get('type')}')", flush=True)
                     c.update()
                     e.accept()
                     return
@@ -227,6 +235,7 @@ class CanvasPressReleaseMixin:
                     c._drag_start_rect = fitz.Rect(existing_media["rect"])
                     self._started_untouched_drag = bool(existing_media.get("_existing") and not existing_media.get("_dirty"))
                     c._active_sel_rect = None
+                    print(f"[DEBUG] [CanvasEvents] Detected and selected existing media on page {page_idx + 1} (type='{existing_media.get('type')}')", flush=True)
                     c.update()
                     e.accept()
                     return
@@ -240,6 +249,7 @@ class CanvasPressReleaseMixin:
                     c._drag_start_rect = fitz.Rect(existing_drawing["rect"])
                     self._started_untouched_drag = bool(existing_drawing.get("_existing") and not existing_drawing.get("_dirty"))
                     c._active_sel_rect = None
+                    print(f"[DEBUG] [CanvasEvents] Detected and selected existing drawing on page {page_idx + 1}", flush=True)
                     c.update()
                     e.accept()
                     return
@@ -298,6 +308,7 @@ class CanvasPressReleaseMixin:
                 c._drag_handle = CanvasOverlayManager.HANDLE_NONE
                 c._moving_overlay = False
                 c._drag_before_snapshot = None
+                print(f"[DEBUG] [CanvasEvents] mouseRelease: overlay moved={moved}, page={ov.get('page', 0) + 1}, type='{ov.get('type')}'", flush=True)
                 if moved:
                     self._commit_overlay_mutation(ov, before_snap, force_committed=started_untouched)
                     if ov.get("_z_back"):

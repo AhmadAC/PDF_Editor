@@ -1,3 +1,5 @@
+
+
 # app/editor/tab.py
 """PDF_Editor – TabEditar facade: visual PDF editor tab with Fill & Sign, Foxit-style object editing, and typography styling."""
 
@@ -190,6 +192,7 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
         self._canvas.overlay_changed.connect(self.update)
         self._canvas.overlay_committed.connect(self._on_overlay_committed)
         self._canvas.overlay_transformed.connect(self._on_overlay_transformed)
+        self._canvas.overlay_arranged.connect(self._on_overlay_arranged)
         self._canvas.overlay_duplicated.connect(self._on_overlay_duplicated)
         self._canvas.overlay_deleted.connect(self._on_overlay_deleted)
         self._canvas.zoom_changed.connect(lambda _: self._update_page_nav_and_thumbnails())
@@ -205,6 +208,31 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
         self._set_text_submode("edit")
         self._on_mode_btn(self._mode_btns[_MODE_TEXT])
         self._update_nav()
+
+    def _sync_thumbnails(self, affected_pages: set[int] | list[int] | None = None) -> None:
+        """Propagate current visual edits to the ThumbnailPanel so the preview reflects deletions, moves, and additions."""
+        if not hasattr(self, "_thumbnails") or not self._thumbnails:
+            print("[DEBUG] [TabEditar._sync_thumbnails] self._thumbnails is not available", flush=True)
+            return
+
+        edits_by_page: dict[int, list[dict]] = {}
+        for e in self._user_pending:
+            p = e.get("page")
+            if p is not None:
+                edits_by_page.setdefault(int(p), []).append(e)
+
+        pages_set = {int(p) for p in affected_pages} if affected_pages is not None else None
+        print(
+            f"[DEBUG] [TabEditar._sync_thumbnails] Syncing thumbnails -> affected_pages={pages_set} | pages_with_edits={list(edits_by_page.keys())} | total_user_pending={len(self._user_pending)}",
+            flush=True,
+        )
+        for p, elist in edits_by_page.items():
+            for e in elist:
+                print(
+                    f"[DEBUG]   -> Page {p + 1}: type='{e.get('type')}', existing={e.get('_existing')}, dirty={e.get('_dirty')}, deleted={e.get('_deleted')}, orig_rect={e.get('_orig_rect')}, rect={e.get('rect') or e.get('bbox')}",
+                    flush=True,
+                )
+        self._thumbnails.set_page_edits(edits_by_page, affected_pages=pages_set)
 
     def set_compact_mode(self, active: bool, path: str = "") -> None:
         if active and path:
@@ -284,3 +312,4 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
         if hasattr(self, "_thumbnails"):
             self._thumbnails.clear()
         super().closeEvent(event)
+

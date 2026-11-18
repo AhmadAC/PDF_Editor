@@ -1,3 +1,4 @@
+
 # app/editor/tab_history.py
 """PDF_Editor – tab_history: synchronized action-based history, undo/redo, and pending edits management."""
 
@@ -68,11 +69,14 @@ class TabHistoryManager:
         return builder(edit)
 
     def rebuild_pending_list(self) -> None:
-        """Reconstruct the pending edit list widget cleanly from _user_pending."""
+        """Reconstruct the pending edit list widget cleanly from _user_pending and trigger thumbnail sync."""
         self.tab._pending_list.clear()
         for edit in self.tab._user_pending:
             self.tab._pending_list.addItem(self._format_edit_label(edit))
         self.tab._canvas.set_overlays(self.pending)
+        print(f"[DEBUG] [TabHistoryManager] rebuild_pending_list: total pending={len(self.pending)}, user_pending={len(self.tab._user_pending)}", flush=True)
+        if hasattr(self.tab, "_sync_thumbnails"):
+            self.tab._sync_thumbnails()
         self._notify_toolbar()
 
     def _trim_overflow(self) -> None:
@@ -99,6 +103,7 @@ class TabHistoryManager:
         self._trim_overflow()
         self._push_undo_action({"kind": "add", "edit": edit})
         lbl = self._format_edit_label(edit)
+        print(f"[DEBUG] [TabHistoryManager] add: added edit type='{edit.get('type')}' on page {edit.get('page', 0) + 1}", flush=True)
         self.rebuild_pending_list()
         self.tab._status(t("edit.status.added", label=lbl, count=len(self.tab._user_pending)))
 
@@ -113,6 +118,7 @@ class TabHistoryManager:
             "after": snapshot_overlay(edit),
         })
         lbl = self._format_edit_label(edit)
+        print(f"[DEBUG] [TabHistoryManager] handle_overlay_committed: existing object marked dirty on page {edit.get('page', 0) + 1} (type='{edit.get('type')}')", flush=True)
         self.rebuild_pending_list()
         self.tab._status(t("edit.status.added", label=lbl, count=len(self.tab._user_pending)))
 
@@ -125,10 +131,24 @@ class TabHistoryManager:
             "before": before_snap,
             "after": snapshot_overlay(edit),
         })
+        print(f"[DEBUG] [TabHistoryManager] handle_overlay_transformed: object transformed on page {edit.get('page', 0) + 1} (type='{edit.get('type')}')", flush=True)
         self.rebuild_pending_list()
         self.tab._status("Updated object (Ctrl+Z to undo)")
 
+    def handle_overlay_arranged(self, info: dict) -> None:
+        """Called when z-order of an overlay is changed."""
+        self.redo_stack.clear()
+        self._push_undo_action({
+            "kind": "arrange",
+            "info": info,
+            "edit": info.get("edit"),
+        })
+        print(f"[DEBUG] [TabHistoryManager] handle_overlay_arranged: z-order arranged on page {info.get('page', 0) + 1}", flush=True)
+        self.rebuild_pending_list()
+        self.tab._status("Arranged object order (Ctrl+Z to undo)")
+
     def handle_overlay_duplicated(self, new_edit: dict) -> None:
+        print(f"[DEBUG] [TabHistoryManager] handle_overlay_duplicated on page {new_edit.get('page', 0) + 1}", flush=True)
         self.add(new_edit)
 
     def handle_overlay_deleted(self, idx: int, edit: dict) -> None:
@@ -144,6 +164,7 @@ class TabHistoryManager:
                 "edit": edit,
                 "was_dirty": was_dirty,
             })
+            print(f"[DEBUG] [TabHistoryManager] handle_overlay_deleted: existing object marked deleted on page {edit.get('page', 0) + 1} (type='{edit.get('type')}')", flush=True)
         else:
             if edit in self.pending:
                 self.pending.remove(edit)
@@ -152,6 +173,7 @@ class TabHistoryManager:
                 "edit": edit,
                 "index": idx,
             })
+            print(f"[DEBUG] [TabHistoryManager] handle_overlay_deleted: new object removed from pending on page {edit.get('page', 0) + 1}", flush=True)
         self.rebuild_pending_list()
         self.tab._status("Object deleted (Ctrl+Z to undo)")
 
@@ -184,6 +206,7 @@ class TabHistoryManager:
                         "edit": removed,
                         "index": i,
                     })
+                print(f"[DEBUG] [TabHistoryManager] handle_note_deleted: note removed on page {page + 1}", flush=True)
                 self.rebuild_pending_list()
                 return
         if overlay.get("_existing"):
@@ -201,6 +224,7 @@ class TabHistoryManager:
                 "removed_note": None,
                 "removed_idx": -1,
             })
+            print(f"[DEBUG] [TabHistoryManager] handle_note_deleted: existing note queued for deletion on page {page + 1}", flush=True)
             self.rebuild_pending_list()
 
     def undo(self) -> None:
@@ -221,6 +245,7 @@ class TabHistoryManager:
             if len(self.redo_stack) > _MAX_REDO:
                 self.redo_stack.pop(0)
             self.tab._canvas._selected_overlay_idx = -1
+            print(f"[DEBUG] [TabHistoryManager] undo fallback: removed edit on page {edit.get('page', 0) + 1}", flush=True)
             self.rebuild_pending_list()
             self.tab._status(t("edit.status.undo", n=len(self.tab._user_pending)))
             return
@@ -228,6 +253,7 @@ class TabHistoryManager:
         action = self._undo_stack.pop()
         kind = action["kind"]
         edit = action["edit"]
+        print(f"[DEBUG] [TabHistoryManager] undo: action kind='{kind}' on page {edit.get('page', 0) + 1 if isinstance(edit, dict) else '?'}", flush=True)
 
         if kind == "add":
             if edit in self.pending:
@@ -243,6 +269,17 @@ class TabHistoryManager:
 
         elif kind == "transform":
             restore_overlay_snapshot(edit, action["before"])
+
+        elif kind == "arrange":
+            info = action.get("info", {})
+            before_order = info.get("before_order", [])
+            if before_order:
+                self.pending[:] = list(before_order)
+            ov = info.get("edit")
+            if ov is not None:
+                ov["_z_back"] = info.get("before_z_back", False)
+                if info.get("was_untouched"):
+                    ov["_dirty"] = False
 
         elif kind == "delete_new":
             idx = max(0, min(int(action.get("index", len(self.pending))), len(self.pending)))
@@ -282,6 +319,7 @@ class TabHistoryManager:
 
         kind = entry["kind"]
         edit = entry["edit"]
+        print(f"[DEBUG] [TabHistoryManager] redo: action kind='{kind}' on page {edit.get('page', 0) + 1 if isinstance(edit, dict) else '?'}", flush=True)
 
         if kind == "add":
             if edit not in self.pending:
@@ -298,6 +336,17 @@ class TabHistoryManager:
 
         elif kind == "transform":
             restore_overlay_snapshot(edit, entry["after"])
+            self._push_undo_action(entry)
+
+        elif kind == "arrange":
+            info = entry.get("info", {})
+            after_order = info.get("after_order", [])
+            if after_order:
+                self.pending[:] = list(after_order)
+            ov = info.get("edit")
+            if ov is not None:
+                ov["_z_back"] = info.get("after_z_back", False)
+                ov["_dirty"] = True
             self._push_undo_action(entry)
 
         elif kind == "delete_new":
@@ -332,6 +381,9 @@ class TabHistoryManager:
         self.tab._pending_list.clear()
         self.tab._canvas._selected_overlay_idx = -1
         self.tab._canvas.set_overlays(self.pending)
+        print("[DEBUG] [TabHistoryManager] clear: pending edits cleared", flush=True)
+        if hasattr(self.tab, "_sync_thumbnails"):
+            self.tab._sync_thumbnails()
         self._notify_toolbar()
 
     def load_existing_annotations(self) -> None:
@@ -363,7 +415,9 @@ class TabHistoryManager:
                                 "_dirty": False,
                             })
                             count += 1
+            print(f"[DEBUG] [TabHistoryManager] load_existing_annotations: loaded {count} notes", flush=True)
             self.tab._status(t("edit.status.note_loaded", count=count, total=total_annots))
             self.rebuild_pending_list()
         except Exception as ex:
             self.tab._status(t("edit.status.annot_error", ex=ex))
+

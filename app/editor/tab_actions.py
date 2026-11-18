@@ -1,4 +1,5 @@
 
+
 # app/editor/tab_actions.py
 """PDF_Editor – Editing modes, typography formatters, draw tools, stamps, and element selections for TabEditar."""
 
@@ -85,6 +86,7 @@ class TabActionsMixin(_Base):
         def _pick_signature(self) -> None: ...
         def _update_nav(self) -> None: ...
         def _status(self, msg: str) -> None: ...
+        def _sync_thumbnails(self, affected_pages: set[int] | list[int] | None = None) -> None: ...
 
     def _set_mode_by_idx(self, idx: int):
         if 0 <= idx < len(self._mode_btns):
@@ -113,6 +115,7 @@ class TabActionsMixin(_Base):
     def _on_stamp_added(self, page_idx: int, rect, stamp_type: str):
         col = self._stamp_color.color_tuple() if hasattr(self, "_stamp_color") else (0.0, 0.0, 0.0)
         size = float(rect.width)
+        print(f"[DEBUG] [TabActions] _on_stamp_added: '{stamp_type}' on page {page_idx + 1}", flush=True)
         self._add({
             "type": stamp_type,
             "page": page_idx,
@@ -120,6 +123,8 @@ class TabActionsMixin(_Base):
             "color": col,
             "width": max(1.5, size * 0.12),
         })
+        if hasattr(self, "_sync_thumbnails"):
+            self._sync_thumbnails({page_idx})
 
     def _on_mode_btn(self, btn: QPushButton):
         idx = self._mode_btn_idx.get(id(btn), 0)
@@ -231,6 +236,9 @@ class TabActionsMixin(_Base):
         bold = self._btn_bold.isChecked()
         italic = self._btn_italic.isChecked()
         self._canvas.update_active_text_format(font, size, color, bold, italic)
+        if hasattr(self, "_sync_thumbnails") and self._canvas._selected_overlay_idx >= 0:
+            ov = self._canvas._overlays[self._canvas._selected_overlay_idx]
+            self._sync_thumbnails({ov.get("page", 0)})
 
     def _on_text_edit_started(self, fmt: dict):
         self._text_font.blockSignals(True)
@@ -287,6 +295,7 @@ class TabActionsMixin(_Base):
         col = getattr(self._canvas, "_draw_color", None)
         if col is None:
             col = self._draw_color_cb.color_tuple()
+        print(f"[DEBUG] [TabActions] _on_stroke finished on page {page_idx + 1} with {len(pdf_points)} points", flush=True)
         self._add({
             "type": "draw",
             "page": page_idx,
@@ -294,9 +303,12 @@ class TabActionsMixin(_Base):
             "color": col,
             "width": self._draw_width_slider.value(),
         })
+        if hasattr(self, "_sync_thumbnails"):
+            self._sync_thumbnails({page_idx})
 
     def _delete_selection(self):
         if self._canvas._selected_overlay_idx >= 0:
+            print("[DEBUG] [TabActions] _delete_selection: delegating to delete_selected_overlay()", flush=True)
             self._canvas.delete_selected_overlay()
             return
         page_idx = getattr(self, "_last_selected_page", -1)
@@ -304,6 +316,7 @@ class TabActionsMixin(_Base):
         if page_idx < 0 or rect is None:
             return
         old_txt = self._sel_result.toPlainText().strip() if hasattr(self, "_sel_result") else ""
+        print(f"[DEBUG] [TabActions] _delete_selection: deleting marquee selection on page {page_idx + 1}", flush=True)
         edit = {
             "type": "text_edit",
             "page": page_idx,
@@ -327,6 +340,8 @@ class TabActionsMixin(_Base):
         if hasattr(self, "_sel_result"):
             self._sel_result.setPlainText("")
         self._canvas.update()
+        if hasattr(self, "_sync_thumbnails"):
+            self._sync_thumbnails({page_idx})
         self._status("Selected element deleted (Ctrl+Z to undo)")
 
     def _edit_selection(self):
@@ -367,6 +382,7 @@ class TabActionsMixin(_Base):
                 was_untouched = bool(ov.get("_existing") and not ov.get("_dirty"))
                 ov["new_text"] = new_txt
                 ov["text"] = new_txt
+                print(f"[DEBUG] [TabActions] _apply_text_edit_from_selection: updating active overlay to '{new_txt}'", flush=True)
                 if was_untouched:
                     ov["_dirty"] = True
                     self._on_overlay_committed(ov)
@@ -374,6 +390,8 @@ class TabActionsMixin(_Base):
                     self._on_overlay_transformed(ov, before_snap)
                 self._canvas.overlay_changed.emit()
                 self._canvas.update()
+                if hasattr(self, "_sync_thumbnails"):
+                    self._sync_thumbnails({ov.get("page", 0)})
                 self._status("Updated text applied (Ctrl+Z to undo)")
                 return
 
@@ -382,6 +400,7 @@ class TabActionsMixin(_Base):
         if page_idx < 0 or rect is None:
             return
         old_txt = getattr(self, "_last_selected_original_text", "")
+        print(f"[DEBUG] [TabActions] _apply_text_edit_from_selection: applying marquee text edit '{new_txt}' on page {page_idx + 1}", flush=True)
         edit = {
             "type": "text_edit",
             "page": page_idx,
@@ -403,6 +422,8 @@ class TabActionsMixin(_Base):
             self._canvas._active_sel_rect = None
         self._last_selected_rect = None
         self._canvas.update()
+        if hasattr(self, "_sync_thumbnails"):
+            self._sync_thumbnails({page_idx})
         self._status("Edited text applied (Ctrl+Z to undo)")
 
     def _redact_selection(self):
@@ -410,6 +431,7 @@ class TabActionsMixin(_Base):
         rect = getattr(self, "_last_selected_rect", None)
         if page_idx < 0 or rect is None:
             return
+        print(f"[DEBUG] [TabActions] _redact_selection on page {page_idx + 1}", flush=True)
         self._add({
             "type": "redact",
             "page": page_idx,
@@ -422,6 +444,8 @@ class TabActionsMixin(_Base):
         if hasattr(self, "_sel_result"):
             self._sel_result.setPlainText("")
         self._canvas.update()
+        if hasattr(self, "_sync_thumbnails"):
+            self._sync_thumbnails({page_idx})
         self._status("Selection redacted (Ctrl+Z to undo)")
 
     def _highlight_selection(self):
@@ -449,6 +473,7 @@ class TabActionsMixin(_Base):
         hi_color = getattr(self._canvas, "_highlight_color", None)
         if hi_color is None:
             hi_color = self._hi_color.color_tuple() if hasattr(self, "_hi_color") else (1.0, 1.0, 0.0)
+        print(f"[DEBUG] [TabActions] _highlight_selection on page {page_idx + 1}", flush=True)
         self._add({
             "type": "highlight",
             "page": page_idx,
@@ -456,6 +481,8 @@ class TabActionsMixin(_Base):
             "rects": line_rects if line_rects else None,
             "color": hi_color
         })
+        if hasattr(self, "_sync_thumbnails"):
+            self._sync_thumbnails({page_idx})
         self._status("Highlight added to selection")
 
     def _on_rect(self, page_idx: int, pdf_rect):
@@ -499,6 +526,8 @@ class TabActionsMixin(_Base):
                     "rect": pdf_rect,
                     "color": hi_color
                 })
+            if hasattr(self, "_sync_thumbnails"):
+                self._sync_thumbnails({page_idx})
             self._status("Highlight added (Ctrl+Z to undo)")
             return
 
@@ -583,6 +612,8 @@ class TabActionsMixin(_Base):
             return
         if mode == _MODE_REDACT:
             self._add({"type": "redact", "page": self._page_idx, "rect": pdf_rect, "fill": self._red_color.color_tuple()})
+            if hasattr(self, "_sync_thumbnails"):
+                self._sync_thumbnails({self._page_idx})
         elif mode == _MODE_IMAGE:
             img = self._img_drop.path()
             if not img or not os.path.isfile(img):
@@ -591,6 +622,8 @@ class TabActionsMixin(_Base):
                 if not img or not os.path.isfile(img):
                     return
             self._add({"type": "image", "page": self._page_idx, "rect": pdf_rect, "path": img})
+            if hasattr(self, "_sync_thumbnails"):
+                self._sync_thumbnails({self._page_idx})
         elif mode == _MODE_SIGNATURE:
             sig = self._signature_path
             if not sig or not os.path.isfile(sig):
@@ -599,6 +632,8 @@ class TabActionsMixin(_Base):
                 if not sig or not os.path.isfile(sig):
                     return
             self._add({"type": "signature", "page": self._page_idx, "rect": pdf_rect, "path": sig})
+            if hasattr(self, "_sync_thumbnails"):
+                self._sync_thumbnails({self._page_idx})
 
     def _on_point(self, page_idx: int, pdf_pt):
         self._page_idx = page_idx
@@ -684,6 +719,8 @@ class TabActionsMixin(_Base):
             if not txt:
                 return
             self._add({"type": "note", "page": self._page_idx, "point": pdf_pt, "text": txt})
+            if hasattr(self, "_sync_thumbnails"):
+                self._sync_thumbnails({self._page_idx})
         elif mode == _MODE_HIGHLIGHT:
             hit = self._canvas.get_span_at(page_idx, pdf_pt, max_dist=8.0)
             if hit:
@@ -697,28 +734,60 @@ class TabActionsMixin(_Base):
                     "rect": bb,
                     "color": hi_col
                 })
+                if hasattr(self, "_sync_thumbnails"):
+                    self._sync_thumbnails({page_idx})
                 self._status("Word highlighted")
 
     def _on_text_edit_committed(self, page_idx: int, edit: dict):
+        print(f"[DEBUG] [TabActions] _on_text_edit_committed on page {page_idx + 1}: '{edit.get('new_text', '')[:20]}'", flush=True)
         self._add(edit)
+        if hasattr(self, "_sync_thumbnails"):
+            self._sync_thumbnails({page_idx})
 
     def _on_signature_added(self, page_idx: int, rect, path: str):
+        print(f"[DEBUG] [TabActions] _on_signature_added on page {page_idx + 1}", flush=True)
         self._add({"type": "signature", "page": page_idx, "rect": rect, "path": path})
+        if hasattr(self, "_sync_thumbnails"):
+            self._sync_thumbnails({page_idx})
 
     def _on_overlay_deleted(self, idx: int, edit: dict):
+        page_idx = edit.get("page", 0)
+        print(f"[DEBUG] [TabActions] _on_overlay_deleted on page {page_idx + 1} (type='{edit.get('type')}', existing={edit.get('_existing')})", flush=True)
         self._history.handle_overlay_deleted(idx, edit)
+        if hasattr(self, "_sync_thumbnails"):
+            self._sync_thumbnails({page_idx})
 
     def _on_overlay_committed(self, edit: dict):
+        page_idx = edit.get("page", 0)
+        print(f"[DEBUG] [TabActions] _on_overlay_committed on page {page_idx + 1} (type='{edit.get('type')}', dirty={edit.get('_dirty')})", flush=True)
         self._history.handle_overlay_committed(edit)
+        if hasattr(self, "_sync_thumbnails"):
+            self._sync_thumbnails({page_idx})
 
     def _on_overlay_transformed(self, edit: dict, before_snap: dict):
+        page_idx = edit.get("page", 0)
+        print(f"[DEBUG] [TabActions] _on_overlay_transformed on page {page_idx + 1} (type='{edit.get('type')}')", flush=True)
         self._history.handle_overlay_transformed(edit, before_snap)
+        if hasattr(self, "_sync_thumbnails"):
+            self._sync_thumbnails({page_idx})
 
     def _on_overlay_arranged(self, info: dict):
+        page_idx = info.get("page", 0)
+        print(f"[DEBUG] [TabActions] _on_overlay_arranged on page {page_idx + 1}", flush=True)
         self._history.handle_overlay_arranged(info)
+        if hasattr(self, "_sync_thumbnails"):
+            self._sync_thumbnails({page_idx})
 
     def _on_overlay_duplicated(self, new_edit: dict):
+        page_idx = new_edit.get("page", 0)
+        print(f"[DEBUG] [TabActions] _on_overlay_duplicated on page {page_idx + 1}", flush=True)
         self._history.handle_overlay_duplicated(new_edit)
+        if hasattr(self, "_sync_thumbnails"):
+            self._sync_thumbnails({page_idx})
 
     def _on_note_deleted(self, overlay: dict):
+        page_idx = overlay.get("page", 0)
+        print(f"[DEBUG] [TabActions] _on_note_deleted on page {page_idx + 1}", flush=True)
         self._history.handle_note_deleted(overlay)
+        if hasattr(self, "_sync_thumbnails"):
+            self._sync_thumbnails({page_idx})

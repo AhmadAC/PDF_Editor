@@ -1,3 +1,4 @@
+
 # app/editor/apply_edits.py
 """PDF_Editor – Two-phase edit-application dispatcher supporting z-order, opacity, rotation, flip, and surgical image/drawing removal."""
 
@@ -283,27 +284,44 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
         )
     ]
 
+    print(f"[DEBUG] [apply_pending_edits] Total active edits to apply: {len(active_edits)}", flush=True)
+
     # Pre-extract embedded font archives before Phase 1 redacts text from pages
     prebuilt_archives: dict[int, tuple] = {}
     for e in active_edits:
         if e.get("type") == "text_edit" and not e.get("_deleted"):
             new_txt = (e.get("new_text") or "").strip()
             if new_txt:
-                pg = doc[e["page"]]
+                p_idx = min(len(doc) - 1, max(0, e.get("page", 0)))
+                pg = doc[p_idx]
                 prebuilt_archives[id(e)] = _build_embed_archive(fitz, doc, pg, e, new_txt)
 
     # Phase 1: Remove or redact all original existing elements being moved, edited, or deleted
     for e in active_edits:
         etype = e.get("type")
-        pg = doc[e["page"]]
+        p_idx = min(len(doc) - 1, max(0, e.get("page", 0)))
+        pg = doc[p_idx]
 
         if e.get("_existing"):
             if e.get("_existing_annot") or e.get("_annot_bbox"):
                 _delete_existing_annot(fitz, pg, e)
+                print(f"[DEBUG] [apply_pending_edits] Phase 1: Deleted existing annotation on page {p_idx + 1}", flush=True)
                 continue
 
             if etype in ("image", "signature") and e.get("_orig_rect"):
                 xref = e.get("_existing_xref")
+                orig_r = fitz.Rect(e["_orig_rect"])
+
+                # Resolve xref on pg if doc was cloned/inserted into tmp_doc where xrefs shifted
+                if not xref or not any(im[0] == xref for im in pg.get_images()):
+                    for im in pg.get_images():
+                        for ir in pg.get_image_rects(im[0]):
+                            if abs(ir.x0 - orig_r.x0) < 2.5 and abs(ir.y0 - orig_r.y0) < 2.5:
+                                xref = im[0]
+                                break
+                        if xref and any(im[0] == xref for im in pg.get_images()):
+                            break
+
                 removed_cleanly = False
                 if xref:
                     try:
@@ -315,39 +333,54 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                         if not used_elsewhere and len(same_pg_rects) <= 1 and hasattr(pg, "delete_image"):
                             pg.delete_image(xref)
                             removed_cleanly = True
+                            print(f"[DEBUG] [apply_pending_edits] Phase 1: Image xref {xref} deleted cleanly from page {p_idx + 1}", flush=True)
                         else:
                             removed_cleanly = _remove_single_image_do_from_page(doc, pg, xref)
-                    except Exception:
+                            print(f"[DEBUG] [apply_pending_edits] Phase 1: Image xref {xref} /Do removal={removed_cleanly} from page {p_idx + 1}", flush=True)
+                    except Exception as err:
+                        print(f"[DEBUG] [apply_pending_edits] Phase 1: Image deletion error: {err}", flush=True)
                         removed_cleanly = False
                 if not removed_cleanly:
+                    bg_col = e.get("_bg_color")
+                    fill_col = tuple(c / 255.0 for c in bg_col) if bg_col else (1.0, 1.0, 1.0)
                     try:
-                        pg.add_redact_annot(fitz.Rect(e["_orig_rect"]), fill=False, cross_out=False)
+                        pg.add_redact_annot(orig_r, fill=False, cross_out=False)
                         pg.apply_redactions(images=img_remove, graphics=la_none, text=txt_none)
+                        print(f"[DEBUG] [apply_pending_edits] Phase 1: Redacted original image area {orig_r} on page {p_idx + 1}", flush=True)
                     except Exception:
-                        pg.add_redact_annot(fitz.Rect(e["_orig_rect"]), fill=(1, 1, 1))
+                        pg.add_redact_annot(orig_r, fill=fill_col)
                         pg.apply_redactions()
+                        print(f"[DEBUG] [apply_pending_edits] Phase 1: Filled redaction applied for original image area on page {p_idx + 1}", flush=True)
                 continue
 
             if etype == "drawing" and e.get("_orig_rect"):
                 pad = max(1.0, float(e.get("width", 1.0)) * 0.75 + 0.5)
                 orig_r = fitz.Rect(e["_orig_rect"]) + fitz.Rect(-pad, -pad, pad, pad)
+                bg_col = e.get("_bg_color")
+                fill_col = tuple(c / 255.0 for c in bg_col) if bg_col else (1.0, 1.0, 1.0)
                 try:
                     pg.add_redact_annot(orig_r, fill=False, cross_out=False)
                     pg.apply_redactions(images=img_none, graphics=la_covered, text=txt_none)
+                    print(f"[DEBUG] [apply_pending_edits] Phase 1: Redacted original drawing area {orig_r} on page {p_idx + 1}", flush=True)
                 except Exception:
-                    pg.add_redact_annot(orig_r, fill=(1, 1, 1))
+                    pg.add_redact_annot(orig_r, fill=fill_col)
                     pg.apply_redactions()
+                    print(f"[DEBUG] [apply_pending_edits] Phase 1: Filled redaction applied for drawing area on page {p_idx + 1}", flush=True)
                 continue
 
         if etype == "text_edit":
             size = _text_edit_size(e)
             redact_r = _text_edit_redaction_rect(fitz, e, size)
+            bg_col = e.get("_bg_color")
+            fill_col = tuple(c / 255.0 for c in bg_col) if bg_col else (1.0, 1.0, 1.0)
             try:
                 pg.add_redact_annot(redact_r, fill=False, cross_out=False)
                 pg.apply_redactions(images=img_none, graphics=la_none, text=txt_remove)
+                print(f"[DEBUG] [apply_pending_edits] Phase 1: Redacted text area {redact_r} on page {p_idx + 1}", flush=True)
             except Exception:
-                pg.add_redact_annot(redact_r, fill=(1, 1, 1))
+                pg.add_redact_annot(redact_r, fill=fill_col)
                 pg.apply_redactions()
+                print(f"[DEBUG] [apply_pending_edits] Phase 1: Filled redaction applied for text area on page {p_idx + 1}", flush=True)
 
     # Phase 2: Insert back-layer items first (in reverse so index 0 ends up furthest back), then foreground items in order
     back_edits = [e for e in active_edits if not e.get("_deleted") and e.get("_z_back")]
@@ -357,7 +390,8 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
     embedded_font = False
     for e in ordered_phase2:
         etype = e.get("type")
-        pg = doc[e["page"]]
+        p_idx = min(len(doc) - 1, max(0, e.get("page", 0)))
+        pg = doc[p_idx]
         op = max(0.0, min(1.0, float(e.get("opacity", 1.0))))
         overlay_flag = not bool(e.get("_z_back", False))
         rot = int(e.get("rotation", 0)) % 360
@@ -367,6 +401,7 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
         if etype == "redact":
             pg.add_redact_annot(e["rect"], fill=e["fill"])
             pg.apply_redactions()
+            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted redaction on page {p_idx + 1}", flush=True)
 
         elif etype == "check":
             r = fitz.Rect(e["rect"])
@@ -393,6 +428,7 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
             shape.draw_polyline(fpts)
             shape.finish(color=col, width=stroke_w, stroke_opacity=op, lineCap=1, lineJoin=1)
             shape.commit(overlay=overlay_flag)
+            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted checkmark on page {p_idx + 1}", flush=True)
 
         elif etype == "cross":
             r = fitz.Rect(e["rect"])
@@ -410,9 +446,11 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
             shape.draw_line(p3, p4)
             shape.finish(color=col, width=stroke_w, stroke_opacity=op, lineCap=1, lineJoin=1)
             shape.commit(overlay=overlay_flag)
+            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted crossmark on page {p_idx + 1}", flush=True)
 
         elif etype == "drawing":
             _insert_drawing_overlay(fitz, pg, e)
+            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted drawing overlay on page {p_idx + 1}", flush=True)
 
         elif etype == "text":
             fname = (e.get("font", "") or "").lower()
@@ -456,6 +494,7 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                     cx, cy = float(pt.x), float(pt.y)
                 kw["morph"] = (fitz.Point(cx, cy), _build_transform_matrix(fitz, rot, flip_h, flip_v))
             pg.insert_text(e["point"], e["text"], **kw)
+            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted text '{e.get('text', '')[:20]}' on page {p_idx + 1}", flush=True)
 
         elif etype in ("image", "signature"):
             path = e.get("path", "")
@@ -468,6 +507,7 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                 pg.insert_image(e["rect"], stream=stream_bytes, overlay=overlay_flag, keep_proportion=False)
             else:
                 pg.insert_image(e["rect"], filename=path, overlay=overlay_flag, keep_proportion=False)
+            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted image at {e.get('rect')} on page {p_idx + 1}", flush=True)
 
         elif etype == "highlight":
             rects = e.get("rects")
@@ -487,9 +527,11 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                     a.update(opacity=op)
                 else:
                     a.update()
+            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted highlight on page {p_idx + 1}", flush=True)
 
         elif etype == "note":
             pg.add_text_annot(e["point"], e["text"])
+            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted note on page {p_idx + 1}", flush=True)
 
         elif etype == "draw":
             stroke = [(float(x), float(y)) for x, y in e.get("points", [])]
@@ -501,6 +543,7 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                     annot.update(opacity=op)
                 else:
                     annot.update()
+            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted ink stroke on page {p_idx + 1}", flush=True)
 
         elif etype == "delete_annot":
             target_type = e.get("annot_type")
@@ -522,6 +565,7 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                 prebuilt_archive=prebuilt_archives.get(id(e)),
             ):
                 embedded_font = True
+            print(f"[DEBUG] [apply_pending_edits] Phase 2: Reinserted text edit on page {p_idx + 1}", flush=True)
 
     result.embedded_font = embedded_font
     if embedded_font:
@@ -530,3 +574,4 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
         except Exception:
             _log.exception("subset_fonts after text edit failed")
     return result
+

@@ -1,3 +1,4 @@
+
 # app/viewer/thumbnail_worker.py
 """Thumbnail background rendering worker, live edit preview support, file logging, and geometry sizing constants."""
 
@@ -6,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import traceback
 
 from PySide6.QtCore import QStandardPaths, QThread, Signal
 from PySide6.QtGui import QImage
@@ -115,11 +117,8 @@ class ThumbnailWorker(QThread):
             try:
                 doc = fitz.open(self._doc_path)
             except Exception as exc:
-                _log.warning(
-                    "ThumbnailWorker: failed to open %r: %s",
-                    self._doc_path,
-                    exc,
-                )
+                print(f"[DEBUG] ThumbnailWorker: failed to open {self._doc_path}: {exc}", flush=True)
+                _log.warning("ThumbnailWorker: failed to open %r: %s", self._doc_path, exc)
                 return
             if self._password and doc.needs_pass:
                 with contextlib.suppress(Exception):
@@ -137,14 +136,9 @@ class ThumbnailWorker(QThread):
                     continue
                 tmp_doc = None
                 try:
-                    _log.debug(
-                        "ThumbnailWorker: rendering pos %d (page %d/%d)",
-                        pos + 1,
-                        src_idx + 1,
-                        page_count,
-                    )
                     edits = self._page_edits.get(src_idx)
                     if edits:
+                        print(f"[DEBUG] ThumbnailWorker: page {src_idx + 1} has {len(edits)} live pending edit(s) — applying to thumbnail clone", flush=True)
                         from app.editor.apply_edits import apply_pending_edits
                         tmp_doc = fitz.open()
                         tmp_doc.insert_pdf(doc, from_page=src_idx, to_page=src_idx)
@@ -190,35 +184,24 @@ class ThumbnailWorker(QThread):
                     ).copy()
                     img.setDevicePixelRatio(self._dpr)
                     rendered += 1
+                    print(f"[DEBUG] ThumbnailWorker: generated thumbnail QImage for page {src_idx + 1} (size {img.width()}x{img.height()})", flush=True)
                     self.thumbnail_ready.emit(pos, img, self._epoch)
                 except Exception as exc:
-                    _log.warning(
-                        "ThumbnailWorker: failed to render pos %d: %s",
-                        pos + 1,
-                        exc,
-                    )
+                    print(f"[DEBUG] ThumbnailWorker: render error on page {src_idx + 1}: {exc}\n{traceback.format_exc()}", flush=True)
+                    _log.warning("ThumbnailWorker: failed to render pos %d: %s", pos + 1, exc)
                     continue
                 finally:
                     if tmp_doc is not None:
                         with contextlib.suppress(Exception):
                             tmp_doc.close()
         except Exception as exc:
-            _log.error(
-                "ThumbnailWorker: fatal error, no thumbnails produced: %s",
-                exc,
-            )
+            print(f"[DEBUG] ThumbnailWorker: fatal worker error: {exc}\n{traceback.format_exc()}", flush=True)
+            _log.error("ThumbnailWorker: fatal error, no thumbnails produced: %s", exc)
         finally:
             if doc is not None:
                 with contextlib.suppress(Exception):
                     doc.close()
             if requested and rendered == 0 and not self._cancelled:
-                _log.warning(
-                    "ThumbnailWorker: rendered 0/%d pages for %r",
-                    requested,
-                    self._doc_path,
-                )
+                _log.warning("ThumbnailWorker: rendered 0/%d pages for %r", requested, self._doc_path)
                 with contextlib.suppress(RuntimeError):
-                    self.render_failed.emit(
-                        self._epoch,
-                        f"rendered 0/{requested} pages",
-                    )
+                    self.render_failed.emit(self._epoch, f"rendered 0/{requested} pages")

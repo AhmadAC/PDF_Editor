@@ -1,3 +1,4 @@
+
 # app/editor/tab_document.py
 """PDF_Editor – Document loading, caching, password authentication, and asset file dialogs for TabEditar."""
 
@@ -54,6 +55,7 @@ class TabDocumentMixin(_Base):
         def _update_nav(self) -> None: ...
         def _populate_toc(self, doc: fitz.Document | None) -> None: ...
         def _status(self, msg: str) -> None: ...
+        def _sync_thumbnails(self, affected_pages: set[int] | list[int] | None = None) -> None: ...
 
     def _save_current_doc_state(self):
         """Save the current document's pending edits, scroll, zoom, and active page before switching away."""
@@ -77,6 +79,7 @@ class TabDocumentMixin(_Base):
             "last_selected_rect": self._last_selected_rect,
             "last_selected_original_text": self._last_selected_original_text,
         }
+        print(f"[DEBUG] [TabDocument] _save_current_doc_state: saved state for {os.path.basename(self._doc_path)} ({len(self._pending)} pending edits)", flush=True)
 
     def _restore_scroll(self, val_v: int, val_h: int) -> None:
         if hasattr(self, "_canvas_scroll"):
@@ -103,6 +106,7 @@ class TabDocumentMixin(_Base):
 
         key = os.path.abspath(p)
         saved = self._doc_states.get(key)
+        print(f"[DEBUG] [TabDocument] _load_pdf: loading {p} (has_saved_state={bool(saved)})", flush=True)
 
         try:
             probe = fitz.open(p)
@@ -162,6 +166,9 @@ class TabDocumentMixin(_Base):
         if hasattr(self, "_thumbnails"):
             self._thumbnails.set_document(p, n, password=self._pdf_password)
             self._thumbnails.set_current_page(self._page_idx)
+            if hasattr(self, "_sync_thumbnails"):
+                self._sync_thumbnails()
+
         if hasattr(self, "_populate_toc"):
             self._populate_toc(self._canvas._doc)
 
@@ -202,6 +209,7 @@ class TabDocumentMixin(_Base):
         self._page_idx = 0
         self._update_nav()
         self._clear_pdf_password()
+        print("[DEBUG] [TabDocument] _close_pdf: document closed and thumbnails cleared", flush=True)
 
     def _clear_pdf_password(self) -> None:
         from app.utils import wipe_pdf_password
