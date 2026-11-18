@@ -130,7 +130,7 @@ class WindowPipelineMixin(_Base):
             fn = getattr(w, "_undo", None)
             if callable(fn):
                 fn()
-        elif self._current_tool == -1 and self._viewer:
+        elif self._viewer:
             self._viewer.undo()
 
     def _handle_global_redo(self):
@@ -154,7 +154,7 @@ class WindowPipelineMixin(_Base):
             fn = getattr(w, "_redo", None)
             if callable(fn):
                 fn()
-        elif self._current_tool == -1 and self._viewer:
+        elif self._viewer:
             self._viewer.redo()
 
     def _on_pipeline_done(self, temp_path: str):
@@ -297,7 +297,8 @@ class WindowPipelineMixin(_Base):
                 return
             out = os.path.normpath(out)
             self._remember_save_dir(os.path.dirname(out))
-            if getattr(edit_w, "_user_pending", None):
+            has_page_ops = hasattr(edit_w, "_history") and edit_w._history.has_page_ops()
+            if getattr(edit_w, "_user_pending", None) or has_page_ops:
                 edit_w._drop_out.set_path(out)
                 from app.editor.tab_operations import apply_visual_edits_and_save
                 apply_visual_edits_and_save(edit_w, out)

@@ -583,6 +583,8 @@ class PanelNavMixin(_Base):
                 QMessageBox.critical(self, t("viewer.error_open"), f"Could not convert '{os.path.basename(path)}' to PDF:\n{ex}")
                 return
 
+        preserved_pwd = getattr(self, "_pdf_password", "") if _is_history_step else ""
+
         if not _is_history_step:
             self._original_doc_path = path
             self._cleanup_history_files()
@@ -594,28 +596,33 @@ class PanelNavMixin(_Base):
             self._fitz_doc = None
             self._reset_search_state()
             self._thumbnails.clear()
-            self._clear_pdf_password()
+            if not _is_history_step:
+                self._clear_pdf_password()
         try:
             doc = fitz.open(path)
         except Exception as ex:
             _log.exception("Error opening PDF: %s", path)
             QMessageBox.critical(self, t("viewer.error_open"), t("viewer.error_open_msg", ex=ex))
             return
-        self._pdf_password = ""
+        self._pdf_password = preserved_pwd
         if doc.needs_pass:
-            from app.editor.dialogs import _PdfPasswordDialog
-            wrong = False
-            while True:
-                dlg = _PdfPasswordDialog(os.path.basename(path), wrong=wrong, parent=self)
-                if dlg.exec() != QDialog.DialogCode.Accepted:
-                    doc.close()
-                    self._reset_to_placeholder()
-                    return
-                winner = authenticate_fitz(doc, dlg.password())
-                if winner is not None:
-                    self._pdf_password = winner
-                    break
-                wrong = True
+            winner = authenticate_fitz(doc, self._pdf_password) if self._pdf_password else None
+            if winner is not None:
+                self._pdf_password = winner
+            else:
+                from app.editor.dialogs import _PdfPasswordDialog
+                wrong = False
+                while True:
+                    dlg = _PdfPasswordDialog(os.path.basename(path), wrong=wrong, parent=self)
+                    if dlg.exec() != QDialog.DialogCode.Accepted:
+                        doc.close()
+                        self._reset_to_placeholder()
+                        return
+                    winner = authenticate_fitz(doc, dlg.password())
+                    if winner is not None:
+                        self._pdf_password = winner
+                        break
+                    wrong = True
         self._current_path = path
         self._fitz_doc = doc
         self.set_page_rotations({})
@@ -680,12 +687,14 @@ class PanelNavMixin(_Base):
             btn.setEnabled(True)
         self._toc_btn.setVisible(True)
         self._toc_btn.setEnabled(True)
-        self._thumbnails.set_document(path, doc.page_count, password=getattr(self, "_pdf_password", ""))
 
+        self._thumbnails.blockSignals(True)
+        self._thumbnails.set_document(path, doc.page_count, password=getattr(self, "_pdf_password", ""))
         if selected_pages:
             self._thumbnails.set_selected_pages(selected_pages)
         else:
             self._thumbnails.set_current_page(target_page)
+        self._thumbnails.blockSignals(False)
 
         self._populate_toc(doc, active_sidebar_tab=active_sidebar_tab)
         if isinstance(active_sidebar_tab, QWidget) and self._sidebar_tabs.indexOf(active_sidebar_tab) != -1:
@@ -694,6 +703,8 @@ class PanelNavMixin(_Base):
             self._sidebar_tabs.setCurrentIndex(active_sidebar_tab)
 
         self._update_page_label()
+        if win and hasattr(win, "_update_undo_redo_buttons"):
+            win._update_undo_redo_buttons()
         _log.info("Successfully opened: %s (%d pages)", path, doc.page_count)
 
     def _update_page_label(self):
@@ -787,4 +798,3 @@ class PanelNavMixin(_Base):
         except Exception:
             pass
         super().closeEvent(event)
-

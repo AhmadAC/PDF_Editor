@@ -1,7 +1,5 @@
-
-
 # app/editor/tab_nav.py
-"""PDF_Editor – Navigation, thumbnails, TOC, splitter layout, and thumbnail page operations for TabEditar."""
+"""PDF_Editor – Navigation, thumbnails, TOC, splitter layout, and undoable thumbnail page operations for TabEditar."""
 
 from __future__ import annotations
 
@@ -40,7 +38,7 @@ else:
 
 
 def _clone_overlay_for_page(ov: dict, target_page: int) -> dict:
-    """Deep-clone an overlay dict safely (handling fitz.Rect / fitz.Point) targeting `target_page`."""
+    """Deep-clone an overlay dict safely (handling fitz.Rect / fitz.Point / runs) targeting `target_page`."""
     cloned = dict(ov)
     cloned["page"] = target_page
     if "rect" in cloned and cloned["rect"] is not None:
@@ -65,13 +63,15 @@ def _clone_overlay_for_page(ov: dict, target_page: int) -> dict:
         cloned["point"] = fitz.Point(cloned["point"])
     if "items" in cloned and cloned["items"] is not None:
         cloned["items"] = list(cloned["items"])
+    if "runs" in cloned and cloned["runs"] is not None:
+        cloned["runs"] = [dict(r) for r in cloned["runs"]]
     if "children" in cloned and cloned["children"] is not None:
         cloned["children"] = [_clone_overlay_for_page(ch, target_page) for ch in cloned["children"]]
     return cloned
 
 
 class TabNavMixin(_Base):
-    """Mixin encapsulating page scrolling, thumbnails, TOC synchronization, and page operations."""
+    """Mixin encapsulating page scrolling, thumbnails, TOC synchronization, and undoable page operations."""
 
     if TYPE_CHECKING:
         _canvas: PdfEditCanvas
@@ -90,6 +90,7 @@ class TabNavMixin(_Base):
         _doc_path: str | None
         _pdf_password: str
         _pending: list[dict]
+        _editor_temp_files: set[str]
         _drop_out: Any
         _drop_in: Any
         _lbl_info: Any
@@ -266,57 +267,47 @@ class TabNavMixin(_Base):
 
     # ── Thumbnail Page Operations inside Edit Mode ────────────────────────
 
-    def _commit_editor_temp_pdf(
-        self,
-        new_doc: fitz.Document,
-        new_pending: list[dict],
-        target_page: int,
-        selected_pages: list[int],
-    ) -> None:
-        """Persist a page-restructured PDF to a temp file, keep _drop_out pointing to the real target, and sync viewer."""
-        win: Any = self.window()
-        viewer = getattr(win, "_viewer", None) if win else None
-        orig_out = (self._drop_out.path() if hasattr(self, "_drop_out") else "") or self._doc_path or ""
-        if viewer is not None:
-            ps_map = getattr(win, "_pipeline_state", {})
-            ps = ps_map.get(id(viewer)) if isinstance(ps_map, dict) else None
-            if ps and ps.get("original_path"):
-                orig_out = ps["original_path"]
-            elif getattr(viewer, "_original_doc_path", ""):
-                orig_out = viewer._original_doc_path
+    def _cleanup_editor_temp_files(self) -> None:
+        files = getattr(self, "_editor_temp_files", set())
+        out_p = self._drop_out.path() if hasattr(self, "_drop_out") else ""
+        for p in list(files):
+            if p and os.path.isfile(p) and p != self._doc_path and p != out_p:
+                with contextlib.suppress(Exception):
+                    os.unlink(p)
+        if hasattr(self, "_editor_temp_files"):
+            self._editor_temp_files.clear()
 
-        fd, temp_path = tempfile.mkstemp(prefix="PDF_Editor_editpages_", suffix=".pdf")
-        os.close(fd)
-        temp_path = os.path.normpath(temp_path)
+    def _apply_editor_doc_state(self, state: dict) -> None:
+        """Apply a saved page_doc snapshot (used for both forward page commits and Ctrl+Z/Ctrl+Y undo/redo)."""
+        doc_path = state.get("doc_path")
+        if not doc_path or not os.path.isfile(doc_path):
+            return
 
-        cur_zf = float(getattr(self._canvas, "_zoom_factor", 1.0) or 1.0)
-        cur_scroll_v = self._canvas_scroll.verticalScrollBar().value()
-        cur_scroll_h = self._canvas_scroll.horizontalScrollBar().value()
-
-        if viewer is not None and hasattr(viewer, "_history_temp_files"):
-            viewer._history_temp_files.add(temp_path)
-
-        atomic_pdf_write(
-            new_doc,
-            temp_path,
-            save_opts={"garbage": 4, "deflate": True},
-            close_writer=True,
+        orig_out = state.get("orig_out") or (
+            (self._drop_out.path() if hasattr(self, "_drop_out") else "") or doc_path
         )
+        new_pending = [
+            _clone_overlay_for_page(ov, ov.get("page", 0))
+            for ov in state.get("pending", [])
+        ]
+        target_page = max(0, int(state.get("page_idx", 0) or 0))
+        selected_pages = list(state.get("selected_pages") or [target_page])
+        cur_zf = float(getattr(self._canvas, "_zoom_factor", 1.0) or 1.0)
 
-        self._doc_path = temp_path
+        self._doc_path = doc_path
         self._pending[:] = new_pending
-        self._page_idx = max(0, target_page)
+        self._page_idx = target_page
 
         if hasattr(self, "_drop_in"):
             self._drop_in.blockSignals(True)
-            self._drop_in.set_path(temp_path, display_name=os.path.basename(orig_out))
+            self._drop_in.set_path(doc_path, display_name=os.path.basename(orig_out))
             self._drop_in.blockSignals(False)
         if hasattr(self, "_drop_out") and orig_out:
             self._drop_out.set_path(orig_out)
 
         target_anchor = (self._page_idx, 0.0, 0.0, 0.0, 0.0)
         self._canvas.load(
-            temp_path,
+            doc_path,
             password=self._pdf_password,
             initial_zoom_factor=cur_zf,
             initial_page=self._page_idx,
@@ -331,7 +322,7 @@ class TabNavMixin(_Base):
 
         if hasattr(self, "_thumbnails"):
             self._thumbnails.blockSignals(True)
-            self._thumbnails.set_document(temp_path, n, password=self._pdf_password)
+            self._thumbnails.set_document(doc_path, n, password=self._pdf_password)
             if selected_pages:
                 self._thumbnails.set_selected_pages(selected_pages)
             else:
@@ -341,16 +332,20 @@ class TabNavMixin(_Base):
         self._populate_toc(self._canvas._doc)
         self._history.rebuild_pending_list()
 
-        # Sync the underlying Viewer tab & pipeline dirty state so Save / exiting Edit Mode stays consistent
+        win: Any = self.window()
+        viewer = getattr(win, "_viewer", None) if win else None
         if win and viewer is not None:
             ps_map = getattr(win, "_pipeline_state", None)
             if isinstance(ps_map, dict):
-                ps_map[id(viewer)] = {
-                    "original_path": orig_out,
-                    "temp_path": temp_path,
-                }
+                if os.path.normcase(os.path.abspath(doc_path)) == os.path.normcase(os.path.abspath(orig_out)):
+                    ps_map.pop(id(viewer), None)
+                else:
+                    ps_map[id(viewer)] = {
+                        "original_path": orig_out,
+                        "temp_path": doc_path,
+                    }
             viewer.load(
-                temp_path,
+                doc_path,
                 target_page=self._page_idx,
                 target_scroll=-1,
                 selected_pages=selected_pages,
@@ -361,6 +356,75 @@ class TabNavMixin(_Base):
                 win._sync_edit_dirty_indicator()
             if hasattr(win, "_update_page_nav"):
                 win._update_page_nav()
+
+    def _commit_editor_temp_pdf(
+        self,
+        new_doc: fitz.Document,
+        new_pending: list[dict],
+        target_page: int,
+        selected_pages: list[int],
+    ) -> None:
+        """Persist a page-restructured PDF to a temp file, record undo/redo state, and sync viewer."""
+        win: Any = self.window()
+        viewer = getattr(win, "_viewer", None) if win else None
+        orig_out = (self._drop_out.path() if hasattr(self, "_drop_out") else "") or self._doc_path or ""
+        if viewer is not None:
+            ps_map = getattr(win, "_pipeline_state", {})
+            ps = ps_map.get(id(viewer)) if isinstance(ps_map, dict) else None
+            if ps and ps.get("original_path"):
+                orig_out = ps["original_path"]
+            elif getattr(viewer, "_original_doc_path", ""):
+                orig_out = viewer._original_doc_path
+
+        before_doc_path = self._doc_path or orig_out
+        before_pending = [
+            _clone_overlay_for_page(ov, ov.get("page", 0))
+            for ov in self._pending
+        ]
+        before_page_idx = int(getattr(self, "_page_idx", 0) or 0)
+        before_selected = (
+            self._thumbnails.selected_pages()
+            if hasattr(self, "_thumbnails")
+            else [before_page_idx]
+        )
+        before_state = {
+            "doc_path": before_doc_path,
+            "pending": before_pending,
+            "page_idx": before_page_idx,
+            "selected_pages": before_selected,
+            "orig_out": orig_out,
+        }
+
+        fd, temp_path = tempfile.mkstemp(prefix="PDF_Editor_editpages_", suffix=".pdf")
+        os.close(fd)
+        temp_path = os.path.normpath(temp_path)
+
+        if not hasattr(self, "_editor_temp_files"):
+            self._editor_temp_files = set()
+        self._editor_temp_files.add(temp_path)
+        if viewer is not None and hasattr(viewer, "_history_temp_files"):
+            viewer._history_temp_files.add(temp_path)
+
+        atomic_pdf_write(
+            new_doc,
+            temp_path,
+            save_opts={"garbage": 4, "deflate": True},
+            close_writer=True,
+        )
+
+        after_state = {
+            "doc_path": temp_path,
+            "pending": [
+                _clone_overlay_for_page(ov, ov.get("page", 0))
+                for ov in new_pending
+            ],
+            "page_idx": max(0, target_page),
+            "selected_pages": list(selected_pages) if selected_pages else [max(0, target_page)],
+            "orig_out": orig_out,
+        }
+
+        self._apply_editor_doc_state(after_state)
+        self._history.record_page_doc_change(before_state, after_state)
 
     def _edit_duplicate_pages(self, pages: list[int], count: int = 1) -> None:
         if not self._doc_path or not os.path.isfile(self._doc_path):
@@ -400,7 +464,7 @@ class TabNavMixin(_Base):
 
             target_pg = new_selected[0] if new_selected else 0
             self._commit_editor_temp_pdf(new_doc, new_pending, target_pg, new_selected)
-            self._status(f"Duplicated {len(pages_set)} page(s) × {count} (Ctrl+S to save)")
+            self._status(f"Duplicated {len(pages_set)} page(s) × {count} (Ctrl+Z to undo)")
         except Exception as exc:
             show_error(self, exc)
 
@@ -430,7 +494,7 @@ class TabNavMixin(_Base):
                 new_doc.new_page(width=r0.width, height=r0.height)
                 doc.close()
                 self._commit_editor_temp_pdf(new_doc, [], 0, [0])
-                self._status(f"Deleted {len(valid)} page(s) (Ctrl+S to save)")
+                self._status(f"Deleted {len(valid)} page(s) (Ctrl+Z to undo)")
                 return
 
             kept = [i for i in range(doc.page_count) if i not in set(valid)]
@@ -447,7 +511,7 @@ class TabNavMixin(_Base):
             ]
             target = min(valid[0], new_doc.page_count - 1)
             self._commit_editor_temp_pdf(new_doc, new_pending, target, [target])
-            self._status(f"Deleted {len(valid)} page(s) (Ctrl+S to save)")
+            self._status(f"Deleted {len(valid)} page(s) (Ctrl+Z to undo)")
         except Exception as exc:
             show_error(self, exc)
 
@@ -473,7 +537,7 @@ class TabNavMixin(_Base):
                 new_pg = pg + count if pg >= insert_at else pg
                 new_pending.append(_clone_overlay_for_page(ov, new_pg))
             self._commit_editor_temp_pdf(doc, new_pending, insert_at, new_selected)
-            self._status(f"Inserted {count} blank page(s) (Ctrl+S to save)")
+            self._status(f"Inserted {count} blank page(s) (Ctrl+Z to undo)")
         except Exception as exc:
             show_error(self, exc)
 
@@ -516,7 +580,7 @@ class TabNavMixin(_Base):
                 new_pg = pg + total_inserted if pg >= insert_at else pg
                 new_pending.append(_clone_overlay_for_page(ov, new_pg))
             self._commit_editor_temp_pdf(doc, new_pending, insert_at, new_selected)
-            self._status(f"Inserted {total_inserted} page(s) from {os.path.basename(p)} (Ctrl+S to save)")
+            self._status(f"Inserted {total_inserted} page(s) from {os.path.basename(p)} (Ctrl+Z to undo)")
         except Exception as exc:
             show_error(self, exc)
 
@@ -558,7 +622,7 @@ class TabNavMixin(_Base):
                 if not ov.get("_deleted") and ov.get("page", 0) in old_to_new
             ]
             self._commit_editor_temp_pdf(new_doc, new_pending, target_pg, new_selected)
-            self._status(status_msg + " (Ctrl+S to save)")
+            self._status(status_msg + " (Ctrl+Z to undo)")
         except Exception as exc:
             show_error(self, exc)
 
@@ -576,7 +640,7 @@ class TabNavMixin(_Base):
             new_pending = [_clone_overlay_for_page(ov, ov.get("page", 0)) for ov in self._pending if not ov.get("_deleted")]
             target_pg = min(pages) if pages else 0
             self._commit_editor_temp_pdf(doc, new_pending, target_pg, pages)
-            self._status(f"Rotated {len(pages)} page(s) (Ctrl+S to save)")
+            self._status(f"Rotated {len(pages)} page(s) (Ctrl+Z to undo)")
         except Exception as exc:
             show_error(self, exc)
 
@@ -780,7 +844,7 @@ class TabNavMixin(_Base):
             return
         self._toc_tree.clear()
         if not doc:
-            if hasattr(self, "_sidebar_tabs") and hasattr(self, "_sidebar_tabs") and hasattr(self._sidebar_tabs, "setTabVisible"):
+            if hasattr(self, "_sidebar_tabs") and hasattr(self._sidebar_tabs, "setTabVisible"):
                 self._sidebar_tabs.setTabVisible(self._toc_tab_idx, False)
             return
         try:
@@ -825,4 +889,3 @@ class TabNavMixin(_Base):
             if hasattr(self, "_canvas") and self._canvas._doc:
                 QTimer.singleShot(0, self._canvas.relayout_to_viewport)
         return super().eventFilter(obj, event)
-

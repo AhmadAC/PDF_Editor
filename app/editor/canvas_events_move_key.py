@@ -9,6 +9,7 @@ import fitz
 from PySide6.QtCore import QPoint, QRect, Qt
 
 from app.editor.canvas_events_helpers import (
+    _find_tab_editar,
     _resize_overlay_from_rect,
     _translate_overlay,
 )
@@ -210,6 +211,17 @@ class CanvasMoveKeyMixin:
         c = self.canvas
         key = e.key()
         modifiers = e.modifiers()
+
+        if (modifiers & Qt.KeyboardModifier.ControlModifier) and not (
+            modifiers & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)
+        ):
+            if Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
+                digit = key - Qt.Key.Key_0
+                tab = _find_tab_editar(c)
+                if tab and hasattr(tab, "_apply_color_shortcut"):
+                    if tab._apply_color_shortcut(digit):
+                        e.accept()
+                        return
 
         if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             if c._selected_overlay_idx >= 0:

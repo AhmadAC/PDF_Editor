@@ -1,18 +1,61 @@
 # app/editor/canvas_painter1.py
-"""Canvas painter: renders pages, overlays, grouped pictures, vector drawings, opacity, rotation, flips, check/cross stamps, text, notes, and strokes."""
+"""Canvas painter: renders pages, overlays, multi-color text runs, grouped pictures, vector drawings, opacity, rotation, flips, check/cross stamps, text, notes, and strokes."""
 
 from __future__ import annotations
 
 import os
 import fitz
 from PySide6.QtCore import Qt, QRect, QRectF, QPoint, QPointF
-from PySide6.QtGui import QPainter, QColor, QPen, QFont, QPixmap, QPainterPath
+from PySide6.QtGui import QPainter, QColor, QPen, QFont, QFontMetricsF, QPixmap, QPainterPath
 
 from app.constants import ACCENT, TEXT_SEC
 from app.i18n import t
 from app.editor.canvas_overlay1 import overlay_pdf_rect, rects_close
 from app.editor.canvas_render1 import _NOTE_ICON_SIZE, _load_overlay_pixmap
 from app.editor.canvas_text1 import _resolve_font_family
+
+
+def _to_qcolor(c) -> QColor:
+    if isinstance(c, int):
+        return QColor((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF)
+    if isinstance(c, (list, tuple)) and len(c) >= 3:
+        return QColor(
+            max(0, min(255, int(round(float(c[0]) * 255)))),
+            max(0, min(255, int(round(float(c[1]) * 255)))),
+            max(0, min(255, int(round(float(c[2]) * 255)))),
+        )
+    return QColor("#000000")
+
+
+def _draw_text_with_runs(
+    p: QPainter,
+    bx: float,
+    by: float,
+    text: str,
+    runs: list[dict] | None,
+    base_font: QFont,
+    base_color,
+) -> None:
+    if not runs:
+        p.setFont(base_font)
+        p.setPen(_to_qcolor(base_color))
+        p.drawText(QPointF(bx, by), text)
+        return
+
+    cur_x = bx
+    for run in runs:
+        rt = run.get("text", "")
+        if not rt:
+            continue
+        rf = QFont(base_font)
+        if "bold" in run:
+            rf.setBold(bool(run["bold"]))
+        if "italic" in run:
+            rf.setItalic(bool(run["italic"]))
+        p.setFont(rf)
+        p.setPen(_to_qcolor(run.get("color", base_color)))
+        p.drawText(QPointF(cur_x, by), rt)
+        cur_x += QFontMetricsF(rf).horizontalAdvance(rt)
 
 
 def _draw_selection_box(p: QPainter, qr: QRect, handle_size: int = 8, draw_handles: bool = True, is_locked: bool = False) -> None:
@@ -302,7 +345,6 @@ def _paint_overlay_body(
         if not skip_body_for_z_back:
             p.save()
             p.setOpacity(op)
-            p.setPen(QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255)))
             fname = e.get("font", "Helvetica")
             resolved_fam = _resolve_font_family(fname)
             f2 = QFont(resolved_fam)
@@ -312,14 +354,14 @@ def _paint_overlay_body(
                 f2.setBold(True)
             if (flags & 2) or "italic" in fname.lower() or "oblique" in fname.lower():
                 f2.setItalic(True)
-            p.setFont(f2)
+            runs = e.get("runs")
             if (rot or flip_h or flip_v) and r is not None:
                 cx = (r.x0 + r.x1) * 0.5 * z
                 cy = yo + (r.y0 + r.y1) * 0.5 * z
                 _apply_center_transform(p, cx, cy, rot, flip_h, flip_v)
-                p.drawText(QPointF(pt.x * z - cx, (yo + pt.y * z) - cy), e["text"])
+                _draw_text_with_runs(p, pt.x * z - cx, (yo + pt.y * z) - cy, e["text"], runs, f2, c)
             else:
-                p.drawText(int(pt.x*z), yo+int(pt.y*z), e["text"])
+                _draw_text_with_runs(p, pt.x * z, yo + pt.y * z, e["text"], runs, f2, c)
             p.restore()
 
         if is_selected and r:
@@ -375,6 +417,7 @@ def _paint_overlay_body(
             not force_draw
             and e.get("_existing")
             and not e.get("_dirty")
+            and not e.get("runs")
             and orig_raw
             and rects_close(r, orig_raw, tol=0.25)
             and op >= 0.999
@@ -388,14 +431,6 @@ def _paint_overlay_body(
             p.save()
             p.setOpacity(op)
             c = e.get("color", 0)
-            if isinstance(c, int):
-                col = QColor((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF)
-            elif isinstance(c, (list, tuple)) and len(c) >= 3:
-                col = QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255))
-            else:
-                col = QColor("#000000")
-            p.setPen(col)
-
             fname = e.get("font", "Helvetica")
             resolved_fam = _resolve_font_family(fname)
             fnt = QFont(resolved_fam)
@@ -406,18 +441,18 @@ def _paint_overlay_body(
                 fnt.setBold(True)
             if (flags & 2) or "italic" in fname.lower() or "oblique" in fname.lower():
                 fnt.setItalic(True)
-            p.setFont(fnt)
 
             origin = e.get("origin", [r[0], r[3]])
             baseline_x = origin[0] * z
             baseline_y = yo + origin[1] * z
+            runs = e.get("runs")
             if rot or flip_h or flip_v:
                 cx = (r[0] + r[2]) * 0.5 * z
                 cy = yo + (r[1] + r[3]) * 0.5 * z
                 _apply_center_transform(p, cx, cy, rot, flip_h, flip_v)
-                p.drawText(QPointF(baseline_x - cx, baseline_y - cy), new_txt)
+                _draw_text_with_runs(p, baseline_x - cx, baseline_y - cy, new_txt, runs, fnt, c)
             else:
-                p.drawText(int(baseline_x), int(baseline_y), new_txt)
+                _draw_text_with_runs(p, baseline_x, baseline_y, new_txt, runs, fnt, c)
             p.restore()
 
         if is_selected:
@@ -669,4 +704,3 @@ class CanvasPainter:
                 p.setBrush(QColor(59, 130, 246, 35))
                 p.drawRect(qr)
                 _draw_selection_box(p, qr, handle_size=8, draw_handles=True, is_locked=False)
-

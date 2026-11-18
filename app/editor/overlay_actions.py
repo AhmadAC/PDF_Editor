@@ -58,7 +58,6 @@ class OverlayActionsMixin:
         c = self.canvas
         if not getattr(c, "_overlays", None):
             return
-        # If the Selection Pane is open, keep scanned existing elements so the inspector remains populated!
         if getattr(c, "_selection_pane_active", False):
             return
 
@@ -131,6 +130,8 @@ class OverlayActionsMixin:
                 src = src_copy
 
             new_overlay = dict(src)
+            if "runs" in new_overlay and new_overlay["runs"] is not None:
+                new_overlay["runs"] = [dict(r) for r in new_overlay["runs"]]
             if new_overlay.get("type") == "drawing":
                 orig_bb = src.get("_items_rect") or src.get("_orig_rect") or overlay_pdf_rect(src)
                 if orig_bb:

@@ -1,4 +1,3 @@
-
 # app/editor/tab.py
 """PDF_Editor – TabEditar facade: visual PDF editor tab with Fill & Sign, Foxit-style object editing, grouping/ungrouping, and typography styling."""
 
@@ -165,6 +164,7 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
         self._status = status_fn
         self._pending: list[dict] = []
         self._redo_stack: list[dict] = []
+        self._editor_temp_files: set[str] = set()
         self._doc_path: str | None = None
         self._pdf_password: str = ""
         self._mode_idx: int = _MODE_TEXT
@@ -212,6 +212,12 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
         self._on_mode_btn(self._mode_btns[_MODE_TEXT])
         self._update_nav()
 
+    def can_undo(self) -> bool:
+        return bool(self._user_pending) or bool(getattr(self._history, "_undo_stack", None))
+
+    def can_redo(self) -> bool:
+        return bool(self._redo_stack)
+
     def _on_canvas_overlay_changed(self):
         self.update()
         if self._selection_pane is not None and isValid(self._selection_pane):
@@ -236,7 +242,6 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
     def _sync_thumbnails(self, affected_pages: set[int] | list[int] | None = None) -> None:
         """Propagate current visual edits to the ThumbnailPanel so the preview reflects deletions, moves, and additions."""
         if not hasattr(self, "_thumbnails") or not self._thumbnails:
-            print("[DEBUG] [TabEditar._sync_thumbnails] self._thumbnails is not available", flush=True)
             return
 
         edits_by_page: dict[int, list[dict]] = {}
@@ -246,16 +251,6 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
                 edits_by_page.setdefault(int(p), []).append(e)
 
         pages_set = {int(p) for p in affected_pages} if affected_pages is not None else None
-        print(
-            f"[DEBUG] [TabEditar._sync_thumbnails] Syncing thumbnails -> affected_pages={pages_set} | pages_with_edits={list(edits_by_page.keys())} | total_user_pending={len(self._user_pending)}",
-            flush=True,
-        )
-        for p, elist in edits_by_page.items():
-            for e in elist:
-                print(
-                    f"[DEBUG]   -> Page {p + 1}: type='{e.get('type')}', existing={e.get('_existing')}, dirty={e.get('_dirty')}, deleted={e.get('_deleted')}, orig_rect={e.get('_orig_rect')}, rect={e.get('rect') or e.get('bbox')}",
-                    flush=True,
-                )
         self._thumbnails.set_page_edits(edits_by_page, affected_pages=pages_set)
 
     def set_compact_mode(self, active: bool, path: str = "") -> None:
@@ -330,7 +325,10 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
             self._apply_forms(out)
             return
 
-        if not self._user_pending:
+        has_page_ops = self._history.has_page_ops() or (
+            bool(self._doc_path) and os.path.abspath(self._doc_path) != os.path.abspath(out)
+        )
+        if not self._user_pending and not has_page_ops:
             self._status("No pending edits to save")
             return
 
@@ -342,4 +340,6 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
             self._selection_pane = None
         if hasattr(self, "_thumbnails"):
             self._thumbnails.clear()
+        if hasattr(self, "_cleanup_editor_temp_files"):
+            self._cleanup_editor_temp_files()
         super().closeEvent(event)

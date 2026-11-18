@@ -55,6 +55,7 @@ class TabDocumentMixin(_Base):
         def _populate_toc(self, doc: fitz.Document | None) -> None: ...
         def _status(self, msg: str) -> None: ...
         def _sync_thumbnails(self, affected_pages: set[int] | list[int] | None = None) -> None: ...
+        def _cleanup_editor_temp_files(self) -> None: ...
 
     def _capture_viewer_view(self, path: str) -> dict | None:
         """Capture current page, zoom, scroll anchor, and pixmaps from MainWindow's active viewer if showing `path`."""
@@ -163,14 +164,16 @@ class TabDocumentMixin(_Base):
             win._update_page_nav()
 
     def _save_current_doc_state(self):
-        """Save the current document's pending edits, scroll, zoom, and active page before switching away."""
+        """Save the current document's pending edits, page history, scroll, zoom, and active page before switching away."""
         if not self._doc_path:
             return
         key = os.path.abspath(self._doc_path)
         sb_v = self._canvas_scroll.verticalScrollBar()
         sb_h = self._canvas_scroll.horizontalScrollBar()
-        self._doc_states[key] = {
+        state_dict = {
+            "doc_path": self._doc_path,
             "pending": list(self._pending),
+            "undo_stack": list(self._history._undo_stack),
             "redo_stack": list(self._redo_stack),
             "page_idx": self._page_idx,
             "zoom_factor": getattr(self._canvas, "_zoom_factor", 1.0),
@@ -184,7 +187,10 @@ class TabDocumentMixin(_Base):
             "last_selected_rect": self._last_selected_rect,
             "last_selected_original_text": self._last_selected_original_text,
         }
-        print(f"[DEBUG] [TabDocument] _save_current_doc_state: saved state for {os.path.basename(self._doc_path)} ({len(self._pending)} pending edits)", flush=True)
+        self._doc_states[key] = state_dict
+        out_p = state_dict["drop_out"]
+        if out_p and os.path.abspath(out_p) != key:
+            self._doc_states[os.path.abspath(out_p)] = state_dict
 
     def _restore_scroll(self, val_v: int, val_h: int, token: int | None = None) -> None:
         if token is not None and token != getattr(self, "_scroll_restore_token", 0):
@@ -213,10 +219,13 @@ class TabDocumentMixin(_Base):
 
         key = os.path.abspath(p)
         saved = self._doc_states.get(key)
-        print(f"[DEBUG] [TabDocument] _load_pdf: loading {p} (has_saved_state={bool(saved)})", flush=True)
+        if saved and saved.get("doc_path") and os.path.isfile(saved["doc_path"]):
+            load_path = saved["doc_path"]
+        else:
+            load_path = p
 
         try:
-            probe = fitz.open(p)
+            probe = fitz.open(load_path)
             needs_pass = bool(probe.needs_pass)
             if needs_pass and self._pdf_password:
                 winner = authenticate_fitz(probe, self._pdf_password)
@@ -226,16 +235,17 @@ class TabDocumentMixin(_Base):
             needs_pass = False
         if needs_pass and not self._pdf_password:
             from app.utils import prompt_pdf_password
-            ok, pwd = prompt_pdf_password(p, self)
+            ok, pwd = prompt_pdf_password(load_path, self)
             if not ok:
                 return
             self._pdf_password = pwd
         elif not needs_pass:
             self._pdf_password = ""
 
-        self._doc_path = p
+        self._doc_path = load_path
+        out_disp = (saved.get("drop_out") if saved else None) or p
         self._drop_in.blockSignals(True)
-        self._drop_in.set_path(p)
+        self._drop_in.set_path(load_path, display_name=os.path.basename(out_disp))
         self._drop_in.blockSignals(False)
 
         self._scroll_restore_token = getattr(self, "_scroll_restore_token", 0) + 1
@@ -245,8 +255,9 @@ class TabDocumentMixin(_Base):
         initial_pixmaps = None
 
         if saved:
-            self._drop_out.set_path(saved.get("drop_out") or p)
+            self._drop_out.set_path(out_disp)
             self._pending = list(saved.get("pending", []))
+            self._history._undo_stack = list(saved.get("undo_stack", []))
             self._redo_stack = list(saved.get("redo_stack", []))
             self._page_idx = saved.get("page_idx", 0)
             self._last_selected_page = saved.get("last_selected_page", -1)
@@ -258,6 +269,8 @@ class TabDocumentMixin(_Base):
         else:
             self._drop_out.set_path(p)
             self._pending.clear()
+            self._history._undo_stack.clear()
+            self._redo_stack.clear()
             self._pending_list.clear() if hasattr(self, "_pending_list") else None
             if viewer_view is None:
                 viewer_view = self._capture_viewer_view(p)
@@ -273,7 +286,7 @@ class TabDocumentMixin(_Base):
 
         try:
             self._canvas.load(
-                p,
+                load_path,
                 password=self._pdf_password,
                 initial_zoom_factor=target_zoom_factor,
                 initial_page=self._page_idx,
@@ -294,7 +307,7 @@ class TabDocumentMixin(_Base):
 
         if hasattr(self, "_thumbnails"):
             self._thumbnails.blockSignals(True)
-            self._thumbnails.set_document(p, n, password=self._pdf_password)
+            self._thumbnails.set_document(load_path, n, password=self._pdf_password)
             self._thumbnails.set_current_page(self._page_idx)
             self._thumbnails.blockSignals(False)
             if hasattr(self, "_sync_thumbnails"):
@@ -319,7 +332,7 @@ class TabDocumentMixin(_Base):
         elif not saved:
             QTimer.singleShot(100, lambda: self._load_existing_annotations() if isValid(self) else None)
 
-        QTimer.singleShot(200, lambda: self._load_form_fields(p) if isValid(self) else None)
+        QTimer.singleShot(200, lambda: self._load_form_fields(load_path) if isValid(self) else None)
 
     def _load_existing_annotations(self):
         self._history.load_existing_annotations()
@@ -339,6 +352,9 @@ class TabDocumentMixin(_Base):
     def _close_pdf(self):
         if self._doc_path:
             self._doc_states.pop(os.path.abspath(self._doc_path), None)
+        out_p = self._drop_out.path() if hasattr(self, "_drop_out") else ""
+        if out_p:
+            self._doc_states.pop(os.path.abspath(out_p), None)
         self._doc_path = None
         self._canvas.close_doc()
         self._canvas.set_overlays([])
@@ -347,12 +363,15 @@ class TabDocumentMixin(_Base):
         if hasattr(self, "_toc_tree"):
             self._toc_tree.clear()
         self._pending.clear()
+        self._history._undo_stack.clear()
+        self._redo_stack.clear()
         self._pending_list.clear() if hasattr(self, "_pending_list") else None
         self._lbl_info.setText("")
         self._page_idx = 0
         self._update_nav()
         self._clear_pdf_password()
-        print("[DEBUG] [TabDocument] _close_pdf: document closed and thumbnails cleared", flush=True)
+        if hasattr(self, "_cleanup_editor_temp_files"):
+            self._cleanup_editor_temp_files()
 
     def _clear_pdf_password(self) -> None:
         from app.utils import wipe_pdf_password

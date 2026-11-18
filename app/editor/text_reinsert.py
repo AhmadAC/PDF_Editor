@@ -1,6 +1,6 @@
 # app/editor/text_reinsert.py
 
-"""PDF_Editor – pure typographic-fidelity helpers for text-edit reinsertion with custom system font embedding."""
+"""PDF_Editor – pure typographic-fidelity helpers for text-edit reinsertion with multi-color runs and custom system font embedding."""
 
 import html
 import logging
@@ -47,8 +47,7 @@ def _text_edit_size(edit: dict) -> float:
     return size if size >= 1.0 else 4.0
 
 
-def _text_edit_color_hex(edit: dict) -> str:
-    c = edit.get("color", 0)
+def _color_value_to_hex(c) -> str:
     if isinstance(c, bool):
         c = 0
     if isinstance(c, int):
@@ -59,16 +58,16 @@ def _text_edit_color_hex(edit: dict) -> str:
         try:
             r, g, b = c[0], c[1], c[2]
             return "#%02x%02x%02x" % (
-                max(0, min(255, int(r * 255))),
-                max(0, min(255, int(g * 255))),
-                max(0, min(255, int(b * 255))))
+                max(0, min(255, int(round(float(r) * 255)))),
+                max(0, min(255, int(round(float(g) * 255)))),
+                max(0, min(255, int(round(float(b) * 255)))),
+            )
         except Exception:
             pass
     return "#000000"
 
 
-def _text_edit_color_rgb(edit: dict) -> tuple[float, float, float]:
-    c = edit.get("color", 0)
+def _color_value_to_rgb(c) -> tuple[float, float, float]:
     if isinstance(c, bool):
         c = 0
     if isinstance(c, int):
@@ -79,6 +78,14 @@ def _text_edit_color_rgb(edit: dict) -> tuple[float, float, float]:
         except Exception:
             pass
     return (0.0, 0.0, 0.0)
+
+
+def _text_edit_color_hex(edit: dict) -> str:
+    return _color_value_to_hex(edit.get("color", 0))
+
+
+def _text_edit_color_rgb(edit: dict) -> tuple[float, float, float]:
+    return _color_value_to_rgb(edit.get("color", 0))
 
 
 def _text_edit_style(edit: dict) -> tuple[bool, bool, bool, bool]:
@@ -125,7 +132,7 @@ def _build_embed_archive(fitz, doc, page, edit: dict, new_txt: str):
     font_spec = edit.get("font", "").strip()
     serif, mono, bold, italic = _text_edit_style(edit)
 
-    # 1. Prefer matching system installed font (e.g. LazyDog)
+    # 1. Prefer matching system installed font
     if font_spec:
         clean_name = font_spec.split("+")[-1].strip()
         sys_ttf = find_system_font_file(clean_name, bold=bold, italic=italic)
@@ -245,8 +252,27 @@ def _warn_if_downscaled(htmlbox_result, edit: dict, warn_fn) -> None:
                 _log.exception("text-fit warn_fn raised")
 
 
+def _build_html_body(edit: dict, new_txt: str) -> str:
+    runs = edit.get("runs")
+    if runs:
+        parts: list[str] = []
+        for run in runs:
+            rt = run.get("text", "")
+            if not rt:
+                continue
+            r_hex = _color_value_to_hex(run.get("color", edit.get("color", 0)))
+            r_w = "bold" if run.get("bold") else "normal"
+            r_s = "italic" if run.get("italic") else "normal"
+            parts.append(
+                f'<span style="color:{r_hex}; font-weight:{r_w}; font-style:{r_s};">{html.escape(rt)}</span>'
+            )
+        if parts:
+            return "<div>%s</div>" % "".join(parts)
+    return "<div>%s</div>" % html.escape(new_txt)
+
+
 def _reinsert_edited_text(fitz, doc, page, edit: dict, warn_fn=None, *, redact: bool = True, prebuilt_archive=None) -> bool:
-    """Redact original span (if redact=True) and reinsert replacement text with custom typography and system font support."""
+    """Redact original span (if redact=True) and reinsert replacement text with custom typography, multi-color runs, and system font support."""
     bbox = fitz.Rect(edit["bbox"])
     new_txt = (edit.get("new_text") or "").strip()
     size = _text_edit_size(edit)
@@ -276,7 +302,7 @@ def _reinsert_edited_text(fitz, doc, page, edit: dict, warn_fn=None, *, redact: 
 
     color_hex = _text_edit_color_hex(edit)
     rect = _text_edit_layout_rect(fitz, page, edit, size)
-    body = "<div>%s</div>" % html.escape(new_txt)
+    body = _build_html_body(edit, new_txt)
 
     try:
         if arch is not None:
@@ -306,15 +332,23 @@ def _reinsert_edited_text(fitz, doc, page, edit: dict, warn_fn=None, *, redact: 
             font_req = edit.get("font", "").split("+")[-1].strip()
             sys_ttf = find_system_font_file(font_req, bold=bold, italic=italic)
 
-            pt = fitz.Point(float(origin[0]), float(origin[1]))
-            col = _text_edit_color_rgb(edit)
+            pt_x = float(origin[0])
+            pt_y = float(origin[1])
+            runs = edit.get("runs") or [{"text": new_txt, "color": edit.get("color", 0)}]
+            b14 = _base14_fontname(edit)
+            f_probe = fitz.Font(fontfile=sys_ttf) if (sys_ttf and os.path.isfile(sys_ttf)) else fitz.Font(b14)
 
-            if sys_ttf and os.path.isfile(sys_ttf):
-                page.insert_text(pt, new_txt, fontsize=size, fontfile=sys_ttf, fontname="custom", color=col)
-                return True
-            else:
-                page.insert_text(pt, new_txt, fontsize=size, fontname=_base14_fontname(edit), color=col)
-                return False
+            for run in runs:
+                rt = run.get("text", "")
+                if not rt:
+                    continue
+                col = _color_value_to_rgb(run.get("color", edit.get("color", 0)))
+                if sys_ttf and os.path.isfile(sys_ttf):
+                    page.insert_text(fitz.Point(pt_x, pt_y), rt, fontsize=size, fontfile=sys_ttf, fontname="custom", color=col)
+                else:
+                    page.insert_text(fitz.Point(pt_x, pt_y), rt, fontsize=size, fontname=b14, color=col)
+                pt_x += f_probe.text_length(rt, fontsize=size)
+            return bool(sys_ttf and os.path.isfile(sys_ttf))
         except Exception:
             _log.exception("insert_text fallback also failed")
             return False

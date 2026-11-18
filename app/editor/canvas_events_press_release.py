@@ -1,4 +1,3 @@
-
 # app/editor/canvas_events_press_release.py
 """Mouse double-click, press, and release interaction handlers for PdfEditCanvas."""
 
@@ -67,6 +66,7 @@ class CanvasPressReleaseMixin:
             "color": ov.get("color", 0),
             "flags": int(ov.get("flags", 0) or 0),
             "origin": list(ov.get("origin", [bb[0], ov["point"].y if "point" in ov else bb[3]])),
+            "runs": [dict(run) for run in ov["runs"]] if ov.get("runs") else None,
         }
         c._inline_mgr.begin_edit(span, ov.get("page", 0), target_overlay=ov)
 

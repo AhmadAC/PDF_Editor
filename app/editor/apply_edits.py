@@ -1,5 +1,6 @@
+
 # app/editor/apply_edits.py
-"""PDF_Editor – Two-phase edit-application dispatcher supporting grouped objects, z-order, opacity, rotation, flip, and batched surgical image/drawing removal."""
+"""PDF_Editor – Two-phase edit-application dispatcher supporting multi-color text runs, grouped objects, z-order, opacity, rotation, flip, and batched surgical image/drawing removal."""
 
 import io
 import os
@@ -9,6 +10,7 @@ from dataclasses import dataclass, field
 
 from app.editor.text_reinsert import (
     _build_embed_archive,
+    _color_value_to_rgb,
     _reinsert_edited_text,
     _text_edit_redaction_rect,
     _text_edit_size,
@@ -329,6 +331,35 @@ def _apply_batched_redactions(pg, rect_bg_pairs: list[tuple], *, images: int, gr
             pg.apply_redactions()
 
 
+def _resolve_fitz_font(fitz, font_req: str, is_bold: bool, is_italic: bool):
+    ttf_path = find_system_font_file(font_req, bold=is_bold, italic=is_italic)
+    if ttf_path and os.path.isfile(ttf_path):
+        try:
+            return "user_font", ttf_path, fitz.Font(fontfile=ttf_path), True
+        except Exception:
+            pass
+
+    fname = (font_req or "Helvetica").lower()
+    if "times" in fname or "serif" in fname or "roman" in fname:
+        fontname = "tiro"
+    elif "mono" in fname or "courier" in fname or "consol" in fname:
+        fontname = "cour"
+    else:
+        fontname = "helv"
+    if is_bold:
+        if fontname == "helv": fontname = "hebo"
+        elif fontname == "tiro": fontname = "tibo"
+        elif fontname == "cour": fontname = "cobo"
+    if is_italic:
+        if fontname == "helv": fontname = "heit"
+        elif fontname == "hebo": fontname = "hebi"
+        elif fontname == "tiro": fontname = "tiit"
+        elif fontname == "tibo": fontname = "tibi"
+        elif fontname == "cour": fontname = "coit"
+        elif fontname == "cobo": fontname = "cobi"
+    return fontname, None, fitz.Font(fontname), False
+
+
 def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
     """Apply pending edits to open doc in two phases so moved/deleted elements never collide or duplicate."""
     import fitz
@@ -348,8 +379,6 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
             warn_fn(edit)
 
     active_edits = _flatten_active_edits(pending)
-
-    print(f"[DEBUG] [apply_pending_edits] Total active edits to apply: {len(active_edits)}", flush=True)
 
     # Pre-extract embedded font archives before Phase 1 redacts text from pages
     prebuilt_archives: dict[int, tuple] = {}
@@ -374,7 +403,6 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
         if e.get("_existing"):
             if e.get("_existing_annot") or e.get("_annot_bbox"):
                 _delete_existing_annot(fitz, pg, e)
-                print(f"[DEBUG] [apply_pending_edits] Phase 1: Deleted existing annotation on page {p_idx + 1}", flush=True)
                 continue
 
             if etype in ("image", "signature") and e.get("_orig_rect"):
@@ -401,12 +429,9 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                         if not used_elsewhere and len(same_pg_rects) <= 1 and hasattr(pg, "delete_image"):
                             pg.delete_image(xref)
                             removed_cleanly = True
-                            print(f"[DEBUG] [apply_pending_edits] Phase 1: Image xref {xref} deleted cleanly from page {p_idx + 1}", flush=True)
                         else:
                             removed_cleanly = _remove_single_image_do_from_page(doc, pg, xref)
-                            print(f"[DEBUG] [apply_pending_edits] Phase 1: Image xref {xref} /Do removal={removed_cleanly} from page {p_idx + 1}", flush=True)
-                    except Exception as err:
-                        print(f"[DEBUG] [apply_pending_edits] Phase 1: Image deletion error: {err}", flush=True)
+                    except Exception:
                         removed_cleanly = False
                 if not removed_cleanly:
                     img_redactions.setdefault(p_idx, []).append((orig_r, e.get("_bg_color")))
@@ -430,7 +455,7 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
     for p_idx, pairs in text_redactions.items():
         _apply_batched_redactions(doc[p_idx], pairs, images=img_none, graphics=la_none, text=txt_remove)
 
-    # Phase 2: Insert back-layer items first (in reverse so index 0 ends up furthest back), then foreground items in order
+    # Phase 2: Insert back-layer items first, then foreground items
     visible_edits = [e for e in active_edits if not e.get("_deleted") and e.get("_visible", True)]
     back_edits = [e for e in visible_edits if e.get("_z_back")]
     front_edits = [e for e in visible_edits if not e.get("_z_back")]
@@ -450,7 +475,6 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
         if etype == "redact":
             pg.add_redact_annot(e["rect"], fill=e["fill"])
             pg.apply_redactions()
-            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted redaction on page {p_idx + 1}", flush=True)
 
         elif etype == "check":
             r = fitz.Rect(e["rect"])
@@ -477,7 +501,6 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
             shape.draw_polyline(fpts)
             shape.finish(color=col, width=stroke_w, stroke_opacity=op, lineCap=1, lineJoin=1)
             shape.commit(overlay=overlay_flag)
-            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted checkmark on page {p_idx + 1}", flush=True)
 
         elif etype == "cross":
             r = fitz.Rect(e["rect"])
@@ -495,7 +518,6 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
             shape.draw_line(p3, p4)
             shape.finish(color=col, width=stroke_w, stroke_opacity=op, lineCap=1, lineJoin=1)
             shape.commit(overlay=overlay_flag)
-            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted crossmark on page {p_idx + 1}", flush=True)
 
         elif etype == "drawing":
             _insert_drawing_overlay(fitz, pg, e)
@@ -505,50 +527,9 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
             flags = int(e.get("flags", 0) or 0)
             is_bold = bool((flags & 16) or "bold" in font_req.lower())
             is_italic = bool((flags & 2) or "italic" in font_req.lower() or "oblique" in font_req.lower())
+            sz = float(e.get("size", 12))
 
-            ttf_path = find_system_font_file(font_req, bold=is_bold, italic=is_italic)
-
-            if ttf_path and os.path.isfile(ttf_path):
-                fontname = "user_font"
-                fontfile_arg = ttf_path
-                embedded_font = True
-            else:
-                fontfile_arg = None
-                fname = font_req.lower()
-                if "times" in fname or "serif" in fname or "roman" in fname:
-                    fontname = "tiro"
-                elif "mono" in fname or "courier" in fname or "consol" in fname:
-                    fontname = "cour"
-                else:
-                    fontname = "helv"
-                if is_bold:
-                    if fontname == "helv": fontname = "hebo"
-                    elif fontname == "tiro": fontname = "tibo"
-                    elif fontname == "cour": fontname = "cobo"
-                if is_italic:
-                    if fontname == "helv": fontname = "heit"
-                    elif fontname == "hebo": fontname = "hebi"
-                    elif fontname == "tiro": fontname = "tiit"
-                    elif fontname == "tibo": fontname = "tibi"
-                    elif fontname == "cour": fontname = "coit"
-                    elif fontname == "cobo": fontname = "cobi"
-
-            c = e.get("color", (0, 0, 0))
-            if isinstance(c, (list, tuple)) and len(c) >= 3:
-                color = tuple(float(x) for x in c[:3])
-            else:
-                color = (0.0, 0.0, 0.0)
-
-            kw: dict = {
-                "fontsize": e.get("size", 12),
-                "color": color,
-                "fontname": fontname,
-                "fill_opacity": op,
-                "overlay": overlay_flag,
-            }
-            if fontfile_arg:
-                kw["fontfile"] = fontfile_arg
-
+            morph_arg = None
             if rot or flip_h or flip_v:
                 rr = fitz.Rect(e["rect"]) if e.get("rect") else None
                 if rr:
@@ -556,9 +537,51 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                 else:
                     pt = e["point"]
                     cx, cy = float(pt.x), float(pt.y)
-                kw["morph"] = (fitz.Point(cx, cy), _build_transform_matrix(fitz, rot, flip_h, flip_v))
-            pg.insert_text(e["point"], e["text"], **kw)
-            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted text '{e.get('text', '')[:20]}' on page {p_idx + 1} with font '{font_req}'", flush=True)
+                morph_arg = (fitz.Point(cx, cy), _build_transform_matrix(fitz, rot, flip_h, flip_v))
+
+            runs = e.get("runs")
+            if runs and len(runs) > 0:
+                cur_x = float(e["point"].x)
+                base_y = float(e["point"].y)
+                for run in runs:
+                    rt = run.get("text", "")
+                    if not rt:
+                        continue
+                    r_bold = bool(run.get("bold", is_bold))
+                    r_italic = bool(run.get("italic", is_italic))
+                    r_fontname, r_fontfile, r_probe, r_emb = _resolve_fitz_font(fitz, font_req, r_bold, r_italic)
+                    if r_emb:
+                        embedded_font = True
+                    r_kw: dict = {
+                        "fontsize": sz,
+                        "color": _color_value_to_rgb(run.get("color", e.get("color", (0, 0, 0)))),
+                        "fontname": r_fontname,
+                        "fill_opacity": op,
+                        "overlay": overlay_flag,
+                    }
+                    if r_fontfile:
+                        r_kw["fontfile"] = r_fontfile
+                    if morph_arg is not None:
+                        r_kw["morph"] = morph_arg
+                    pg.insert_text(fitz.Point(cur_x, base_y), rt, **r_kw)
+                    cur_x += r_probe.text_length(rt, fontsize=sz)
+            else:
+                fontname, fontfile_arg, _f_probe, is_emb = _resolve_fitz_font(fitz, font_req, is_bold, is_italic)
+                if is_emb:
+                    embedded_font = True
+                color = _color_value_to_rgb(e.get("color", (0, 0, 0)))
+                kw: dict = {
+                    "fontsize": sz,
+                    "color": color,
+                    "fontname": fontname,
+                    "fill_opacity": op,
+                    "overlay": overlay_flag,
+                }
+                if fontfile_arg:
+                    kw["fontfile"] = fontfile_arg
+                if morph_arg is not None:
+                    kw["morph"] = morph_arg
+                pg.insert_text(e["point"], e["text"], **kw)
 
         elif etype in ("image", "signature"):
             path = e.get("path", "")
@@ -571,7 +594,6 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                 pg.insert_image(e["rect"], stream=stream_bytes, overlay=overlay_flag, keep_proportion=False)
             else:
                 pg.insert_image(e["rect"], filename=path, overlay=overlay_flag, keep_proportion=False)
-            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted image at {e.get('rect')} on page {p_idx + 1}", flush=True)
 
         elif etype == "highlight":
             rects = e.get("rects")
@@ -591,11 +613,9 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                     a.update(opacity=op)
                 else:
                     a.update()
-            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted highlight on page {p_idx + 1}", flush=True)
 
         elif etype == "note":
             pg.add_text_annot(e["point"], e["text"])
-            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted note on page {p_idx + 1}", flush=True)
 
         elif etype == "draw":
             stroke = [(float(x), float(y)) for x, y in e.get("points", [])]
@@ -607,7 +627,6 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                     annot.update(opacity=op)
                 else:
                     annot.update()
-            print(f"[DEBUG] [apply_pending_edits] Phase 2: Inserted ink stroke on page {p_idx + 1}", flush=True)
 
         elif etype == "delete_annot":
             target_type = e.get("annot_type")
@@ -629,7 +648,6 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                 prebuilt_archive=prebuilt_archives.get(id(e)),
             ):
                 embedded_font = True
-            print(f"[DEBUG] [apply_pending_edits] Phase 2: Reinserted text edit on page {p_idx + 1}", flush=True)
 
     result.embedded_font = embedded_font
     if embedded_font:

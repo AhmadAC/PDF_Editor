@@ -1,6 +1,5 @@
-
 # app/editor/tab_history.py
-"""PDF_Editor – tab_history: synchronized action-based history, undo/redo, grouping/ungrouping, and pending edits management."""
+"""PDF_Editor – tab_history: synchronized action-based history, undo/redo (including thumbnail page ops), grouping/ungrouping, and pending edits management."""
 
 import contextlib
 import os
@@ -15,7 +14,7 @@ _PDF_ANNOT_TEXT: int = getattr(fitz, "PDF_ANNOT_TEXT", 0)
 
 
 class TabHistoryManager:
-    """Manages pending visual edits, annotation imports, and action-level undo/redo stacks."""
+    """Manages pending visual edits, annotation imports, page-level document history, and action-level undo/redo stacks."""
 
     def __init__(self, tab):
         self.tab = tab
@@ -41,6 +40,11 @@ class TabHistoryManager:
         win = self.tab.window() if hasattr(self.tab, "window") else None
         if win and hasattr(win, "_update_undo_redo_buttons"):
             win._update_undo_redo_buttons()
+        if win and hasattr(win, "_sync_edit_dirty_indicator"):
+            win._sync_edit_dirty_indicator()
+
+    def has_page_ops(self) -> bool:
+        return any(act.get("kind") == "page_doc" for act in self._undo_stack)
 
     @staticmethod
     def _format_edit_label(edit: dict) -> str:
@@ -75,7 +79,6 @@ class TabHistoryManager:
         for edit in self.tab._user_pending:
             self.tab._pending_list.addItem(self._format_edit_label(edit))
         self.tab._canvas.set_overlays(self.pending)
-        print(f"[DEBUG] [TabHistoryManager] rebuild_pending_list: total pending={len(self.pending)}, user_pending={len(self.tab._user_pending)}", flush=True)
         if hasattr(self.tab, "_sync_thumbnails"):
             self.tab._sync_thumbnails()
         self._notify_toolbar()
@@ -96,6 +99,17 @@ class TabHistoryManager:
         if len(self._undo_stack) > _MAX_REDO:
             self._undo_stack.pop(0)
 
+    def record_page_doc_change(self, before_state: dict, after_state: dict) -> None:
+        """Record a page-level operation (delete/duplicate/insert/reorder/rotate pages) for Ctrl+Z / Ctrl+Y."""
+        self.redo_stack.clear()
+        self._push_undo_action({
+            "kind": "page_doc",
+            "before": before_state,
+            "after": after_state,
+            "edit": None,
+        })
+        self._notify_toolbar()
+
     def add(self, edit: dict, *, _from_redo: bool = False) -> None:
         if not _from_redo:
             self.redo_stack.clear()
@@ -104,7 +118,6 @@ class TabHistoryManager:
         self._trim_overflow()
         self._push_undo_action({"kind": "add", "edit": edit})
         lbl = self._format_edit_label(edit)
-        print(f"[DEBUG] [TabHistoryManager] add: added edit type='{edit.get('type')}' on page {edit.get('page', 0) + 1}", flush=True)
         self.rebuild_pending_list()
         self.tab._status(t("edit.status.added", label=lbl, count=len(self.tab._user_pending)))
 
@@ -119,7 +132,6 @@ class TabHistoryManager:
             "after": snapshot_overlay(edit),
         })
         lbl = self._format_edit_label(edit)
-        print(f"[DEBUG] [TabHistoryManager] handle_overlay_committed: existing object marked dirty on page {edit.get('page', 0) + 1} (type='{edit.get('type')}')", flush=True)
         self.rebuild_pending_list()
         self.tab._status(t("edit.status.added", label=lbl, count=len(self.tab._user_pending)))
 
@@ -132,7 +144,6 @@ class TabHistoryManager:
             "before": before_snap,
             "after": snapshot_overlay(edit),
         })
-        print(f"[DEBUG] [TabHistoryManager] handle_overlay_transformed: object transformed on page {edit.get('page', 0) + 1} (type='{edit.get('type')}')", flush=True)
         self.rebuild_pending_list()
         self.tab._status("Updated object (Ctrl+Z to undo)")
 
@@ -144,7 +155,6 @@ class TabHistoryManager:
             "info": info,
             "edit": info.get("edit"),
         })
-        print(f"[DEBUG] [TabHistoryManager] handle_overlay_arranged: z-order arranged on page {info.get('page', 0) + 1}", flush=True)
         self.rebuild_pending_list()
         self.tab._status("Arranged object order (Ctrl+Z to undo)")
 
@@ -157,7 +167,6 @@ class TabHistoryManager:
             "edit": info.get("group"),
         })
         n_ch = len(info.get("children", []))
-        print(f"[DEBUG] [TabHistoryManager] handle_overlay_ungrouped: split group into {n_ch} objects on page {info.get('page', 0) + 1}", flush=True)
         self.rebuild_pending_list()
         self.tab._status(f"Ungrouped {n_ch} objects (Ctrl+Z to undo)")
 
@@ -170,12 +179,10 @@ class TabHistoryManager:
             "edit": info.get("group"),
         })
         n_ch = len(info.get("children", []))
-        print(f"[DEBUG] [TabHistoryManager] handle_overlay_grouped: grouped {n_ch} objects on page {info.get('page', 0) + 1}", flush=True)
         self.rebuild_pending_list()
         self.tab._status(f"Grouped {n_ch} objects (Ctrl+Z to undo)")
 
     def handle_overlay_duplicated(self, new_edit: dict) -> None:
-        print(f"[DEBUG] [TabHistoryManager] handle_overlay_duplicated on page {new_edit.get('page', 0) + 1}", flush=True)
         self.add(new_edit)
 
     def handle_overlay_deleted(self, idx: int, edit: dict) -> None:
@@ -196,7 +203,6 @@ class TabHistoryManager:
                 "edit": edit,
                 "was_dirty": was_dirty,
             })
-            print(f"[DEBUG] [TabHistoryManager] handle_overlay_deleted: existing object marked deleted on page {edit.get('page', 0) + 1} (type='{edit.get('type')}')", flush=True)
         else:
             if edit in self.pending:
                 self.pending.remove(edit)
@@ -205,7 +211,6 @@ class TabHistoryManager:
                 "edit": edit,
                 "index": idx,
             })
-            print(f"[DEBUG] [TabHistoryManager] handle_overlay_deleted: new object removed from pending on page {edit.get('page', 0) + 1}", flush=True)
         self.rebuild_pending_list()
         self.tab._status("Object deleted (Ctrl+Z to undo)")
 
@@ -238,7 +243,6 @@ class TabHistoryManager:
                         "edit": removed,
                         "index": i,
                     })
-                print(f"[DEBUG] [TabHistoryManager] handle_note_deleted: note removed on page {page + 1}", flush=True)
                 self.rebuild_pending_list()
                 return
         if overlay.get("_existing"):
@@ -256,7 +260,6 @@ class TabHistoryManager:
                 "removed_note": None,
                 "removed_idx": -1,
             })
-            print(f"[DEBUG] [TabHistoryManager] handle_note_deleted: existing note queued for deletion on page {page + 1}", flush=True)
             self.rebuild_pending_list()
 
     def undo(self) -> None:
@@ -277,15 +280,23 @@ class TabHistoryManager:
             if len(self.redo_stack) > _MAX_REDO:
                 self.redo_stack.pop(0)
             self.tab._canvas._selected_overlay_idx = -1
-            print(f"[DEBUG] [TabHistoryManager] undo fallback: removed edit on page {edit.get('page', 0) + 1}", flush=True)
             self.rebuild_pending_list()
             self.tab._status(t("edit.status.undo", n=len(self.tab._user_pending)))
             return
 
         action = self._undo_stack.pop()
         kind = action["kind"]
+
+        if kind == "page_doc":
+            self.redo_stack.append(action)
+            if len(self.redo_stack) > _MAX_REDO:
+                self.redo_stack.pop(0)
+            self.tab._apply_editor_doc_state(action["before"])
+            self._notify_toolbar()
+            self.tab._status("Undid page change")
+            return
+
         edit = action["edit"]
-        print(f"[DEBUG] [TabHistoryManager] undo: action kind='{kind}' on page {edit.get('page', 0) + 1 if isinstance(edit, dict) else '?'}", flush=True)
 
         if kind == "add":
             if edit in self.pending:
@@ -385,8 +396,15 @@ class TabHistoryManager:
             return
 
         kind = entry["kind"]
+
+        if kind == "page_doc":
+            self._push_undo_action(entry)
+            self.tab._apply_editor_doc_state(entry["after"])
+            self._notify_toolbar()
+            self.tab._status("Redid page change")
+            return
+
         edit = entry["edit"]
-        print(f"[DEBUG] [TabHistoryManager] redo: action kind='{kind}' on page {edit.get('page', 0) + 1 if isinstance(edit, dict) else '?'}", flush=True)
 
         if kind == "add":
             if edit not in self.pending:
@@ -487,7 +505,6 @@ class TabHistoryManager:
         self.tab._pending_list.clear()
         self.tab._canvas._selected_overlay_idx = -1
         self.tab._canvas.set_overlays(self.pending)
-        print("[DEBUG] [TabHistoryManager] clear: pending edits cleared", flush=True)
         if hasattr(self.tab, "_sync_thumbnails"):
             self.tab._sync_thumbnails()
         self._notify_toolbar()
@@ -521,9 +538,7 @@ class TabHistoryManager:
                                 "_dirty": False,
                             })
                             count += 1
-            print(f"[DEBUG] [TabHistoryManager] load_existing_annotations: loaded {count} notes", flush=True)
             self.tab._status(t("edit.status.note_loaded", count=count, total=total_annots))
             self.rebuild_pending_list()
         except Exception as ex:
             self.tab._status(t("edit.status.annot_error", ex=ex))
-

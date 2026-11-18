@@ -107,6 +107,8 @@ def snapshot_overlay(ov: dict) -> dict:
         snap["items"] = list(ov["items"])
     if "_items_rect" in ov and ov["_items_rect"] is not None:
         snap["_items_rect"] = list(ov["_items_rect"])
+    if "runs" in ov and ov["runs"] is not None:
+        snap["runs"] = [dict(r) for r in ov["runs"]]
     if "children" in ov and ov["children"] is not None:
         snap["children"] = [
             {"ref": ch, "snap": snapshot_overlay(ch)}
@@ -127,7 +129,7 @@ def restore_overlay_snapshot(ov: dict, snap: dict) -> None:
     """Restore a previously captured snapshot onto an overlay dict."""
     mutable_keys = (
         "rect", "bbox", "rects", "points", "point", "origin", "items", "_items_rect",
-        "size", "font_size", "width", "new_text", "text", "font",
+        "runs", "size", "font_size", "width", "new_text", "text", "font",
         "color", "flags", "_font_changed", "_deleted", "_dirty",
         "opacity", "rotation", "flip_h", "flip_v", "_z_back",
         "_visible", "_locked", "_ungrouped", "_name",
@@ -145,6 +147,8 @@ def restore_overlay_snapshot(ov: dict, snap: dict) -> None:
                 ov[k] = [(float(p[0]), float(p[1])) for p in val]
             elif k == "items":
                 ov[k] = list(val)
+            elif k == "runs":
+                ov[k] = [dict(r) for r in val]
             elif k == "point":
                 ov[k] = fitz.Point(val)
             else:

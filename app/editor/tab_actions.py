@@ -102,7 +102,7 @@ class TabActionsMixin(_Base):
         def _sync_thumbnails(self, affected_pages: set[int] | list[int] | None = None) -> None: ...
 
     def _apply_color_shortcut(self, digit: int) -> bool:
-        """Apply Ctrl+1..0 color shortcut to active inline text, selected overlay, or all text boxes if none selected."""
+        """Apply Ctrl+1..0 color shortcut to selected text inside active inline editor, selected overlay, or all text boxes."""
         entry = _COLOR_SHORTCUTS.get(digit)
         if entry is None:
             return False
@@ -111,14 +111,14 @@ class TabActionsMixin(_Base):
         if c is None or not getattr(c, "_doc", None):
             return False
 
-        # 1. Active inline text editor open -> update its color immediately
+        # 1. Active inline text editor open -> apply to selected text (or whole box if no selection)
         inline_edit = getattr(c, "_inline_edit", None)
         if inline_edit is not None and inline_edit.isVisible():
+            c._inline_mgr.apply_color(col)
             if hasattr(self, "_text_color"):
                 self._text_color.blockSignals(True)
                 self._text_color.set_color(col)
                 self._text_color.blockSignals(False)
-            self._on_text_format_changed()
             self._status(f"Text color: {color_name}")
             return True
 
@@ -130,6 +130,8 @@ class TabActionsMixin(_Base):
                 before_snap = snapshot_overlay(ov)
                 was_untouched = bool(ov.get("_existing") and not ov.get("_dirty"))
                 ov["color"] = col
+                if ov.get("runs"):
+                    ov["runs"] = [dict(r, color=col) for r in ov["runs"]]
                 if ov.get("type") == "text_edit":
                     ov["_font_changed"] = True
                 if ov.get("type") in ("text", "text_edit") and hasattr(self, "_text_color"):
@@ -167,6 +169,8 @@ class TabActionsMixin(_Base):
             for ov in targets:
                 before_snap = snapshot_overlay(ov)
                 ov["color"] = col
+                if ov.get("runs"):
+                    ov["runs"] = [dict(r, color=col) for r in ov["runs"]]
                 if ov.get("type") == "text_edit":
                     ov["_font_changed"] = True
                 self._history.handle_overlay_transformed(ov, before_snap)
@@ -493,6 +497,7 @@ class TabActionsMixin(_Base):
                 was_untouched = bool(ov.get("_existing") and not ov.get("_dirty"))
                 ov["new_text"] = new_txt
                 ov["text"] = new_txt
+                ov.pop("runs", None)
                 print(f"[DEBUG] [TabActions] _apply_text_edit_from_selection: updating active overlay to '{new_txt}'", flush=True)
                 if was_untouched:
                     ov["_dirty"] = True
@@ -916,4 +921,3 @@ class TabActionsMixin(_Base):
         self._history.handle_note_deleted(overlay)
         if hasattr(self, "_sync_thumbnails"):
             self._sync_thumbnails({page_idx})
-

@@ -88,7 +88,7 @@ def load_form_fields(tab, path: str) -> None:
         tab._form_status.setText(t("editor.forms.load_failed"))
 
 
-def invalidate_viewer_pipeline(tab, out_path: str) -> None:
+def invalidate_viewer_pipeline(tab, out_path: str, *, cleanup_pipeline: bool = True) -> None:
     """Close reader handles in main viewer if the target output file is currently opened."""
     win = tab.window()
     viewers = getattr(win, "_viewers", None) or []
@@ -105,7 +105,7 @@ def invalidate_viewer_pipeline(tab, out_path: str) -> None:
                         doc.close()
                 v._fitz_doc = None
             v._thumbnails._stop_all_workers()
-            if win and hasattr(win, "_cleanup_pipeline"):
+            if cleanup_pipeline and win and hasattr(win, "_cleanup_pipeline"):
                 win._cleanup_pipeline(id(v))
 
 
@@ -248,10 +248,11 @@ def apply_visual_edits_and_save(tab, out: str) -> None:
         if _non_latin:
             tab._status(t("tool.warn.font_latin_only"))
 
+        old_doc_path = tab._doc_path
         tab._canvas.release_doc()
         doc, text_fit_warnings, save_opts, reencrypt = _build_edited_doc()
 
-        invalidate_viewer_pipeline(tab, out)
+        invalidate_viewer_pipeline(tab, out, cleanup_pipeline=False)
         try:
             atomic_pdf_write(doc, out, save_opts=save_opts, close_writer=True)
         except (PermissionError, OSError):
@@ -264,7 +265,7 @@ def apply_visual_edits_and_save(tab, out: str) -> None:
                 return
             out = new_out
             doc2, text_fit_warnings, save_opts, reencrypt = _build_edited_doc()
-            invalidate_viewer_pipeline(tab, out)
+            invalidate_viewer_pipeline(tab, out, cleanup_pipeline=False)
             atomic_pdf_write(doc2, out, save_opts=save_opts, close_writer=True)
 
         if reencrypt:
@@ -274,17 +275,41 @@ def apply_visual_edits_and_save(tab, out: str) -> None:
         if win and hasattr(win, "_remember_save_dir"):
             win._remember_save_dir(os.path.dirname(out))
 
+        for k in (old_doc_path, out):
+            if k:
+                tab._doc_states.pop(os.path.abspath(k), None)
+
         tab._history.clear()
 
         if win and hasattr(win, "_viewers"):
             for v in win._viewers:
-                if v and (not v.current_path() or os.path.abspath(v.current_path()) == os.path.abspath(out)):
+                v_orig = getattr(v, "_original_doc_path", "") or ""
+                v_curr = v.current_path() or ""
+                matches_out = any(
+                    vp and os.path.abspath(vp) == os.path.abspath(out)
+                    for vp in (v_orig, v_curr)
+                )
+                matches_old = bool(
+                    old_doc_path
+                    and any(
+                        vp and os.path.abspath(vp) == os.path.abspath(old_doc_path)
+                        for vp in (v_orig, v_curr)
+                    )
+                )
+                if v and (not v_curr or matches_out or matches_old):
+                    if hasattr(win, "_cleanup_pipeline"):
+                        win._cleanup_pipeline(id(v))
                     v.load(out)
+                    v._original_doc_path = out
 
         if text_fit_warnings:
             QMessageBox.warning(tab, t("msg.warning"), t("msg.pdf_saved", path=out))
         else:
             tab._status(f"Saved: {os.path.basename(out)}")
         tab._load_pdf(out)
+        if hasattr(tab, "_cleanup_editor_temp_files"):
+            tab._cleanup_editor_temp_files()
+        if win and hasattr(win, "_sync_edit_dirty_indicator"):
+            win._sync_edit_dirty_indicator()
     except Exception as e:
         show_error(tab, e)

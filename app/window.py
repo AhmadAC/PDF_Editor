@@ -475,7 +475,8 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         QShortcut(QKeySequence("Alt+P"), self, self._show_command_palette)
         QShortcut(QKeySequence("Ctrl+Shift+P"), self, self._show_command_palette)
         QShortcut(QKeySequence("F5"), self, self._start_presentation)
-        QShortcut(QKeySequence("Ctrl+1"), self, lambda: self._handle_ctrl_digit(1))
+        sc_c1 = QShortcut(QKeySequence("Ctrl+1"), self, lambda: self._handle_ctrl_digit(1))
+        sc_c1.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         QShortcut(QKeySequence("F11"), self, self._toggle_fullscreen)
         QShortcut(QKeySequence("Ctrl+O"), self, self._open_pdf)
         sc_hist = QShortcut(QKeySequence("Ctrl+H"), self, self._show_recent_files_menu)
@@ -487,8 +488,9 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         sc_zo1 = QShortcut(QKeySequence("Ctrl+-"), self, self._zoom_out_current)
         sc_zo2 = QShortcut(QKeySequence("Ctrl+_"), self, self._zoom_out_current)
         sc_zr = QShortcut(QKeySequence("Ctrl+0"), self, lambda: self._handle_ctrl_digit(0))
-        for sc in (sc_zi1, sc_zi2, sc_zo1, sc_zo2, sc_zr):
+        for sc in (sc_zi1, sc_zi2, sc_zo1, sc_zo2):
             sc.setContext(Qt.ShortcutContext.WindowShortcut)
+        sc_zr.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
         sc_undo = QShortcut(QKeySequence("Ctrl+Z"), self, self._handle_global_undo)
         sc_redo1 = QShortcut(QKeySequence("Ctrl+Y"), self, self._handle_global_redo)
@@ -507,7 +509,8 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
             if idx == 0:
                 continue
             elif idx < 9:
-                QShortcut(QKeySequence(f"Ctrl+{idx+1}"), self, lambda d=idx + 1: self._handle_ctrl_digit(d))
+                sc_d = QShortcut(QKeySequence(f"Ctrl+{idx+1}"), self, lambda d=idx + 1: self._handle_ctrl_digit(d))
+                sc_d.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             elif idx < 18:
                 QShortcut(QKeySequence(f"Ctrl+Shift+{idx-8}"), self, lambda i=idx: self._activate_tool(i))
         self._fullscreen = False
@@ -871,10 +874,14 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         if edit_idx >= 0:
             edit_w: Any = self.stack.widget(edit_idx)
             if edit_w and not isinstance(edit_w, _LazyPlaceholderWidget):
-                has_cur_dirty = bool(getattr(edit_w, "_user_pending", None))
+                has_cur_dirty = bool(
+                    getattr(edit_w, "_user_pending", None)
+                    or (hasattr(edit_w, "_history") and edit_w._history.has_page_ops())
+                )
                 dirty_cached = [
                     st_path for st_path, st in getattr(edit_w, "_doc_states", {}).items()
                     if _has_dirty_user_pending(st.get("pending", []))
+                    or any(act.get("kind") == "page_doc" for act in st.get("undo_stack", []))
                 ]
                 if has_cur_dirty or dirty_cached:
                     ans = QMessageBox.question(
@@ -891,7 +898,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
                         for st_path in dirty_cached:
                             if os.path.isfile(st_path) and os.path.abspath(st_path) != os.path.abspath(getattr(edit_w, "_doc_path", "") or ""):
                                 edit_w.auto_load(st_path)
-                                if getattr(edit_w, "_user_pending", None):
+                                if getattr(edit_w, "_user_pending", None) or (hasattr(edit_w, "_history") and edit_w._history.has_page_ops()):
                                     edit_w._run()
         for v in list(self._viewers):
             self._cleanup_pipeline(id(v))

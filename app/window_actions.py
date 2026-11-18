@@ -1,4 +1,3 @@
-
 # app/window_actions.py
 """PDF_Editor – WindowActionsMixin facade: navigation, themes, unsaved dirty indicators, presentation mode, and viewer UI interactions."""
 
@@ -127,13 +126,20 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
             return False
         norm_p = os.path.normcase(os.path.normpath(os.path.abspath(path)))
         cur_edit_p = getattr(edit_w, "_doc_path", None)
-        if cur_edit_p and os.path.normcase(os.path.normpath(os.path.abspath(cur_edit_p))) == norm_p:
-            return bool(getattr(edit_w, "_user_pending", None))
+        cur_out_p = edit_w._drop_out.path() if hasattr(edit_w, "_drop_out") else ""
+        matches_cur = any(
+            cp and os.path.normcase(os.path.normpath(os.path.abspath(cp))) == norm_p
+            for cp in (cur_edit_p, cur_out_p)
+        )
+        if matches_cur:
+            has_page_ops = hasattr(edit_w, "_history") and edit_w._history.has_page_ops()
+            return bool(getattr(edit_w, "_user_pending", None) or has_page_ops)
         doc_states = getattr(edit_w, "_doc_states", None)
         if isinstance(doc_states, dict):
             for k, state in doc_states.items():
                 if os.path.normcase(os.path.normpath(os.path.abspath(k))) == norm_p:
-                    return _has_dirty_user_pending(state.get("pending", []))
+                    has_page_ops = any(act.get("kind") == "page_doc" for act in state.get("undo_stack", []))
+                    return bool(_has_dirty_user_pending(state.get("pending", [])) or has_page_ops)
         return False
 
     def _is_viewer_dirty(self, viewer) -> bool:
@@ -173,11 +179,13 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
         else:
             edit_idx = self._edit_tool_idx() if hasattr(self, "_edit_tool_idx") else -1
             if edit_idx >= 0 and self._current_tool == edit_idx:
-                edit_w = self.stack.widget(edit_idx)
+                edit_w: Any = self.stack.widget(edit_idx)
                 ep = getattr(edit_w, "_doc_path", None) if edit_w and not getattr(edit_w, "_is_lazy_placeholder", False) else None
                 if ep:
-                    active_name = os.path.basename(ep)
-                    active_dirty = bool(getattr(edit_w, "_user_pending", None))
+                    out_p = edit_w._drop_out.path() if hasattr(edit_w, "_drop_out") else ep
+                    active_name = os.path.basename(out_p or ep)
+                    has_page_ops = hasattr(edit_w, "_history") and edit_w._history.has_page_ops()
+                    active_dirty = bool(getattr(edit_w, "_user_pending", None) or has_page_ops)
 
         if hasattr(self, "setWindowTitle"):
             if active_name:
@@ -302,12 +310,15 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
 
         edit_idx = self._edit_tool_idx() if hasattr(self, "_edit_tool_idx") else -1
         if getattr(self, "_current_tool", -1) == edit_idx and edit_idx >= 0:
-            edit_w = self.stack.widget(edit_idx)
+            edit_w: Any = self.stack.widget(edit_idx)
             if edit_w and not getattr(edit_w, "_is_lazy_placeholder", False):
                 edit_path = getattr(edit_w, "_doc_path", None)
-                if edit_path:
-                    full_path = os.path.normpath(edit_path)
-                    is_dirty = is_dirty or bool(getattr(edit_w, "_user_pending", None))
+                out_path = edit_w._drop_out.path() if hasattr(edit_w, "_drop_out") else ""
+                disp_p = out_path or edit_path
+                if disp_p:
+                    full_path = os.path.normpath(disp_p)
+                    has_page_ops = hasattr(edit_w, "_history") and edit_w._history.has_page_ops()
+                    is_dirty = is_dirty or bool(getattr(edit_w, "_user_pending", None) or has_page_ops)
 
         prefix = "* " if is_dirty else ""
         if getattr(self, "_current_tool", -1) >= 0 and self._current_tool < len(NAV_ITEMS):
@@ -333,21 +344,14 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
         page_numbers_idx = self._page_numbers_tool_idx()
         viewer = self._viewer
 
-        if getattr(self, "_current_tool", -1) == -1:
-            self._undo_top_btn.setVisible(True)
-            self._redo_top_btn.setVisible(True)
-            can_u = viewer.can_undo() if viewer and hasattr(viewer, "can_undo") else False
-            can_r = viewer.can_redo() if viewer and hasattr(viewer, "can_redo") else False
-            self._undo_top_btn.setEnabled(can_u)
-            self._redo_top_btn.setEnabled(can_r)
-        elif self._current_tool == edit_idx:
+        if self._current_tool == edit_idx:
             self._undo_top_btn.setVisible(True)
             self._redo_top_btn.setVisible(True)
             edit_w: Any = self._get_or_create_tool(edit_idx)
-            user_pending = getattr(edit_w, "_user_pending", None)
-            redo_stack = getattr(edit_w, "_redo_stack", None)
-            self._undo_top_btn.setEnabled(bool(user_pending))
-            self._redo_top_btn.setEnabled(bool(redo_stack))
+            can_u = edit_w.can_undo() if (edit_w and hasattr(edit_w, "can_undo")) else bool(getattr(edit_w, "_user_pending", None))
+            can_r = edit_w.can_redo() if (edit_w and hasattr(edit_w, "can_redo")) else bool(getattr(edit_w, "_redo_stack", None))
+            self._undo_top_btn.setEnabled(can_u)
+            self._redo_top_btn.setEnabled(can_r)
         elif self._current_tool in (crop_idx, page_numbers_idx):
             self._undo_top_btn.setVisible(True)
             self._redo_top_btn.setVisible(True)
@@ -356,6 +360,11 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
             btn_r = getattr(tool_w, "btn_redo", None)
             self._undo_top_btn.setEnabled(btn_u.isEnabled() if btn_u else False)
             self._redo_top_btn.setEnabled(btn_r.isEnabled() if btn_r else False)
+        elif viewer and (viewer.can_undo() or viewer.can_redo() or getattr(self, "_current_tool", -1) == -1):
+            self._undo_top_btn.setVisible(True)
+            self._redo_top_btn.setVisible(True)
+            self._undo_top_btn.setEnabled(viewer.can_undo())
+            self._redo_top_btn.setEnabled(viewer.can_redo())
         else:
             self._undo_top_btn.setVisible(False)
             self._redo_top_btn.setVisible(False)
@@ -712,4 +721,3 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
         pres = getattr(self, "_presentation", None)
         if pres is not None and isValid(pres):
             pres.update_theme(self._dark_mode)
-
