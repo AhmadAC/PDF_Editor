@@ -614,6 +614,21 @@ class AnnotationOverlay(QWidget):
 
         return hit_stroke
 
+    def contextMenuEvent(self, e) -> None:
+        """Route right-click context menu event to the parent PresentationWidget."""
+        if self._active_box is not None and not self._active_box.text.strip():
+            self._remove_box(self._active_box)
+            self._active_box = None
+            self._clear_text_selection()
+            self._blink_timer.stop()
+            self.update()
+        parent = self.parentWidget()
+        if parent is not None and hasattr(parent, "contextMenuEvent"):
+            parent.contextMenuEvent(e)
+            e.accept()
+        else:
+            super().contextMenuEvent(e)
+
     def mousePressEvent(self, e):
         if e.button() != Qt.MouseButton.LeftButton:
             super().mousePressEvent(e)
@@ -675,8 +690,7 @@ class AnnotationOverlay(QWidget):
 
             x_init = unpanned_pos_f.x()
             y_init = unpanned_pos_f.y()
-            
-            # Bound inside rendered page dimensions if available
+
             pw = getattr(parent, "_rendered_pw", float(self.width())) if parent else float(self.width())
             ph = getattr(parent, "_rendered_ph", float(self.height())) if parent else float(self.height())
 
@@ -1019,7 +1033,6 @@ class AnnotationOverlay(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setBrush(Qt.BrushStyle.NoBrush)
 
-        # Draw strokes fixed in page canvas space (transforming with pan offsets)
         p.save()
         parent = self.parentWidget()
         if parent is not None and hasattr(parent, "_pan_x") and hasattr(parent, "_pan_y"):
@@ -1108,7 +1121,6 @@ class AnnotationOverlay(QWidget):
 
         p.restore()
 
-        # 3. Draw laser pointer (20% opacity) in screen space
         if self._tool == ToolMode.LASER and self._laser_pos is not None:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(239, 68, 68, 51))

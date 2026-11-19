@@ -1,4 +1,3 @@
-
 # app/viewer/presentation.py
 """PDF_Editor – Presentation mode facade: fullscreen single-page viewer with transitions, auto-advance, and annotation sync."""
 
@@ -12,10 +11,26 @@ from typing import Any
 
 from PySide6.QtCore import Qt, QTimer, QPoint
 from PySide6.QtGui import QPixmap, QImage, QKeySequence, QShortcut
-from PySide6.QtWidgets import QWidget, QLabel, QApplication
+from PySide6.QtWidgets import QWidget, QLabel, QApplication, QMenu
 from shiboken6 import isValid
 import fitz
 
+from app.constants import ACCENT
+from app.utils import (
+    SVG_CHECK,
+    SVG_CHEVRON_LEFT,
+    SVG_CHEVRON_RIGHT,
+    SVG_CLOSE,
+    SVG_DOT_CIRCLE,
+    SVG_ERASER,
+    SVG_EYE,
+    SVG_FONT,
+    SVG_HIGHLIGHTER,
+    SVG_PEN,
+    SVG_POINTER,
+    SVG_TRASH,
+    svg_icon,
+)
 from app.viewer.annotation_layer import AnnotationOverlay, ToolMode
 from app.viewer.annotation_hud import AnnotationHUD
 from app.viewer.presentation_zoom_pan import PresentationZoomPanMixin
@@ -38,7 +53,7 @@ _PALETTE_HOTKEYS = {
 
 
 class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin, PresentationBurnMixin, QWidget):
-    """Fullscreen presentation viewer with PowerPoint/Edge-style annotation HUD and page transitions."""
+    """Fullscreen presentation viewer with PowerPoint/Edge-style annotation HUD, page transitions, and right-click toolbar toggle."""
 
     def __init__(
         self,
@@ -64,6 +79,7 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
         self._hud_last_shown_ms = 0.0
         self._viewer: Any = viewer
         self._edit_tab: Any = None
+        self._toolbar_enabled: bool = True
 
         self._zoom: float | None = None
         self._base_fit_zoom: float = 1.0
@@ -216,9 +232,7 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
 
         self._hud_hide_timer = QTimer(self)
         self._hud_hide_timer.setSingleShot(True)
-        self._hud_hide_timer.timeout.connect(
-            lambda: self._hud.hide() if isValid(self._hud) else None
-        )
+        self._hud_hide_timer.timeout.connect(self._on_hud_hide)
 
         self.setWindowFlags(Qt.WindowType.Window)
         self.setStyleSheet("background: #000000;")
@@ -246,6 +260,100 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
             self._overlay.update_theme(self._dark_mode)
         if isValid(self._hud):
             self._hud.update_theme(self._dark_mode)
+
+    def toggle_toolbar(self, enabled: bool | None = None) -> None:
+        """Toggle the annotation HUD toolbar on or off."""
+        if enabled is None:
+            self._toolbar_enabled = not getattr(self, "_toolbar_enabled", True)
+        else:
+            self._toolbar_enabled = bool(enabled)
+
+        if self._toolbar_enabled:
+            self._show_hud()
+        else:
+            self._hud_hide_timer.stop()
+            if isValid(self._hud):
+                self._hud.hide()
+            if isValid(self._overlay) and self._overlay.tool() in (int(ToolMode.POINTER), int(ToolMode.TYPE)):
+                self.setCursor(Qt.CursorShape.BlankCursor)
+        self.update()
+
+    def _on_hud_hide(self) -> None:
+        if isValid(self._hud):
+            self._hud.hide()
+        if isValid(self._overlay) and self._overlay.tool() in (int(ToolMode.POINTER), int(ToolMode.TYPE)):
+            self.setCursor(Qt.CursorShape.BlankCursor)
+
+    def contextMenuEvent(self, e) -> None:
+        """Right-click context menu offering instant toolbar toggle, tools, navigation, and exit."""
+        menu = QMenu(self)
+        dark = self._dark_mode
+        bg = "#262626" if dark else "#FFFFFF"
+        fg = "#F0F0F0" if dark else "#1A2B28"
+        border = "#444444" if dark else "#D1D5DB"
+        menu.setStyleSheet(
+            f"QMenu {{ background: {bg}; color: {fg}; border: 1px solid {border}; border-radius: 6px; padding: 4px; }}"
+            f"QMenu::item {{ padding: 6px 22px 6px 12px; border-radius: 4px; margin: 2px 4px; background: transparent; }}"
+            f"QMenu::item:selected {{ background: {ACCENT}; color: #FFFFFF; }}"
+            f"QMenu::separator {{ height: 1px; background: {border}; margin: 4px 6px; }}"
+        )
+
+        is_toolbar_on = getattr(self, "_toolbar_enabled", True)
+        toolbar_text = "Hide Toolbar\tCtrl+T" if is_toolbar_on else "Show Toolbar\tCtrl+T"
+        toolbar_icon = svg_icon(SVG_CLOSE if is_toolbar_on else SVG_EYE, color=ACCENT, size=15)
+        act_toggle_toolbar = menu.addAction(toolbar_icon, toolbar_text)
+        act_toggle_toolbar.triggered.connect(lambda _=False: self.toggle_toolbar())
+
+        menu.addSeparator()
+
+        tools_menu = menu.addMenu(svg_icon(SVG_PEN, color=ACCENT, size=15), "Annotation Tools")
+        tools_menu.setStyleSheet(menu.styleSheet())
+
+        current_tool = self._overlay.tool()
+        tool_defs = [
+            (ToolMode.POINTER, "Pointer / Select", SVG_POINTER),
+            (ToolMode.PEN, "Pen", SVG_PEN),
+            (ToolMode.HIGHLIGHTER, "Highlighter", SVG_HIGHLIGHTER),
+            (ToolMode.TYPE, "Text Box", SVG_FONT),
+            (ToolMode.LASER, "Laser Pointer", SVG_DOT_CIRCLE),
+            (ToolMode.ERASER, "Eraser", SVG_ERASER),
+        ]
+
+        for mode_val, mode_name, mode_icon in tool_defs:
+            is_active = (current_tool == int(mode_val))
+            icon_col = ACCENT if is_active else ("#9CA3AF" if dark else "#6B7280")
+            act_t = tools_menu.addAction(svg_icon(mode_icon, color=icon_col, size=15), mode_name)
+            if is_active:
+                act_t.setIcon(svg_icon(SVG_CHECK, color=ACCENT, size=15))
+            act_t.triggered.connect(lambda _=False, m=int(mode_val): self._on_tool_selected(m))
+
+        act_clear = menu.addAction(svg_icon(SVG_TRASH, color="#EF4444", size=15), "Clear Page Annotations")
+        act_clear.triggered.connect(lambda _=False: self._on_clear_requested())
+
+        menu.addSeparator()
+
+        act_prev = menu.addAction(svg_icon(SVG_CHEVRON_LEFT, color=fg, size=15), "Previous Page\tLeft / PgUp")
+        act_prev.setEnabled(self._current > 0)
+        act_prev.triggered.connect(lambda _=False: self._go_to_page(self._current - 1, align_bottom=False))
+
+        act_next = menu.addAction(svg_icon(SVG_CHEVRON_RIGHT, color=fg, size=15), "Next Page\tRight / Space")
+        act_next.setEnabled(self._current < self._total - 1)
+        act_next.triggered.connect(lambda _=False: self._go_to_page(self._current + 1, align_bottom=False))
+
+        menu.addSeparator()
+
+        act_exit = menu.addAction(svg_icon(SVG_CLOSE, color="#EF4444", size=15), "End Presentation\tEsc")
+        act_exit.triggered.connect(lambda _=False: self.close())
+
+        if hasattr(e, "globalPos"):
+            global_pt = e.globalPos()
+        elif hasattr(e, "globalPosition"):
+            global_pt = e.globalPosition().toPoint()
+        else:
+            global_pt = self.mapToGlobal(e.pos())
+
+        menu.exec(global_pt)
+        e.accept()
 
     def _render(self, transition: bool = False):
         self._auto_advance_timer.stop()
@@ -411,6 +519,8 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
             self._hud.set_cloud_active(self._overlay.is_active_box_cloud())
 
     def _show_hud(self):
+        if not getattr(self, "_toolbar_enabled", True):
+            return
         if not isValid(self._hud):
             return
         self._sync_hud_text_options()
@@ -430,7 +540,8 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
         self._overlay.set_tool(int(mode))
         self._hud.set_active_tool(int(mode))
         if int(mode) in (int(ToolMode.POINTER), int(ToolMode.TYPE)):
-            self.setCursor(Qt.CursorShape.ArrowCursor if self._hud.isVisible() else Qt.CursorShape.BlankCursor)
+            is_toolbar_active = (self._hud.isVisible() and getattr(self, "_toolbar_enabled", True))
+            self.setCursor(Qt.CursorShape.ArrowCursor if is_toolbar_active else Qt.CursorShape.BlankCursor)
         else:
             self.setCursor(Qt.CursorShape.BlankCursor)
         self._show_hud()
@@ -477,6 +588,10 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
                 return
             if key == Qt.Key.Key_0:
                 self._zoom_reset()
+                e.accept()
+                return
+            if key == Qt.Key.Key_T:
+                self.toggle_toolbar()
                 e.accept()
                 return
             if key == Qt.Key.Key_Z:

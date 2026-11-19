@@ -240,6 +240,16 @@ class AnnotationHUD(QFrame):
         y = parent.height() - self.height() - 28
         self.setGeometry(x, y, w, self.height())
 
+    # ── Context Menu Routing ──────────────────────────────────────────────
+
+    def contextMenuEvent(self, e) -> None:
+        parent = self.parentWidget()
+        if parent is not None and hasattr(parent, "contextMenuEvent"):
+            parent.contextMenuEvent(e)
+            e.accept()
+        else:
+            super().contextMenuEvent(e)
+
     # ── Styling / Icon Refresh ────────────────────────────────────────────
 
     def _theme_colors(self) -> tuple[str, str, str, str]:
