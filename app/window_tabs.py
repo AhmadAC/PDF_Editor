@@ -1,3 +1,4 @@
+
 # app/window_tabs.py
 """PDF_Editor – Tab management, unsaved edit checks, and multi-viewer window mixin."""
 
@@ -25,6 +26,7 @@ from app.utils import (
     SVG_CLOSE,
     SVG_COPY,
     SVG_FOLDER,
+    SVG_MANAGE_TABS,
     SVG_PASTE,
     SVG_SAVE,
     SVG_TRASH,
@@ -214,6 +216,65 @@ class WindowTabsMixin(_Base):
                 return self._viewers[idx]
             return self._viewers[0]
         return None
+
+    def _show_manage_tabs_dialog(self) -> None:
+        """Open the Manage & Switch Tabs dialog."""
+        from app.manage_tabs_dialog import ManageTabsDialog
+        dlg = ManageTabsDialog(cast(Any, self))
+        dlg.exec()
+
+    def reorder_tab(self, from_idx: int, to_idx: int) -> None:
+        """Move a single tab smoothly between two indices without reloading document bytes."""
+        if from_idx == to_idx:
+            return
+        if not (0 <= from_idx < len(self._viewers)) or not (0 <= to_idx < len(self._viewers)):
+            return
+
+        cur_idx = self._tab_bar.currentIndex()
+        cur_viewer = self._viewers[cur_idx] if 0 <= cur_idx < len(self._viewers) else None
+
+        self._tab_bar.blockSignals(True)
+        self._tab_bar.moveTab(from_idx, to_idx)
+        self._tab_bar.blockSignals(False)
+
+        v = self._viewers.pop(from_idx)
+        self._viewers.insert(to_idx, v)
+
+        self._viewer_stack.removeWidget(v)
+        self._viewer_stack.insertWidget(to_idx, v)
+
+        if cur_viewer in self._viewers:
+            new_active = self._viewers.index(cur_viewer)
+            self._tab_bar.setCurrentIndex(new_active)
+            self._viewer_stack.setCurrentIndex(new_active)
+
+    def reorder_tabs(self, new_order: list[int]) -> None:
+        """Reorder all open tabs based on an updated list of indices."""
+        if len(new_order) != len(self._viewers):
+            return
+
+        cur_idx = self._tab_bar.currentIndex()
+        cur_viewer = self._viewers[cur_idx] if 0 <= cur_idx < len(self._viewers) else None
+
+        reordered_viewers = [self._viewers[i] for i in new_order]
+        reordered_texts = [self._tab_bar.tabText(i) for i in new_order]
+        reordered_tips = [self._tab_bar.tabToolTip(i) for i in new_order]
+
+        self._tab_bar.blockSignals(True)
+        for i in range(len(new_order)):
+            self._tab_bar.setTabText(i, reordered_texts[i])
+            self._tab_bar.setTabToolTip(i, reordered_tips[i])
+        self._tab_bar.blockSignals(False)
+
+        self._viewers = reordered_viewers
+        for i, v in enumerate(self._viewers):
+            self._viewer_stack.removeWidget(v)
+            self._viewer_stack.insertWidget(i, v)
+
+        if cur_viewer in self._viewers:
+            new_active = self._viewers.index(cur_viewer)
+            self._tab_bar.setCurrentIndex(new_active)
+            self._viewer_stack.setCurrentIndex(new_active)
 
     def _on_active_tab_clicked(self) -> None:
         toggle_fn = getattr(self, "_toggle_pages_sidebar", None)
@@ -412,6 +473,12 @@ class WindowTabsMixin(_Base):
 
         menu = QMenu(self)
 
+        act_manage = menu.addAction(
+            svg_icon(SVG_MANAGE_TABS, color=ACCENT, size=15),
+            "Manage & Switch Tabs...\tCtrl+Shift+T",
+        )
+        menu.addSeparator()
+
         act_paste_pages = None
         if curr_path and os.path.exists(curr_path) and has_cut_pages():
             act_paste_pages = menu.addAction(
@@ -454,7 +521,9 @@ class WindowTabsMixin(_Base):
                 act_delete_disk = menu.addAction(svg_icon(SVG_TRASH, color="#EF4444", size=15), "Delete From Disk")
 
         chosen = menu.exec(self._tab_bar.mapToGlobal(point))
-        if act_paste_pages and chosen == act_paste_pages:
+        if chosen == act_manage:
+            self._show_manage_tabs_dialog()
+        elif act_paste_pages and chosen == act_paste_pages:
             self._tab_bar.setCurrentIndex(tab_idx)
             self._viewer_stack.setCurrentIndex(tab_idx)
             pages = viewer._thumbnails.selected_pages() if hasattr(viewer, "_thumbnails") else [0]

@@ -1,3 +1,4 @@
+
 # app/utils_svg.py
 """PDF_Editor – Inline SVG vector assets and icon rendering utilities."""
 
@@ -89,6 +90,9 @@ SVG_DOT_CIRCLE = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" 
 SVG_FILE_ALT = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>"""
 SVG_FILE_CODE = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><polyline points="10 13 8 15 10 17"/><polyline points="14 17 16 15 14 13"/></svg>"""
 SVG_BOOK = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>"""
+SVG_MANAGE_TABS = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 3v6"/><circle cx="6" cy="6" r="0.8" fill="{color}"/></svg>"""
+SVG_ARROW_TO_TOP = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="4" x2="20" y2="4"/><polyline points="7 13 12 8 17 13"/><line x1="12" y1="8" x2="12" y2="20"/></svg>"""
+SVG_ARROW_TO_BOTTOM = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="20" x2="20" y2="20"/><polyline points="7 11 12 16 17 11"/><line x1="12" y1="16" x2="12" y2="4"/></svg>"""
 
 ICON_SVGS = {
     "fa5s.stamp": SVG_STAMP,
@@ -162,6 +166,7 @@ ICON_SVGS = {
     "fa5s.minus": SVG_MINUS,
     "fa5s.plus-circle": SVG_PLUS_CIRCLE,
     "fa5s.dot-circle": SVG_DOT_CIRCLE,
+    "manage-tabs": SVG_MANAGE_TABS,
 }
 
 _TOOL_SVGS = ICON_SVGS
@@ -217,3 +222,5 @@ def svg_for_name(name: str, color: str | None = None, size: int = 18, rotate: fl
         return svg_icon(name, color=color, size=size, rotate=rotate)
     svg_src = ICON_SVGS.get(name, SVG_FILE_PDF)
     return svg_icon(svg_src, color=color, size=size, rotate=rotate)
+
+

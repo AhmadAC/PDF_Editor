@@ -1,3 +1,4 @@
+
 # app/workspace_bar.py
 """PDF_Editor – WorkspaceBar: top toolbar for workspace actions and navigation using SVG icons."""
 from PySide6.QtCore import Qt, QSize, Signal
@@ -18,6 +19,7 @@ from app.utils import (
     SVG_DOUBLE_LEFT,
     SVG_DOUBLE_RIGHT,
     SVG_FOLDER,
+    SVG_MANAGE_TABS,
     SVG_MOON,
     SVG_PRINT,
     SVG_ROTATE_LEFT,
@@ -126,7 +128,7 @@ class WorkspaceBar(QWidget):
             btn.setToolTip(tip)
             btn.setAccessibleName(tip)
 
-        # ── Left Side: App Sidebar Toggle & Pages Sidebar Toggle ──────
+        # ── Left Side: App Sidebar Toggle, Pages Sidebar Toggle & Manage Tabs ──────
         self._sidebar_toggle_btn = QPushButton()
         self._ico_bars = svg_icon(SVG_BARS, color=TEXT_PRI, size=15)
         self._sidebar_toggle_btn.setIcon(self._ico_bars)
@@ -144,6 +146,15 @@ class WorkspaceBar(QWidget):
         self._pages_toggle_btn.setIconSize(QSize(15, 15))
         _a11y(self._pages_toggle_btn, t("viewer.sidebar.pages"))
         layout.addWidget(self._pages_toggle_btn)
+
+        self._manage_tabs_btn = QPushButton()
+        self._ico_manage_tabs = svg_icon(SVG_MANAGE_TABS, color=TEXT_PRI, size=15)
+        self._manage_tabs_btn.setIcon(self._ico_manage_tabs)
+        self._manage_tabs_btn.setObjectName("viewer_nav_btn")
+        self._manage_tabs_btn.setFixedSize(28, 28)
+        self._manage_tabs_btn.setIconSize(QSize(15, 15))
+        _a11y(self._manage_tabs_btn, "Manage & Switch Tabs (Ctrl+Shift+T)")
+        layout.addWidget(self._manage_tabs_btn)
 
         self._breadcrumb = ElidedLabel("")
         self._breadcrumb.setObjectName("workspace_title")
@@ -365,9 +376,11 @@ class WorkspaceBar(QWidget):
         bar_color = TEXT_PRI if dark else _LP
         self._ico_bars = svg_icon(SVG_BARS, color=bar_color, size=15)
         self._ico_pages = svg_icon(SVG_TH_LARGE, color=bar_color, size=15)
+        self._ico_manage_tabs = svg_icon(SVG_MANAGE_TABS, color=bar_color, size=15)
 
         self._sidebar_toggle_btn.setIcon(self._ico_bars)
         self._pages_toggle_btn.setIcon(self._ico_pages)
+        self._manage_tabs_btn.setIcon(self._ico_manage_tabs)
         self._right_pane_toggle_btn.setIcon(svg_icon(SVG_COLUMNS, color=bar_color, size=15))
         self._open_pdf_btn.setIcon(svg_icon(SVG_FOLDER, color=bar_color, size=15))
         self._toc_top_btn.setIcon(svg_icon(SVG_BOOKMARK, color=bar_color, size=15))

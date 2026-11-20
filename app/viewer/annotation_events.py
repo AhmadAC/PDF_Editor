@@ -21,7 +21,7 @@ else:
 
 
 class AnnotationEventsMixin(_Base):
-    """Mixin implementing mouse clicks, resizing, text input, and context menu dispatch."""
+    """Mixin implementing mouse clicks, resizing, text input, nudging, and context menu dispatch."""
 
     if TYPE_CHECKING:
         HANDLE_NONE: int
@@ -110,6 +110,7 @@ class AnnotationEventsMixin(_Base):
                 self._moving_box = True
                 self._drag_start_pos = unpanned_pos_f
                 self._drag_start_rect = QRectF(self._active_box.rect)
+                self.setFocus()
                 self.update()
                 e.accept()
                 return
@@ -127,6 +128,7 @@ class AnnotationEventsMixin(_Base):
                 self._moving_box = True
                 self._drag_start_pos = unpanned_pos_f
                 self._drag_start_rect = QRectF(hit_box.rect)
+                self.setFocus()
                 self.update()
                 e.accept()
                 return
@@ -322,6 +324,41 @@ class AnnotationEventsMixin(_Base):
             parent = self.parentWidget()
             pw = getattr(parent, "_rendered_pw", float(self.width())) if parent else float(self.width())
             ph = getattr(parent, "_rendered_ph", float(self.height())) if parent else float(self.height())
+
+            # Ctrl + Arrow keys nudge the text box position by pixels
+            if (modifiers & Qt.KeyboardModifier.ControlModifier) and key in (
+                Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down
+            ):
+                self._push_undo()
+                step = 15.0 if (modifiers & Qt.KeyboardModifier.ShiftModifier) else (1.0 if (modifiers & Qt.KeyboardModifier.AltModifier) else 4.0)
+                dx = 0.0
+                dy = 0.0
+                if key == Qt.Key.Key_Left:
+                    dx = -step
+                elif key == Qt.Key.Key_Right:
+                    dx = step
+                elif key == Qt.Key.Key_Up:
+                    dy = -step
+                elif key == Qt.Key.Key_Down:
+                    dy = step
+
+                r = QRectF(self._active_box.rect)
+                r.translate(dx, dy)
+
+                if pw > 20 and ph > 20:
+                    if r.left() < 5.0:
+                        r.moveLeft(5.0)
+                    if r.right() > pw - 5.0:
+                        r.moveRight(pw - 5.0)
+                    if r.top() < 5.0:
+                        r.moveTop(5.0)
+                    if r.bottom() > ph - 5.0:
+                        r.moveBottom(ph - 5.0)
+
+                self._active_box.rect = r
+                self.update()
+                e.accept()
+                return
 
             if (modifiers & Qt.KeyboardModifier.ControlModifier) and key == Qt.Key.Key_A:
                 self._sel_start = 0

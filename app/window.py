@@ -1,3 +1,5 @@
+
+
 # app/window.py
 """PDF_Editor – MainWindow: application main window facade with Alt+P Command Palette and Selection Pane integration."""
 
@@ -172,6 +174,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         wb = self._workspace_bar
         self._sidebar_toggle_btn = wb._sidebar_toggle_btn
         self._pages_toggle_btn = wb._pages_toggle_btn
+        self._manage_tabs_btn = wb._manage_tabs_btn
         self._right_pane_toggle_btn = wb._right_pane_toggle_btn
         self._breadcrumb = wb._breadcrumb
         self._open_pdf_btn = wb._open_pdf_btn
@@ -201,6 +204,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
 
         self._sidebar_toggle_btn.clicked.connect(self._toggle_sidebar)
         self._pages_toggle_btn.clicked.connect(self._toggle_pages_sidebar)
+        self._manage_tabs_btn.clicked.connect(self._show_manage_tabs_dialog)
         self._right_pane_toggle_btn.clicked.connect(self._toggle_right_pane)
         self._open_pdf_btn.clicked.connect(self._open_pdf)
         self._toc_top_btn.clicked.connect(self._toggle_pages_sidebar)
@@ -474,6 +478,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         # ── Global Keyboard Shortcuts ─────────────────────────────────────
         QShortcut(QKeySequence("Alt+P"), self, self._show_command_palette)
         QShortcut(QKeySequence("Ctrl+Shift+P"), self, self._show_command_palette)
+        QShortcut(QKeySequence("Ctrl+Shift+T"), self, self._show_manage_tabs_dialog)
         QShortcut(QKeySequence("F5"), self, self._start_presentation)
         sc_c1 = QShortcut(QKeySequence("Ctrl+1"), self, lambda: self._handle_ctrl_digit(1))
         sc_c1.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -555,6 +560,13 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
     def _show_command_palette(self):
         """Build actions list and present the Alt+P Command Palette."""
         commands: list[dict[str, Any]] = [
+            {
+                "name": "Manage & Switch Tabs... (Filter, Reorder, Duplicate & Jump)",
+                "category": "Tabs",
+                "action": self._show_manage_tabs_dialog,
+                "shortcut": "Ctrl+Shift+T",
+                "icon": svg_for_name("manage-tabs", ACCENT, 18),
+            },
             {
                 "name": "Selection Pane (Manage Layers, Opacity, Lock & Visibility)",
                 "category": "Edit",
@@ -926,3 +938,4 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         except Exception:
             pass
         super().closeEvent(event)
+
