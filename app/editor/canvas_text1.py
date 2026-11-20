@@ -1,6 +1,8 @@
+
+
 # app/editor/canvas_text1.py
 
-"""Inline text editor controller for Foxit-style in-place editing & insertion with per-selection color and installed system font support."""
+"""Inline text editor controller for Foxit-style in-place editing & insertion with per-selection color, smooth expansion, and installed system font support."""
 
 from __future__ import annotations
 
@@ -98,8 +100,13 @@ class _InlineRichEdit(QTextEdit):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setTabChangesFocus(False)
-        self.document().setDocumentMargin(1.0)
-        self.setViewportMargins(1, 0, 1, 0)
+        self.document().setDocumentMargin(2.0)
+        self.setViewportMargins(2, 1, 2, 1)
+        self.viewport().setAutoFillBackground(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        pal = self.palette()
+        pal.setColor(QPalette.ColorRole.Base, Qt.GlobalColor.transparent)
+        self.setPalette(pal)
 
     def text(self) -> str:
         return self.toPlainText()
@@ -437,9 +444,15 @@ class CanvasInlineTextManager:
 
         qcol = _color_value_to_qcolor(self.insert_color)
         self.edit.setStyleSheet(
-            f"QTextEdit {{ background: #FFFFFF; border: 1.5px solid {ACCENT};"
-            f" border-radius: 2px; padding: 0px; }}"
+            f"QTextEdit, QTextEdit > QWidget {{ "
+            f"  background: transparent; background-color: transparent; "
+            f"  border: 1.5px solid {ACCENT}; border-radius: 2px; padding: 0px; "
+            f"}} "
+            f"QTextEdit > QWidget {{ border: none; }}"
         )
+        pal = self.edit.palette()
+        pal.setColor(QPalette.ColorRole.Base, Qt.GlobalColor.transparent)
+        self.edit.setPalette(pal)
         self.edit.apply_uniform_style(fnt, qcol, preserve_runs=preserve_runs)
 
     def _style_inline_edit(self, span: dict, preserve_runs: bool = True):
@@ -462,10 +475,16 @@ class CanvasInlineTextManager:
             fnt.setItalic(True)
 
         qcol = _color_value_to_qcolor(span.get("color", 0))
+        is_added_overlay = bool(self.target_overlay and self.target_overlay.get("type") == "text")
+        bg_style = "transparent" if is_added_overlay else "#FFFFFF"
         self.edit.setStyleSheet(
-            f"QTextEdit {{ background: #FFFFFF; border: 1.5px solid {ACCENT};"
+            f"QTextEdit, QTextEdit > QWidget {{ background: {bg_style}; background-color: {bg_style}; border: 1.5px solid {ACCENT};"
             f" border-radius: 2px; padding: 0px; }}"
+            f"QTextEdit > QWidget {{ border: none; }}"
         )
+        pal = self.edit.palette()
+        pal.setColor(QPalette.ColorRole.Base, Qt.GlobalColor.transparent if is_added_overlay else QColor("#FFFFFF"))
+        self.edit.setPalette(pal)
         self.edit.apply_uniform_style(fnt, qcol, preserve_runs=preserve_runs)
 
     def reposition(self):
@@ -475,16 +494,20 @@ class CanvasInlineTextManager:
         z = c._zoom or 1.0
         yo = c._page_offsets[self.page_idx][0]
         if self.mode == "edit" and self.span is not None:
-            self._style_inline_edit(self.span, preserve_runs=True)
             bb = self.span["bbox"]
             sz = float(self.span.get("font_size") or self.span.get("size") or 12.0)
             px_size = max(6, int(round(sz * z)))
             origin = self.span.get("origin")
             fm = self.edit.fontMetrics()
             txt = self.edit.toPlainText()
-            txt_w = fm.horizontalAdvance(txt) if txt else 0
-            w = max(int((bb[2] - bb[0]) * z) + 14, int(txt_w + px_size * 2), 64)
-            h = max(int((bb[3] - bb[1]) * z) + 6, fm.height() + 8, 24)
+            lines = txt.split("\n") if txt else [""]
+            max_line_w = max((fm.horizontalAdvance(line) for line in lines), default=0.0)
+            doc_w = self.edit.document().idealWidth()
+            content_w = max(max_line_w, doc_w)
+            cursor_extra = max(24, int(px_size * 2))
+            orig_span_w = int((bb[2] - bb[0]) * z)
+            w = max(orig_span_w + 14, int(content_w + cursor_extra + 16), 64)
+            h = max(int((bb[3] - bb[1]) * z) + 6, int(fm.lineSpacing() * len(lines) + 8), 24)
             if origin:
                 baseline_y = yo + int(round(origin[1] * z))
                 ascent = fm.ascent()
@@ -494,20 +517,31 @@ class CanvasInlineTextManager:
             else:
                 x = int(round(bb[0] * z)) - 4
                 y = yo + int(round(bb[1] * z)) - 3
+            if x + w > c.width() - 16:
+                c.setFixedSize(max(c.width(), x + w + 32), c.height())
             self.edit.setGeometry(x, y, w, h)
+            self.edit.ensureCursorVisible()
+            self.edit.horizontalScrollBar().setValue(0)
         elif self.mode == "insert" and self.insert_point is not None:
-            self._style_inline_insert(preserve_runs=True)
             px, py = self.insert_point
             size = self.insert_size
             px_size = max(6, int(round(size * z)))
             fm = self.edit.fontMetrics()
             txt = self.edit.toPlainText()
-            txt_w = fm.horizontalAdvance(txt) if txt else 0
-            w = max(100, int(txt_w + px_size * 2))
-            h = max(int(px_size * 1.35) + 6, fm.height() + 8, 24)
+            lines = txt.split("\n") if txt else [""]
+            max_line_w = max((fm.horizontalAdvance(line) for line in lines), default=0.0)
+            doc_w = self.edit.document().idealWidth()
+            content_w = max(max_line_w, doc_w)
+            cursor_extra = max(24, int(px_size * 2))
+            w = max(100, int(content_w + cursor_extra + 16))
+            h = max(int(px_size * 1.35) + 6, int(fm.lineSpacing() * len(lines) + 8), 24)
             x = int(round(px * z)) - 4
             y = yo + int(round(py * z)) - 3
+            if x + w > c.width() - 16:
+                c.setFixedSize(max(c.width(), x + w + 32), c.height())
             self.edit.setGeometry(x, y, w, h)
+            self.edit.ensureCursorVisible()
+            self.edit.horizontalScrollBar().setValue(0)
 
     def commit(self):
         if self.mode is None or not self.edit.isVisible():
@@ -721,3 +755,4 @@ class CanvasInlineTextManager:
                 self.commit()
                 return False
         return False
+

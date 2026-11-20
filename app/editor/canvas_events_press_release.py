@@ -1,3 +1,5 @@
+
+
 # app/editor/canvas_events_press_release.py
 """Mouse double-click, press, and release interaction handlers for PdfEditCanvas."""
 
@@ -73,7 +75,6 @@ class CanvasPressReleaseMixin:
     def _commit_overlay_mutation(self, ov: dict, before_snap: dict | None, force_committed: bool = False) -> None:
         c = self.canvas
         page_idx = ov.get("page", 0)
-        print(f"[DEBUG] [CanvasEvents] _commit_overlay_mutation: page={page_idx + 1}, type='{ov.get('type')}', force_committed={force_committed}, existing={ov.get('_existing')}, dirty={ov.get('_dirty')}", flush=True)
         if force_committed or (ov.get("_existing") and not ov.get("_dirty")):
             ov["_dirty"] = True
             if hasattr(c, "overlay_committed"):
@@ -87,6 +88,12 @@ class CanvasPressReleaseMixin:
         if e.button() != Qt.MouseButton.LeftButton:
             return
         pos = e.position().toPoint()
+
+        is_add_text = bool(
+            getattr(c, "_text_mode", False) and getattr(c, "_text_submode", "edit") == "add"
+        )
+        if is_add_text:
+            return
 
         for idx in reversed(range(len(c._overlays))):
             ov = c._overlays[idx]
@@ -133,7 +140,6 @@ class CanvasPressReleaseMixin:
                 c._placing_sig_path = ""
                 c._sig_cursor_pos = None
                 c.setCursor(Qt.CursorShape.ArrowCursor)
-                print(f"[DEBUG] [CanvasEvents] Placed signature on page {page_idx + 1}", flush=True)
                 c.signature_added.emit(page_idx, r, sig_path)
                 if c._overlays:
                     c._selected_overlay_idx = len(c._overlays) - 1
@@ -161,7 +167,6 @@ class CanvasPressReleaseMixin:
                 c._placing_stamp_type = ""
                 c._stamp_cursor_pos = None
                 c.setCursor(Qt.CursorShape.ArrowCursor)
-                print(f"[DEBUG] [CanvasEvents] Placed stamp '{st_type}' on page {page_idx + 1}", flush=True)
                 c.stamp_added.emit(page_idx, r, st_type)
                 if c._overlays:
                     c._selected_overlay_idx = len(c._overlays) - 1
@@ -172,9 +177,17 @@ class CanvasPressReleaseMixin:
         is_paint_tool = bool(
             c._draw_mode or getattr(c, "_highlight_mode", False) or getattr(c, "_redact_mode", False)
         )
+        is_add_text = bool(
+            getattr(c, "_text_mode", False) and getattr(c, "_text_submode", "edit") == "add"
+        )
 
-        # 1. Active selected overlay handle resize / body move
-        if not is_paint_tool and c._selected_overlay_idx >= 0 and e.button() == Qt.MouseButton.LeftButton:
+        if is_add_text:
+            c._selected_overlay_idx = -1
+            c._active_sel_rect = None
+            c._overlay_mgr.discard_untouched_existing()
+
+        # 1. Active selected overlay handle resize / body move (only when NOT in add text mode)
+        if not is_paint_tool and not is_add_text and c._selected_overlay_idx >= 0 and e.button() == Qt.MouseButton.LeftButton:
             handle = c._overlay_mgr.get_overlay_handle_at(c._selected_overlay_idx, pos)
             if handle != CanvasOverlayManager.HANDLE_NONE:
                 cur_ov = c._overlays[c._selected_overlay_idx]
@@ -183,7 +196,6 @@ class CanvasPressReleaseMixin:
                 c._drag_before_snapshot = snapshot_overlay(cur_ov)
                 c._drag_start_rect = overlay_pdf_rect(cur_ov, zoom=c._zoom or 1.0)
                 self._started_untouched_drag = bool(cur_ov.get("_existing") and not cur_ov.get("_dirty"))
-                print(f"[DEBUG] [CanvasEvents] Drag resize started for handle {handle} on page {cur_ov.get('page', 0) + 1} (type='{cur_ov.get('type')}')", flush=True)
                 e.accept()
                 return
             if c._overlay_mgr.is_pos_inside_overlay(c._selected_overlay_idx, pos):
@@ -193,14 +205,13 @@ class CanvasPressReleaseMixin:
                 c._drag_before_snapshot = snapshot_overlay(cur_ov)
                 c._drag_start_rect = overlay_pdf_rect(cur_ov, zoom=c._zoom or 1.0)
                 self._started_untouched_drag = bool(cur_ov.get("_existing") and not cur_ov.get("_dirty"))
-                print(f"[DEBUG] [CanvasEvents] Drag move started on page {cur_ov.get('page', 0) + 1} (type='{cur_ov.get('type')}')", flush=True)
                 e.accept()
                 return
             c._selected_overlay_idx = -1
             c._overlay_mgr.discard_untouched_existing()
             c.update()
 
-        if not is_paint_tool and e.button() == Qt.MouseButton.LeftButton:
+        if not is_paint_tool and not is_add_text and e.button() == Qt.MouseButton.LeftButton:
             # 2. Any overlay already in _overlays (top-most first)
             for idx in reversed(range(len(c._overlays))):
                 ov = c._overlays[idx]
@@ -215,7 +226,6 @@ class CanvasPressReleaseMixin:
                     self._started_untouched_drag = bool(ov.get("_existing") and not ov.get("_dirty"))
                     self._emit_text_started_for_overlay(ov)
                     c._active_sel_rect = None
-                    print(f"[DEBUG] [CanvasEvents] Selected existing overlay idx={idx} on page {ov.get('page', 0) + 1} (type='{ov.get('type')}')", flush=True)
                     c.update()
                     e.accept()
                     return
@@ -235,7 +245,6 @@ class CanvasPressReleaseMixin:
                     c._drag_start_rect = fitz.Rect(existing_media["rect"])
                     self._started_untouched_drag = bool(existing_media.get("_existing") and not existing_media.get("_dirty"))
                     c._active_sel_rect = None
-                    print(f"[DEBUG] [CanvasEvents] Detected and selected existing media on page {page_idx + 1} (type='{existing_media.get('type')}')", flush=True)
                     c.update()
                     e.accept()
                     return
@@ -249,7 +258,6 @@ class CanvasPressReleaseMixin:
                     c._drag_start_rect = fitz.Rect(existing_drawing["rect"])
                     self._started_untouched_drag = bool(existing_drawing.get("_existing") and not existing_drawing.get("_dirty"))
                     c._active_sel_rect = None
-                    print(f"[DEBUG] [CanvasEvents] Detected and selected existing drawing on page {page_idx + 1}", flush=True)
                     c.update()
                     e.accept()
                     return
@@ -288,8 +296,11 @@ class CanvasPressReleaseMixin:
 
     def handle_mouse_release(self, e) -> None:
         c = self.canvas
+        is_add_text = bool(
+            getattr(c, "_text_mode", False) and getattr(c, "_text_submode", "edit") == "add"
+        )
 
-        if getattr(c, "_select_mode", False):
+        if not is_add_text and getattr(c, "_select_mode", False):
             if getattr(c, "_active_sel_handle", CanvasOverlayManager.HANDLE_NONE) != CanvasOverlayManager.HANDLE_NONE or getattr(c, "_active_sel_moving", False):
                 c._active_sel_handle = CanvasOverlayManager.HANDLE_NONE
                 c._active_sel_moving = False
@@ -298,7 +309,7 @@ class CanvasPressReleaseMixin:
                 e.accept()
                 return
 
-        if c._selected_overlay_idx >= 0 and 0 <= c._selected_overlay_idx < len(c._overlays):
+        if not is_add_text and c._selected_overlay_idx >= 0 and 0 <= c._selected_overlay_idx < len(c._overlays):
             if c._drag_handle != CanvasOverlayManager.HANDLE_NONE or c._moving_overlay:
                 ov = c._overlays[c._selected_overlay_idx]
                 before_snap = c._drag_before_snapshot
@@ -308,7 +319,6 @@ class CanvasPressReleaseMixin:
                 c._drag_handle = CanvasOverlayManager.HANDLE_NONE
                 c._moving_overlay = False
                 c._drag_before_snapshot = None
-                print(f"[DEBUG] [CanvasEvents] mouseRelease: overlay moved={moved}, page={ov.get('page', 0) + 1}, type='{ov.get('type')}'", flush=True)
                 if moved:
                     self._commit_overlay_mutation(ov, before_snap, force_committed=started_untouched)
                     if ov.get("_z_back"):
@@ -350,28 +360,30 @@ class CanvasPressReleaseMixin:
             c._page_idx = page_idx
             pdf_rect = c._rect_to_pdf(page_idx, local_rect)
             if pdf_rect is not None:
-                if getattr(c, "_select_mode", False):
+                if not is_add_text and getattr(c, "_select_mode", False):
                     c._active_sel_rect = fitz.Rect(pdf_rect)
                     c._active_sel_page = page_idx
                 c.rect_selected.emit(page_idx, pdf_rect)
         else:
-            hit = c._overlay_mgr.note_icon_at(pos)
-            if hit < 0:
-                hit, _ = c._overlay_mgr.annot_note_at(pos)
-            if hit >= 0:
-                c._open_note = None if c._open_note == hit else hit
-                c._selected_overlay_idx = hit
-                c.update()
-                c._drag_start = None; c._drag_rect = None
-                return
+            if not is_add_text:
+                hit = c._overlay_mgr.note_icon_at(pos)
+                if hit < 0:
+                    hit, _ = c._overlay_mgr.annot_note_at(pos)
+                if hit >= 0:
+                    c._open_note = None if c._open_note == hit else hit
+                    c._selected_overlay_idx = hit
+                    c.update()
+                    c._drag_start = None; c._drag_rect = None
+                    return
             if c._open_note is not None:
                 c._open_note = None
                 c.update()
+
             page_idx, lx, ly = c._page_and_local(pos.x(), pos.y())
             pdf_pt = c._to_pdf(page_idx, lx, ly)
             c._page_idx = page_idx
 
-            if getattr(c, "_select_mode", False):
+            if not is_add_text and getattr(c, "_select_mode", False):
                 existing_text = c._overlay_mgr.detect_existing_text_at(page_idx, pdf_pt)
                 if existing_text:
                     c._selected_overlay_idx = c._overlays.index(existing_text)
@@ -387,3 +399,4 @@ class CanvasPressReleaseMixin:
         c._drag_start = None
         c._drag_rect = None
         c.update()
+

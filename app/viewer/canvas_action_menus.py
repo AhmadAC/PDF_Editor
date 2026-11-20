@@ -391,11 +391,15 @@ class CanvasActionMenuBuilder:
                 if mode == "add" and hasattr(edit_w, "_set_mode_by_idx"):
                     edit_w._set_mode_by_idx(1)
                     edit_w._set_text_submode("add")
+                    if edit_canvas:
+                        edit_canvas.set_text_submode("add")
                     if edit_canvas is not None and click_src_page is not None and click_pdf_pt is not None:
                         self._schedule_inline_text_action(edit_w, edit_canvas, "add", click_src_page, click_pdf_pt)
                 elif mode == "edit" and hasattr(edit_w, "_set_mode_by_idx"):
                     edit_w._set_mode_by_idx(1)
                     edit_w._set_text_submode("edit")
+                    if edit_canvas:
+                        edit_canvas.set_text_submode("edit")
                     if edit_canvas is not None and click_src_page is not None and click_pdf_pt is not None:
                         self._schedule_inline_text_action(edit_w, edit_canvas, "edit", click_src_page, click_pdf_pt)
                 elif mode == "draw" and hasattr(edit_w, "_set_mode_by_idx"):

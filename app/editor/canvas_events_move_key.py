@@ -1,3 +1,5 @@
+
+
 # app/editor/canvas_events_move_key.py
 """Mouse move, hover cursor, marquee selection geometry, and keyboard handlers for PdfEditCanvas."""
 
@@ -79,6 +81,16 @@ class CanvasMoveKeyMixin:
             c._stamp_cursor_pos = pos
             c.update()
             e.accept()
+            return
+
+        is_add_text = bool(
+            getattr(c, "_text_mode", False) and getattr(c, "_text_submode", "edit") == "add"
+        )
+        if is_add_text:
+            c.setCursor(Qt.CursorShape.IBeamCursor)
+            if c._drag_start and (e.buttons() & Qt.MouseButton.LeftButton):
+                c._drag_rect = QRect(c._drag_start, pos).normalized()
+                c.update()
             return
 
         if getattr(c, "_select_mode", False) and c._active_sel_rect is not None:
@@ -289,3 +301,4 @@ class CanvasMoveKeyMixin:
                     c.scale_selected_overlay(0.90)
                     e.accept()
                     return
+

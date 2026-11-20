@@ -1,3 +1,5 @@
+
+
 # app/editor/canvas_events_menu.py
 """Right-click context menu handler for PdfEditCanvas."""
 
@@ -196,6 +198,7 @@ class CanvasContextMenuMixin:
         act_add_text.triggered.connect(
             lambda _=False, p=page_idx, pt=pdf_pt: (
                 _activate_mode(1, "add"),
+                c.set_text_submode("add") if hasattr(c, "set_text_submode") else None,
                 c.begin_inline_text_insert(p, pt, 12.0, (0.0, 0.0, 0.0)),
             )
         )
@@ -205,11 +208,17 @@ class CanvasContextMenuMixin:
             act_edit_text.triggered.connect(
                 lambda _=False, s=span, p=page_idx: (
                     _activate_mode(1, "edit"),
+                    c.set_text_submode("edit") if hasattr(c, "set_text_submode") else None,
                     c.begin_inline_text_edit(s, p),
                 )
             )
         else:
-            act_edit_text.triggered.connect(lambda _=False: _activate_mode(1, "edit"))
+            act_edit_text.triggered.connect(
+                lambda _=False: (
+                    _activate_mode(1, "edit"),
+                    c.set_text_submode("edit") if hasattr(c, "set_text_submode") else None,
+                )
+            )
 
         menu.addSeparator()
 
@@ -278,3 +287,4 @@ class CanvasContextMenuMixin:
         act_add_sig.triggered.connect(lambda _=False: c.start_add_signature_flow(pos))
 
         menu.exec(e.globalPos())
+

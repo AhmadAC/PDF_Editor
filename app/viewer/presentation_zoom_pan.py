@@ -59,8 +59,7 @@ class PresentationZoomPanMixin(_Base):
         ph = info["ph"]
         info["offset_x"] = float(self._pan_x) if pw > self.width() else (self.width() - pw) / 2.0
         info["offset_y"] = float(self._pan_y) if ph > self.height() else (self.height() - ph) / 2.0
-        
-        # Keep annotation overlay geometry and transformation explicitly locked to the rendered page surface
+
         if hasattr(self, "_overlay") and self._overlay is not None:
             self._overlay.setGeometry(self.rect())
 
@@ -172,6 +171,14 @@ class PresentationZoomPanMixin(_Base):
 
     def wheelEvent(self, e):
         if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            if hasattr(self, "_overlay") and self._overlay is not None and getattr(self._overlay, "_active_box", None) is not None:
+                factor = 1.10 if e.angleDelta().y() > 0 else 0.90
+                scale_fn = getattr(self._overlay, "_scale_active_box", None)
+                if callable(scale_fn):
+                    scale_fn(factor)
+                    e.accept()
+                    return
+
             pos = e.position().toPoint()
             if e.angleDelta().y() > 0:
                 self._zoom_in(anchor_pos=pos)

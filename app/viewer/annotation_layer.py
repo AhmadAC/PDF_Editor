@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QPoint, QPointF, QRectF, QTimer
-from PySide6.QtGui import QColor, QPainterPath, QPainterPathStroker
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainterPath, QPainterPathStroker
 from PySide6.QtWidgets import QWidget
 
 from app.viewer.annotation_events import AnnotationEventsMixin
@@ -209,6 +209,58 @@ class AnnotationOverlay(AnnotationEventsMixin, QWidget):
         if self._active_box:
             return self._active_box.has_cloud
         return self._default_text_cloud
+
+    def _scale_active_box(self, factor: float) -> None:
+        """Scale font size and bounding box dimensions of the active text box."""
+        if self._active_box is None:
+            return
+        self._push_undo()
+        box = self._active_box
+        new_font_size = max(6.0, min(220.0, round(box.font_size * factor, 1)))
+        box.font_size = new_font_size
+
+        parent = self.parentWidget()
+        pw = getattr(parent, "_rendered_pw", float(self.width())) if parent else float(self.width())
+        ph = getattr(parent, "_rendered_ph", float(self.height())) if parent else float(self.height())
+
+        cx = box.rect.center().x()
+        cy = box.rect.center().y()
+
+        font = QFont("Segoe UI", int(box.font_size))
+        font.setPointSizeF(box.font_size)
+        fm = QFontMetricsF(font)
+        lines = box.text.split("\n") if box.text else [""]
+        max_line_w = max((fm.horizontalAdvance(line) for line in lines), default=0.0)
+        needed_w = max(52.0, max(box.rect.width() * factor, max_line_w + 24.0))
+        needed_h = max(34.0, max(box.rect.height() * factor, fm.lineSpacing() * max(1, len(lines)) + 16.0))
+
+        x0 = cx - needed_w / 2.0
+        y0 = cy - needed_h / 2.0
+
+        if x0 + needed_w > pw - 10.0:
+            x0 = max(10.0, pw - 10.0 - needed_w)
+        if x0 < 10.0:
+            x0 = 10.0
+        if y0 + needed_h > ph - 10.0:
+            y0 = max(10.0, ph - 10.0 - needed_h)
+        if y0 < 10.0:
+            y0 = 10.0
+
+        box.rect = QRectF(x0, y0, needed_w, needed_h)
+        self.update()
+
+    def wheelEvent(self, e):
+        if (e.modifiers() & Qt.KeyboardModifier.ControlModifier) and self._active_box is not None:
+            factor = 1.10 if e.angleDelta().y() > 0 else 0.90
+            self._scale_active_box(factor)
+            e.accept()
+            return
+        parent = self.parentWidget()
+        if parent is not None and hasattr(parent, "wheelEvent"):
+            parent.wheelEvent(e)
+            e.accept()
+            return
+        super().wheelEvent(e)
 
     def _push_undo(self) -> None:
         page_state = {

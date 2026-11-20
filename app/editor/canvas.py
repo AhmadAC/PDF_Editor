@@ -1,3 +1,4 @@
+
 # app/editor/canvas.py
 """PDF_Editor – PdfEditCanvas facade: visual PDF edit canvas with live background refresh, grouping/ungrouping, z-order, rotate/flip, opacity, lock, and object manipulation."""
 
@@ -103,6 +104,7 @@ class PdfEditCanvas(QWidget):
         self._select_mode = False
         self._draw_mode   = False
         self._text_mode   = False
+        self._text_submode = "edit"
         self._redact_mode = False
         self._note_mode   = False
         self._highlight_mode = False
@@ -202,6 +204,18 @@ class PdfEditCanvas(QWidget):
             self.setCursor(Qt.CursorShape.IBeamCursor)
         elif not self._draw_mode and not self._placing_signature and not getattr(self, "_placing_stamp", False) and not self._highlight_mode and not self._select_mode:
             self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def set_text_submode(self, mode: str):
+        self._text_submode = mode
+        if mode == "add":
+            self._selected_overlay_idx = -1
+            self.clear_active_selection()
+            self._overlay_mgr.discard_untouched_existing()
+            self.setCursor(Qt.CursorShape.IBeamCursor)
+            self.update()
+
+    def is_add_text_mode(self) -> bool:
+        return bool(self._text_mode and getattr(self, "_text_submode", "edit") == "add")
 
     def set_draw_mode(self, active: bool, color=None, width=None):
         self._draw_mode = active
@@ -966,3 +980,4 @@ class PdfEditCanvas(QWidget):
 
     def contextMenuEvent(self, e):
         self._event_handler.handle_context_menu(e)
+
