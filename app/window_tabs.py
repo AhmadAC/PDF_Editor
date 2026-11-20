@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from PySide6.QtCore import QByteArray, QPoint, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QIcon, QKeyEvent, QMouseEvent, QPainter, QPixmap
