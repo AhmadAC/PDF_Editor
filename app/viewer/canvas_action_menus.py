@@ -300,7 +300,10 @@ class CanvasActionMenuBuilder:
                 font = edit_w._text_font.currentText() if hasattr(edit_w, "_text_font") else "Helvetica"
                 bold = bool(edit_w._btn_bold.isChecked()) if hasattr(edit_w, "_btn_bold") else False
                 italic = bool(edit_w._btn_italic.isChecked()) if hasattr(edit_w, "_btn_italic") else False
-                edit_canvas.begin_inline_text_insert(page_idx, pdf_pt, size, color, font, bold, italic)
+                effects = edit_w._current_text_effects() if hasattr(edit_w, "_current_text_effects") else None
+                edit_canvas.begin_inline_text_insert(
+                    page_idx, pdf_pt, size, color, font=font, bold=bold, italic=italic, effects=effects
+                )
             elif mode == "edit":
                 span = edit_canvas.get_span_at(page_idx, pdf_pt, max_dist=8.0)
                 if span:

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QEvent, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QVBoxLayout,
+    QStyle,
+    QStyleOptionSpinBox,
 )
 
 from app.constants import ACCENT, ACCENT_H, ACCENT_P, TEXT_PRI, TEXT_SEC
@@ -31,13 +33,44 @@ from app.utils import (
 
 
 class FocusSpinBox(QSpinBox):
-    """QSpinBox that ignores mouse wheel events unless it explicitly has keyboard focus."""
+    """QSpinBox that ignores mouse wheel events unless it explicitly has keyboard focus,
+    and automatically highlights/selects all text when clicked or focused."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        if self.lineEdit():
-            self.lineEdit().setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        le = self.lineEdit()
+        if le:
+            le.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            le.installEventFilter(self)
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        QTimer.singleShot(0, self.selectAll)
+
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+        opt = QStyleOptionSpinBox()
+        self.initStyleOption(opt)
+        up_rect = self.style().subControlRect(
+            QStyle.ComplexControl.CC_SpinBox, opt, QStyle.SubControl.SC_SpinBoxUp, self
+        )
+        down_rect = self.style().subControlRect(
+            QStyle.ComplexControl.CC_SpinBox, opt, QStyle.SubControl.SC_SpinBoxDown, self
+        )
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        if not up_rect.contains(pos) and not down_rect.contains(pos):
+            QTimer.singleShot(0, self.selectAll)
+
+    def eventFilter(self, obj, event):
+        if obj is self.lineEdit():
+            if event.type() in (
+                QEvent.Type.MouseButtonPress,
+                QEvent.Type.MouseButtonRelease,
+                QEvent.Type.FocusIn,
+            ):
+                QTimer.singleShot(0, self.selectAll)
+        return super().eventFilter(obj, event)
 
     def wheelEvent(self, event):
         has_focus = self.hasFocus() or (self.lineEdit() and self.lineEdit().hasFocus())

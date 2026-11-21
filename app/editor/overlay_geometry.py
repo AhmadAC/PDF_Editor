@@ -1,4 +1,3 @@
-
 # app/editor/overlay_geometry.py
 """Pure geometry, snapshot, preview-ops, background sampling, and vector-item transform helpers for editor overlays."""
 
@@ -69,7 +68,9 @@ def overlay_pdf_rect(ov: dict, zoom: float = 1.0) -> fitz.Rect | None:
         lines = txt.split("\n") or [""]
         max_len = max((len(ln) for ln in lines), default=1)
         tw = max(16.0, max_len * sz * 0.65)
-        th = max(sz * 1.1, len(lines) * sz * 1.2)
+        raw_ls = ov.get("line_step")
+        ls = float(raw_ls) if (raw_ls and float(raw_ls) > 0) else (sz * 1.2)
+        th = max(sz * 1.1, len(lines) * ls)
         r = fitz.Rect(pt.x, pt.y - sz * 0.85, pt.x + tw, pt.y - sz * 0.85 + th)
         ov["rect"] = r
         return r
@@ -122,7 +123,10 @@ def snapshot_overlay(ov: dict) -> dict:
         "size", "font_size", "width", "new_text", "text", "font",
         "color", "flags", "_font_changed", "_deleted", "_dirty",
         "opacity", "rotation", "flip_h", "flip_v", "_z_back",
-        "_visible", "_locked", "_ungrouped", "_name",
+        "_visible", "_locked", "_ungrouped", "_name", "line_step",
+        "shadow_enabled", "shadow_angle", "shadow_opacity",
+        "shadow_distance", "shadow_thickness", "shadow_color",
+        "outline_enabled", "outline_thickness", "outline_color",
     ):
         if k in ov:
             snap[k] = ov[k]
@@ -136,7 +140,10 @@ def restore_overlay_snapshot(ov: dict, snap: dict) -> None:
         "runs", "size", "font_size", "width", "new_text", "text", "font",
         "color", "flags", "_font_changed", "_deleted", "_dirty",
         "opacity", "rotation", "flip_h", "flip_v", "_z_back",
-        "_visible", "_locked", "_ungrouped", "_name",
+        "_visible", "_locked", "_ungrouped", "_name", "line_step",
+        "shadow_enabled", "shadow_angle", "shadow_opacity",
+        "shadow_distance", "shadow_thickness", "shadow_color",
+        "outline_enabled", "outline_thickness", "outline_color",
     )
     for k in mutable_keys:
         if k in snap:

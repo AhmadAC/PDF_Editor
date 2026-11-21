@@ -2,12 +2,27 @@
 
 """PDF_Editor – stylesheet strings (dark + light themes)."""
 
+import os
+import tempfile
+
 from app.constants import (
     ACCENT, ACCENT_H, ACCENT_P,
     BG_BASE, BG_SIDE, BG_CARD, BG_INPUT, BG_INNER,
     BORDER, TEXT_PRI, TEXT_SEC,
     _LA, _LAH, _LAP, _LB, _LS, _LC, _LI, _LN, _LO, _LP, _LQ,
 )
+
+_CHECK_SVG_CONTENT = """<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+<polyline points="20 6 9 17 4 12"/>
+</svg>"""
+
+_CHECK_SVG_FILE = os.path.join(tempfile.gettempdir(), "pdf_editor_check_white.svg")
+try:
+    with open(_CHECK_SVG_FILE, "w", encoding="utf-8") as _f:
+        _f.write(_CHECK_SVG_CONTENT)
+except Exception:
+    pass
+_CHECK_SVG_PATH = _CHECK_SVG_FILE.replace("\\", "/")
 
 STYLE = f"""
 /* ── Globals ─────────────────────────────────────────────────────────── */
@@ -164,6 +179,47 @@ QGroupBox QWidget  {{ background: transparent; }}
 QGroupBox QLabel   {{ background: transparent; }}
 QGroupBox QLineEdit, QGroupBox QSpinBox,
 QGroupBox QComboBox {{ background: {BG_INPUT}; }}
+QGroupBox QCheckBox {{ background: transparent; }}
+QGroupBox QCheckBox::indicator {{ background-color: {BG_INPUT}; }}
+
+/* ── Checkboxes ──────────────────────────────────────────────────────── */
+QCheckBox {{
+    color: {TEXT_PRI};
+    font-size: 10pt;
+    spacing: 8px;
+    background: transparent;
+}}
+QCheckBox::indicator {{
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid #666666;
+    border-radius: 4px;
+    background-color: {BG_INPUT};
+}}
+QCheckBox::indicator:hover {{
+    border-color: {ACCENT};
+    background-color: #282828;
+}}
+QCheckBox::indicator:focus {{
+    border-color: {ACCENT};
+}}
+QCheckBox::indicator:checked {{
+    background-color: {ACCENT};
+    border-color: {ACCENT};
+    image: url("{_CHECK_SVG_PATH}");
+}}
+QCheckBox::indicator:checked:hover {{
+    background-color: {ACCENT_H};
+    border-color: {ACCENT_H};
+    image: url("{_CHECK_SVG_PATH}");
+}}
+QCheckBox:disabled {{
+    color: #666666;
+}}
+QCheckBox::indicator:disabled {{
+    border-color: #444444;
+    background-color: #222222;
+}}
 
 /* ── Inputs ──────────────────────────────────────────────────────────── */
 QLineEdit, QSpinBox, QComboBox {{
@@ -463,6 +519,47 @@ QGroupBox QWidget  {{ background: transparent; }}
 QGroupBox QLabel   {{ background: transparent; }}
 QGroupBox QLineEdit, QGroupBox QSpinBox,
 QGroupBox QComboBox {{ background: {_LI}; }}
+QGroupBox QCheckBox {{ background: transparent; }}
+QGroupBox QCheckBox::indicator {{ background-color: {_LI}; }}
+
+/* ── Checkboxes ──────────────────────────────────────────────────────── */
+QCheckBox {{
+    color: {_LP};
+    font-size: 10pt;
+    spacing: 8px;
+    background: transparent;
+}}
+QCheckBox::indicator {{
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid #94A3B8;
+    border-radius: 4px;
+    background-color: {_LI};
+}}
+QCheckBox::indicator:hover {{
+    border-color: {_LA};
+    background-color: #F8FAFC;
+}}
+QCheckBox::indicator:focus {{
+    border-color: {_LA};
+}}
+QCheckBox::indicator:checked {{
+    background-color: {_LA};
+    border-color: {_LA};
+    image: url("{_CHECK_SVG_PATH}");
+}}
+QCheckBox::indicator:checked:hover {{
+    background-color: {_LAH};
+    border-color: {_LAH};
+    image: url("{_CHECK_SVG_PATH}");
+}}
+QCheckBox:disabled {{
+    color: #94A3B8;
+}}
+QCheckBox::indicator:disabled {{
+    border-color: #CBD5E1;
+    background-color: #F1F5F9;
+}}
 
 QLineEdit, QSpinBox, QComboBox {{
     background: {_LI}; border: 1px solid {_LO};
@@ -561,7 +658,7 @@ QSplitter::handle {{ background: {_LO}; width: 1px; }}
 }}
 #theme_btn:hover {{ background: #E2E8F0; border-color: {_LA}; }}
 
-/* ── Tab bar container & Tabs (Light Mode) ───────────────────────────── */
+/* ── Tab bar container & Tabs (Light Mode) ────────────────────────────── */
 #tab_bar_container {{
     background: #E8EEF3; border-bottom: 1px solid #CBD5E1; min-height: 36px;
 }}

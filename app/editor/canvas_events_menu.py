@@ -1,5 +1,3 @@
-
-
 # app/editor/canvas_events_menu.py
 """Right-click context menu handler for PdfEditCanvas."""
 
@@ -194,14 +192,20 @@ class CanvasContextMenuMixin:
             else:
                 c.mode_change_requested.emit(m_idx)
 
+        def _trigger_add_text():
+            _activate_mode(1, "add")
+            if hasattr(c, "set_text_submode"):
+                c.set_text_submode("add")
+            sz = float(tab._text_size.value()) if tab and hasattr(tab, "_text_size") else 12.0
+            col = tab._text_color.color_tuple() if tab and hasattr(tab, "_text_color") else (0.0, 0.0, 0.0)
+            f_name = tab._text_font.currentText() if tab and hasattr(tab, "_text_font") else "Helvetica"
+            is_b = bool(tab._btn_bold.isChecked()) if tab and hasattr(tab, "_btn_bold") else False
+            is_i = bool(tab._btn_italic.isChecked()) if tab and hasattr(tab, "_btn_italic") else False
+            fx = tab._current_text_effects() if tab and hasattr(tab, "_current_text_effects") else None
+            c.begin_inline_text_insert(page_idx, pdf_pt, sz, col, font=f_name, bold=is_b, italic=is_i, effects=fx)
+
         act_add_text = menu.addAction(svg_icon(SVG_FONT, color=ACCENT, size=15), "Add Text")
-        act_add_text.triggered.connect(
-            lambda _=False, p=page_idx, pt=pdf_pt: (
-                _activate_mode(1, "add"),
-                c.set_text_submode("add") if hasattr(c, "set_text_submode") else None,
-                c.begin_inline_text_insert(p, pt, 12.0, (0.0, 0.0, 0.0)),
-            )
-        )
+        act_add_text.triggered.connect(lambda _=False: _trigger_add_text())
 
         act_edit_text = menu.addAction(svg_icon(SVG_EDIT, color=ACCENT, size=15), "Edit Text")
         if span:
@@ -287,4 +291,3 @@ class CanvasContextMenuMixin:
         act_add_sig.triggered.connect(lambda _=False: c.start_add_signature_flow(pos))
 
         menu.exec(e.globalPos())
-

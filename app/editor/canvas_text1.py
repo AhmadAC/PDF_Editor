@@ -864,7 +864,6 @@ class CanvasInlineTextManager:
                 "ascender": float(span.get("ascender") or 0.8),
                 "descender": float(span.get("descender") or -0.2),
                 "origin": list(span.get("origin", (bb[0], bb[3]))),
-                "line_step": float(line_step_px / z),
                 "_font_changed": bool(font_name != orig_font),
             }
             for k in _EFFECT_KEYS:

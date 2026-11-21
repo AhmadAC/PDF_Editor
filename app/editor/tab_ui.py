@@ -15,9 +15,10 @@ from PySide6.QtWidgets import (
 )
 
 from app.constants import ACCENT, TEXT_PRI, TEXT_SEC, DESKTOP, BG_INNER, _LN, _LP, _LQ
+from app.styles import _CHECK_SVG_PATH
 from app.utils import (
     ToolHeader, ActionBar, info_lbl, svg_for_name, svg_icon,
-    get_system_font_families,
+    get_system_font_families, is_dark,
     SVG_BOLD, SVG_CHECK, SVG_CLOSE, SVG_COPY, SVG_EDIT, SVG_ERASER,
     SVG_HIGHLIGHTER, SVG_ITALIC, SVG_PLUS, SVG_ROTATE_LEFT, SVG_ROTATE_RIGHT,
     SVG_CHEVRON_LEFT, SVG_CHEVRON_RIGHT, SVG_SIGNATURE, SVG_TRASH,
@@ -588,6 +589,18 @@ def _build_mode_options(tab) -> None:
     out_hdr_row.addStretch()
     v1.addLayout(out_hdr_row)
 
+    dark = is_dark()
+    chk_border = "#666666" if dark else "#94A3B8"
+    chk_bg = "#1E1E1E" if dark else "#FFFFFF"
+    chk_qss = (
+        f"QCheckBox {{ color: {TEXT_PRI if dark else _LP}; font-size: 10pt; spacing: 8px; background: transparent; }}"
+        f"QCheckBox::indicator {{ width: 16px; height: 16px; border: 1.5px solid {chk_border}; border-radius: 4px; background-color: {chk_bg}; }}"
+        f"QCheckBox::indicator:hover {{ border-color: {ACCENT}; }}"
+        f"QCheckBox::indicator:checked {{ background-color: {ACCENT}; border-color: {ACCENT}; image: url(\"{_CHECK_SVG_PATH}\"); }}"
+    )
+    tab._chk_shadow.setStyleSheet(chk_qss)
+    tab._chk_outline.setStyleSheet(chk_qss)
+
     tab._text_hint = QLabel("Click anywhere on the page to insert new text exactly where you click.")
     tab._text_hint.setWordWrap(True)
     tab._text_hint.setStyleSheet(f"color:{ACCENT}; font-size:11px;")
@@ -863,6 +876,19 @@ def update_tab_theme(tab, dark: bool) -> None:
     tab._sig_choose.setIcon(svg_icon(SVG_SIGNATURE, color=pri, size=15))
     tab._btn_bold.setIcon(svg_icon(SVG_BOLD, color=pri, size=14))
     tab._btn_italic.setIcon(svg_icon(SVG_ITALIC, color=pri, size=14))
+
+    chk_border = "#666666" if dark else "#94A3B8"
+    chk_bg = "#1E1E1E" if dark else "#FFFFFF"
+    chk_qss = (
+        f"QCheckBox {{ color: {pri}; font-size: 10pt; spacing: 8px; background: transparent; }}"
+        f"QCheckBox::indicator {{ width: 16px; height: 16px; border: 1.5px solid {chk_border}; border-radius: 4px; background-color: {chk_bg}; }}"
+        f"QCheckBox::indicator:hover {{ border-color: {ACCENT}; }}"
+        f"QCheckBox::indicator:checked {{ background-color: {ACCENT}; border-color: {ACCENT}; image: url(\"{_CHECK_SVG_PATH}\"); }}"
+    )
+    if hasattr(tab, "_chk_shadow"):
+        tab._chk_shadow.setStyleSheet(chk_qss)
+    if hasattr(tab, "_chk_outline"):
+        tab._chk_outline.setStyleSheet(chk_qss)
 
     for lbl in tab._hint_labels:
         try:
