@@ -1,6 +1,5 @@
-
 # app/editor/tab_ui.py
-"""PDF_Editor – tab_ui: UI builder and styling manager for TabEditar with Fill & Sign check/cross tools using SVG icons."""
+"""PDF_Editor – tab_ui: UI builder and styling manager for TabEditar with Fill & Sign check/cross tools and text effects using SVG icons."""
 
 import json
 import os
@@ -8,7 +7,7 @@ import fitz
 
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QCheckBox, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QFrame, QStackedWidget, QGroupBox,
     QSizePolicy, QListWidget, QTableWidget, QHeaderView,
     QTextEdit, QApplication, QSlider, QGridLayout,
@@ -416,6 +415,9 @@ def setup_editor_ui(tab) -> None:
     tab._action_bar, _ = ActionBar(t("btn.apply_save"), tab._run)
     tab._action_bar.setVisible(False)
 
+    if hasattr(tab, "_load_text_settings"):
+        tab._load_text_settings()
+
 
 def _build_mode_options(tab) -> None:
     """Build individual option sub-panels for each editing mode."""
@@ -469,8 +471,7 @@ def _build_mode_options(tab) -> None:
     row1 = QHBoxLayout(); row1.setSpacing(8)
     row1.addWidget(QLabel(t("dialog.insert_size")))
     tab._text_size = FocusSpinBox()
-    tab._text_size.setMinimum(4); tab._text_size.setMaximum(144); tab._text_size.setValue(12)
-    tab._text_size.setSuffix(" pt")
+    tab._text_size.setMinimum(4); tab._text_size.setMaximum(200); tab._text_size.setValue(12)
     tab._text_size.valueChanged.connect(tab._on_text_format_changed)
     row1.addWidget(tab._text_size)
 
@@ -500,6 +501,92 @@ def _build_mode_options(tab) -> None:
     tab._btn_del_text.clicked.connect(tab._delete_active_text)
     row_col.addWidget(tab._btn_del_text)
     v1.addLayout(row_col)
+
+    # Optional Drop Shadow & Outline Thickness Effects
+    fx_hdr_row = QHBoxLayout()
+    fx_hdr_row.setSpacing(6)
+    tab._chk_shadow = QCheckBox("Drop Shadow")
+    tab._chk_shadow.setCursor(Qt.CursorShape.PointingHandCursor)
+    tab._chk_shadow.toggled.connect(tab._on_shadow_toggled)
+    fx_hdr_row.addWidget(tab._chk_shadow)
+
+    tab._shadow_color = ColorPickerButton((0.0, 0.0, 0.0))
+    tab._shadow_color.setFixedHeight(24)
+    tab._shadow_color.setToolTip("Shadow Color")
+    tab._shadow_color.color_changed.connect(lambda _c: tab._on_text_format_changed())
+    tab._shadow_color.setVisible(False)
+    fx_hdr_row.addWidget(tab._shadow_color)
+    fx_hdr_row.addStretch()
+    v1.addLayout(fx_hdr_row)
+
+    tab._shadow_opts_w = QWidget()
+    sh_grid = QGridLayout(tab._shadow_opts_w)
+    sh_grid.setContentsMargins(12, 2, 0, 2)
+    sh_grid.setSpacing(4)
+
+    tab._shadow_angle = FocusSpinBox()
+    tab._shadow_angle.setRange(0, 360)
+    tab._shadow_angle.setValue(45)
+    tab._shadow_angle.setToolTip("Shadow angle in degrees (0=Right, 45=Bottom-Right, 90=Down)")
+    tab._shadow_angle.valueChanged.connect(tab._on_text_format_changed)
+
+    tab._shadow_opacity = FocusSpinBox()
+    tab._shadow_opacity.setRange(5, 100)
+    tab._shadow_opacity.setValue(50)
+    tab._shadow_opacity.setToolTip("Shadow opacity (5–100%)")
+    tab._shadow_opacity.valueChanged.connect(tab._on_text_format_changed)
+
+    tab._shadow_distance = FocusSpinBox()
+    tab._shadow_distance.setRange(0, 40)
+    tab._shadow_distance.setValue(3)
+    tab._shadow_distance.setToolTip("Shadow offset distance")
+    tab._shadow_distance.valueChanged.connect(tab._on_text_format_changed)
+
+    tab._shadow_thickness = FocusSpinBox()
+    tab._shadow_thickness.setRange(0, 15)
+    tab._shadow_thickness.setValue(0)
+    tab._shadow_thickness.setToolTip("Shadow thickness / spread")
+    tab._shadow_thickness.valueChanged.connect(tab._on_text_format_changed)
+
+    sh_grid.addWidget(QLabel("Angle:"), 0, 0)
+    sh_grid.addWidget(tab._shadow_angle, 0, 1)
+    sh_grid.addWidget(QLabel("Opacity:"), 0, 2)
+    sh_grid.addWidget(tab._shadow_opacity, 0, 3)
+    sh_grid.addWidget(QLabel("Distance:"), 1, 0)
+    sh_grid.addWidget(tab._shadow_distance, 1, 1)
+    sh_grid.addWidget(QLabel("Thickness:"), 1, 2)
+    sh_grid.addWidget(tab._shadow_thickness, 1, 3)
+    tab._shadow_opts_w.setVisible(False)
+    v1.addWidget(tab._shadow_opts_w)
+
+    out_hdr_row = QHBoxLayout()
+    out_hdr_row.setSpacing(6)
+    tab._chk_outline = QCheckBox("Outline")
+    tab._chk_outline.setCursor(Qt.CursorShape.PointingHandCursor)
+    tab._chk_outline.toggled.connect(tab._on_outline_toggled)
+    out_hdr_row.addWidget(tab._chk_outline)
+
+    tab._outline_opts_w = QWidget()
+    out_lay = QHBoxLayout(tab._outline_opts_w)
+    out_lay.setContentsMargins(0, 0, 0, 0)
+    out_lay.setSpacing(4)
+    out_lay.addWidget(QLabel("Thick:"))
+    tab._outline_thickness = FocusSpinBox()
+    tab._outline_thickness.setRange(1, 15)
+    tab._outline_thickness.setValue(1)
+    tab._outline_thickness.setToolTip("Outline stroke thickness")
+    tab._outline_thickness.valueChanged.connect(tab._on_text_format_changed)
+    out_lay.addWidget(tab._outline_thickness)
+
+    tab._outline_color = ColorPickerButton((0.0, 0.0, 0.0))
+    tab._outline_color.setFixedHeight(24)
+    tab._outline_color.setToolTip("Outline Color")
+    tab._outline_color.color_changed.connect(lambda _c: tab._on_text_format_changed())
+    out_lay.addWidget(tab._outline_color)
+    tab._outline_opts_w.setVisible(False)
+    out_hdr_row.addWidget(tab._outline_opts_w)
+    out_hdr_row.addStretch()
+    v1.addLayout(out_hdr_row)
 
     tab._text_hint = QLabel("Click anywhere on the page to insert new text exactly where you click.")
     tab._text_hint.setWordWrap(True)
@@ -567,7 +654,7 @@ def _build_mode_options(tab) -> None:
 
     # 7 - Fill & Sign
     w6 = QWidget(); v6s = QVBoxLayout(w6); v6s.setContentsMargins(0, 4, 0, 0); v6s.setSpacing(6)
-    
+
     lbl_fill_title = QLabel("Form Stamps (Never stripped on save):")
     lbl_fill_title.setStyleSheet(f"color:{TEXT_PRI}; font-size:10pt; font-weight:600;")
     v6s.addWidget(lbl_fill_title)
@@ -808,4 +895,3 @@ def update_tab_theme(tab, dark: bool) -> None:
                 if dark else
                 f"background:#D6E8FA; border:1px solid #70A7DB; color:{ACCENT}; border-radius:6px;"
             )
-

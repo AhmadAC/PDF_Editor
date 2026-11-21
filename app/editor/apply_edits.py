@@ -1,4 +1,3 @@
-
 # app/editor/apply_edits.py
 """PDF_Editor – Two-phase edit-application dispatcher supporting multi-line & multi-color text runs, grouped objects, z-order, opacity, rotation, flip, and batched surgical image/drawing removal."""
 
@@ -529,7 +528,8 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
             is_bold = bool((flags & 16) or "bold" in font_req.lower())
             is_italic = bool((flags & 2) or "italic" in font_req.lower() or "oblique" in font_req.lower())
             sz = float(e.get("size", 12))
-            line_step = sz * 1.2
+            raw_ls = e.get("line_step")
+            line_step = float(raw_ls) if (raw_ls and float(raw_ls) > 0) else (sz * 1.2)
             base_x = float(e["point"].x)
             base_y = float(e["point"].y)
 

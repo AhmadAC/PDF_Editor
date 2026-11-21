@@ -460,11 +460,29 @@ class PdfEditCanvas(QWidget):
     def begin_inline_text_edit(self, span: dict, page_idx: int, target_overlay: dict | None = None):
         self._inline_mgr.begin_edit(span, page_idx, target_overlay=target_overlay)
 
-    def begin_inline_text_insert(self, page_idx: int, pdf_point, size: float, color: tuple, font: str = "", bold: bool = False, italic: bool = False):
-        self._inline_mgr.begin_insert(page_idx, pdf_point, size, color, font, bold, italic)
+    def begin_inline_text_insert(
+        self,
+        page_idx: int,
+        pdf_point,
+        size: float,
+        color: tuple,
+        font: str = "",
+        bold: bool = False,
+        italic: bool = False,
+        effects: dict | None = None,
+    ):
+        self._inline_mgr.begin_insert(page_idx, pdf_point, size, color, font, bold, italic, effects=effects)
 
-    def update_active_text_format(self, font: str, size: float, color: tuple, bold: bool, italic: bool):
-        self._inline_mgr.update_format(font, size, color, bold, italic)
+    def update_active_text_format(
+        self,
+        font: str,
+        size: float,
+        color: tuple,
+        bold: bool,
+        italic: bool,
+        effects: dict | None = None,
+    ):
+        self._inline_mgr.update_format(font, size, color, bold, italic, effects=effects)
 
     def _commit_inline(self):
         self._inline_mgr.commit()

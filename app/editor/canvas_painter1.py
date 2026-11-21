@@ -1,19 +1,19 @@
-
 # app/editor/canvas_painter1.py
-"""Canvas painter: renders pages, overlays, multi-line & multi-color text runs, grouped pictures, vector drawings, opacity, rotation, flips, check/cross stamps, text, notes, and strokes."""
+"""Canvas painter: renders pages, overlays, multi-line & multi-color text runs, drop shadows, outlines, grouped pictures, vector drawings, opacity, rotation, flips, check/cross stamps, text, notes, and strokes."""
 
 from __future__ import annotations
 
+import math
 import os
 import fitz
 from PySide6.QtCore import Qt, QRect, QRectF, QPoint, QPointF
-from PySide6.QtGui import QPainter, QColor, QPen, QFont, QFontMetricsF, QPixmap, QPainterPath
+from PySide6.QtGui import QPainter, QColor, QImage, QPen, QFont, QFontMetricsF, QPixmap, QPainterPath
 
 from app.constants import ACCENT, TEXT_SEC
 from app.i18n import t
 from app.editor.canvas_overlay1 import overlay_pdf_rect, rects_close
 from app.editor.canvas_render1 import _NOTE_ICON_SIZE, _load_overlay_pixmap
-from app.editor.canvas_text1 import _resolve_font_family
+from app.editor.canvas_text1 import build_canvas_qfont
 
 
 def _to_qcolor(c) -> QColor:
@@ -48,17 +48,24 @@ def _draw_text_with_runs(
     runs: list[dict] | None,
     base_font: QFont,
     base_color,
+    line_step: float | None = None,
+    effects: dict | None = None,
+    zoom: float = 1.0,
+    opacity: float = 1.0,
 ) -> None:
-    line_step = QFontMetricsF(base_font).lineSpacing()
-    if not runs:
-        p.setFont(base_font)
-        p.setPen(_to_qcolor(base_color))
-        for li, line_txt in enumerate((text or "").split("\n")):
-            if line_txt:
-                p.drawText(QPointF(bx, by + li * line_step), line_txt)
-        return
+    dev = p.device()
+    if line_step is None or line_step <= 0:
+        fm = QFontMetricsF(base_font, dev) if dev is not None else QFontMetricsF(base_font)
+        line_step = fm.lineSpacing()
 
-    for li, line_runs in enumerate(_split_runs_by_newline(runs)):
+    if runs:
+        line_runs_list = _split_runs_by_newline(runs)
+    else:
+        line_runs_list = [[{"text": ln, "color": base_color}] for ln in (text or "").split("\n")]
+
+    # Pre-layout every run segment into (cur_y, rx, rf, r_qcol, rt)
+    laid_out: list[tuple[float, float, QFont, QColor, str]] = []
+    for li, line_runs in enumerate(line_runs_list):
         cur_x = bx
         cur_y = by + li * line_step
         for run in line_runs:
@@ -70,10 +77,85 @@ def _draw_text_with_runs(
                 rf.setBold(bool(run["bold"]))
             if "italic" in run:
                 rf.setItalic(bool(run["italic"]))
-            p.setFont(rf)
-            p.setPen(_to_qcolor(run.get("color", base_color)))
-            p.drawText(QPointF(cur_x, cur_y), rt)
-            cur_x += QFontMetricsF(rf).horizontalAdvance(rt)
+            r_col = _to_qcolor(run.get("color", base_color))
+            laid_out.append((cur_y, cur_x, rf, r_col, rt))
+            fm_r = QFontMetricsF(rf, dev) if dev is not None else QFontMetricsF(rf)
+            cur_x += fm_r.horizontalAdvance(rt)
+
+    if not laid_out:
+        return
+
+    # Pass 1: Drop Shadow
+    if effects and effects.get("shadow_enabled"):
+        rad = math.radians(float(effects.get("shadow_angle", 45.0)))
+        dist_px = float(effects.get("shadow_distance", 3.0)) * zoom
+        dx_px = dist_px * math.cos(rad)
+        dy_px = dist_px * math.sin(rad)
+        sh_op = max(0.0, min(1.0, float(effects.get("shadow_opacity", 0.5))))
+        sh_thick_px = max(0.0, float(effects.get("shadow_thickness", 0.0))) * zoom
+        sh_col = _to_qcolor(effects.get("shadow_color", (0.0, 0.0, 0.0)))
+
+        if sh_thick_px <= 0.1:
+            p.save()
+            p.setOpacity(opacity * sh_op)
+            p.setPen(sh_col)
+            for cur_y, rx, rf, _rc, rt in laid_out:
+                p.setFont(rf)
+                p.drawText(QPointF(rx + dx_px, cur_y + dy_px), rt)
+            p.restore()
+        else:
+            sh_path = QPainterPath()
+            for cur_y, rx, rf, _rc, rt in laid_out:
+                sh_path.addText(QPointF(rx + dx_px, cur_y + dy_px), rf, rt)
+            br = sh_path.boundingRect().adjusted(
+                -sh_thick_px - 4.0, -sh_thick_px - 4.0,
+                sh_thick_px + 4.0, sh_thick_px + 4.0,
+            )
+            dpr = (
+                float(dev.devicePixelRatioF())
+                if (dev is not None and hasattr(dev, "devicePixelRatioF") and dev.devicePixelRatioF() > 0)
+                else 1.0
+            )
+            iw = max(1, int(math.ceil(br.width() * dpr)))
+            ih = max(1, int(math.ceil(br.height() * dpr)))
+            if iw <= 4096 and ih <= 4096:
+                img = QImage(iw, ih, QImage.Format.Format_ARGB32_Premultiplied)
+                img.fill(Qt.GlobalColor.transparent)
+                img.setDevicePixelRatio(dpr)
+                sp = QPainter(img)
+                sp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                sp.translate(-br.left(), -br.top())
+                sp.strokePath(
+                    sh_path,
+                    QPen(sh_col, sh_thick_px * 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin),
+                )
+                sp.fillPath(sh_path, sh_col)
+                sp.end()
+                p.save()
+                p.setOpacity(opacity * sh_op)
+                p.drawImage(br.topLeft(), img)
+                p.restore()
+
+    # Pass 2: Outline Stroke
+    if effects and effects.get("outline_enabled") and float(effects.get("outline_thickness", 0.0)) > 0.0:
+        out_thick_px = float(effects.get("outline_thickness", 1.0)) * zoom
+        out_col = _to_qcolor(effects.get("outline_color", (0.0, 0.0, 0.0)))
+        out_path = QPainterPath()
+        for cur_y, rx, rf, _rc, rt in laid_out:
+            out_path.addText(QPointF(rx, cur_y), rf, rt)
+        p.save()
+        p.setOpacity(opacity)
+        p.strokePath(
+            out_path,
+            QPen(out_col, out_thick_px * 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin),
+        )
+        p.restore()
+
+    # Pass 3: Foreground Fill Text
+    for cur_y, rx, rf, r_col, rt in laid_out:
+        p.setFont(rf)
+        p.setPen(r_col)
+        p.drawText(QPointF(rx, cur_y), rt)
 
 
 def _draw_selection_box(p: QPainter, qr: QRect, handle_size: int = 8, draw_handles: bool = True, is_locked: bool = False) -> None:
@@ -141,9 +223,6 @@ def _paint_overlay_body(
     rot = int(e.get("rotation", 0)) % 360
     flip_h = bool(e.get("flip_h", False))
     flip_v = bool(e.get("flip_v", False))
-    dev = p.device()
-    dpi_y = float(dev.logicalDpiY()) if (dev is not None and hasattr(dev, "logicalDpiY") and dev.logicalDpiY() > 0) else 96.0
-    dpi_scale = 72.0 / dpi_y
 
     if etype == "group":
         r = overlay_pdf_rect(e, zoom=z)
@@ -367,22 +446,33 @@ def _paint_overlay_body(
             p.save()
             p.setOpacity(op)
             fname = e.get("font", "Helvetica")
-            resolved_fam = _resolve_font_family(fname)
-            f2 = QFont(resolved_fam)
-            f2.setPointSizeF(max(4.0, float(e.get("size", 12)) * z * dpi_scale))
             flags = int(e.get("flags", 0) or 0)
-            if (flags & 16) or "bold" in fname.lower():
-                f2.setBold(True)
-            if (flags & 2) or "italic" in fname.lower() or "oblique" in fname.lower():
-                f2.setItalic(True)
+            f2 = build_canvas_qfont(
+                canvas,
+                fname,
+                float(e.get("size", 12)),
+                z,
+                bold=bool(flags & 16),
+                italic=bool(flags & 2),
+            )
+            ls_pdf = e.get("line_step")
+            line_step_px = (float(ls_pdf) * z) if (ls_pdf and float(ls_pdf) > 0) else None
             runs = e.get("runs")
             if (rot or flip_h or flip_v) and r is not None:
                 cx = (r.x0 + r.x1) * 0.5 * z
                 cy = yo + (r.y0 + r.y1) * 0.5 * z
                 _apply_center_transform(p, cx, cy, rot, flip_h, flip_v)
-                _draw_text_with_runs(p, pt.x * z - cx, (yo + pt.y * z) - cy, e["text"], runs, f2, c)
+                _draw_text_with_runs(
+                    p, pt.x * z - cx, (yo + pt.y * z) - cy,
+                    e["text"], runs, f2, c,
+                    line_step=line_step_px, effects=e, zoom=z, opacity=op,
+                )
             else:
-                _draw_text_with_runs(p, pt.x * z, yo + pt.y * z, e["text"], runs, f2, c)
+                _draw_text_with_runs(
+                    p, pt.x * z, yo + pt.y * z,
+                    e["text"], runs, f2, c,
+                    line_step=line_step_px, effects=e, zoom=z, opacity=op,
+                )
             p.restore()
 
         if is_selected and r:
@@ -434,11 +524,13 @@ def _paint_overlay_body(
         qr = QRect(int(r[0]*z) - 1, yo+int(r[1]*z) - 1,
                    max(1, int((r[2]-r[0])*z)) + 2, max(1, int((r[3]-r[1])*z)) + 2)
         orig_raw = e.get("_orig_rect")
+        has_fx = bool(e.get("shadow_enabled") or e.get("outline_enabled"))
         is_untouched_existing = bool(
             not force_draw
             and e.get("_existing")
             and not e.get("_dirty")
             and not e.get("runs")
+            and not has_fx
             and orig_raw
             and rects_close(r, orig_raw, tol=0.25)
             and op >= 0.999
@@ -453,16 +545,18 @@ def _paint_overlay_body(
             p.setOpacity(op)
             c = e.get("color", 0)
             fname = e.get("font", "Helvetica")
-            resolved_fam = _resolve_font_family(fname)
-            fnt = QFont(resolved_fam)
             sz = float(e.get("font_size", e.get("size", 12)))
-            fnt.setPointSizeF(max(4.0, sz * z * dpi_scale))
             flags = int(e.get("flags", 0) or 0)
-            if (flags & 16) or "bold" in fname.lower():
-                fnt.setBold(True)
-            if (flags & 2) or "italic" in fname.lower() or "oblique" in fname.lower():
-                fnt.setItalic(True)
-
+            fnt = build_canvas_qfont(
+                canvas,
+                fname,
+                sz,
+                z,
+                bold=bool(flags & 16),
+                italic=bool(flags & 2),
+            )
+            ls_pdf = e.get("line_step")
+            line_step_px = (float(ls_pdf) * z) if (ls_pdf and float(ls_pdf) > 0) else None
             origin = e.get("origin", [r[0], r[3]])
             baseline_x = origin[0] * z
             baseline_y = yo + origin[1] * z
@@ -471,9 +565,17 @@ def _paint_overlay_body(
                 cx = (r[0] + r[2]) * 0.5 * z
                 cy = yo + (r[1] + r[3]) * 0.5 * z
                 _apply_center_transform(p, cx, cy, rot, flip_h, flip_v)
-                _draw_text_with_runs(p, baseline_x - cx, baseline_y - cy, new_txt, runs, fnt, c)
+                _draw_text_with_runs(
+                    p, baseline_x - cx, baseline_y - cy,
+                    new_txt, runs, fnt, c,
+                    line_step=line_step_px, effects=e, zoom=z, opacity=op,
+                )
             else:
-                _draw_text_with_runs(p, baseline_x, baseline_y, new_txt, runs, fnt, c)
+                _draw_text_with_runs(
+                    p, baseline_x, baseline_y,
+                    new_txt, runs, fnt, c,
+                    line_step=line_step_px, effects=e, zoom=z, opacity=op,
+                )
             p.restore()
 
         if is_selected:
