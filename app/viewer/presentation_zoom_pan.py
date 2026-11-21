@@ -1,3 +1,4 @@
+
 # app/viewer/presentation_zoom_pan.py
 """PDF_Editor – Presentation mode zoom calculations, mouse panning, and coordinate mapping mixin."""
 
@@ -5,8 +6,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QPoint, QRectF, Qt
+from PySide6.QtGui import QPainterPath, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
 if TYPE_CHECKING:
@@ -40,8 +41,11 @@ class PresentationZoomPanMixin(_Base):
         def _go_to_page(self, new_page: int, align_bottom: bool = False) -> None: ...
 
     def _record_current_render_info(self, pw: float, ph: float, eff_w: float, eff_h: float) -> None:
-        offset_x = float(self._pan_x) if pw > self.width() else (self.width() - pw) / 2.0
-        offset_y = float(self._pan_y) if ph > self.height() else (self.height() - ph) / 2.0
+        # Store page origin in unpanned AnnotationOverlay coordinate space:
+        # when pw > width(), page draws at _pan_x and overlay translates by _pan_x -> unpanned origin is 0.0;
+        # when pw <= width(), _pan_x is 0 and page draws centered at (width - pw) / 2.0.
+        offset_x = 0.0 if pw > self.width() else (self.width() - pw) / 2.0
+        offset_y = 0.0 if ph > self.height() else (self.height() - ph) / 2.0
         self._page_render_info[self._current] = {
             "pw": float(pw),
             "ph": float(ph),
@@ -57,11 +61,51 @@ class PresentationZoomPanMixin(_Base):
             return
         pw = info["pw"]
         ph = info["ph"]
-        info["offset_x"] = float(self._pan_x) if pw > self.width() else (self.width() - pw) / 2.0
-        info["offset_y"] = float(self._pan_y) if ph > self.height() else (self.height() - ph) / 2.0
+        info["offset_x"] = 0.0 if pw > self.width() else (self.width() - pw) / 2.0
+        info["offset_y"] = 0.0 if ph > self.height() else (self.height() - ph) / 2.0
 
         if hasattr(self, "_overlay") and self._overlay is not None:
             self._overlay.setGeometry(self.rect())
+
+    def _rescale_current_page_annotations(
+        self, old_pw: float, old_ph: float, new_pw: float, new_ph: float
+    ) -> None:
+        overlay = getattr(self, "_overlay", None)
+        if overlay is None or old_pw <= 0 or old_ph <= 0:
+            return
+        sw = float(self.width())
+        sh = float(self.height())
+        old_ox = 0.0 if old_pw > sw else (sw - old_pw) / 2.0
+        old_oy = 0.0 if old_ph > sh else (sh - old_ph) / 2.0
+        new_ox = 0.0 if new_pw > sw else (sw - new_pw) / 2.0
+        new_oy = 0.0 if new_ph > sh else (sh - new_ph) / 2.0
+        sx = new_pw / old_pw
+        sy = new_ph / old_ph
+
+        for stroke in overlay._strokes.get(self._current, []):
+            new_pts = [
+                QPoint(
+                    int(round(new_ox + (pt.x() - old_ox) * sx)),
+                    int(round(new_oy + (pt.y() - old_oy) * sy)),
+                )
+                for pt in stroke.points
+            ]
+            stroke.points = new_pts
+            new_path = QPainterPath()
+            if new_pts:
+                new_path.moveTo(new_pts[0])
+                for pt in new_pts[1:]:
+                    new_path.lineTo(pt)
+            stroke.path = new_path
+            stroke.width = max(1, int(round(stroke.width * sx)))
+
+        for box in overlay._text_boxes.get(self._current, []):
+            bx = new_ox + (box.rect.left() - old_ox) * sx
+            by = new_oy + (box.rect.top() - old_oy) * sy
+            bw = box.rect.width() * sx
+            bh = box.rect.height() * sy
+            box.rect = QRectF(bx, by, bw, bh)
+            box.font_size = max(4.0, round(box.font_size * sy, 2))
 
     def _zoom_in(self, anchor_pos: QPoint | None = None):
         old_zoom = self._zoom if self._zoom and self._zoom > 0 else self._base_fit_zoom
@@ -78,10 +122,16 @@ class PresentationZoomPanMixin(_Base):
             return
         sw = float(self.width())
         sh = float(self.height())
-        eff_w = getattr(self, "_rendered_pw", sw) / (self._zoom or 1.0)
-        eff_h = getattr(self, "_rendered_ph", sh) / (self._zoom or 1.0)
+        old_zoom = self._zoom if self._zoom and self._zoom > 0 else 1.0
+        old_pw = getattr(self, "_rendered_pw", sw)
+        old_ph = getattr(self, "_rendered_ph", sh)
+        eff_w = old_pw / old_zoom
+        eff_h = old_ph / old_zoom
         fit_screen_zoom = min(sw / max(1.0, eff_w), sh / max(1.0, eff_h))
 
+        self._rescale_current_page_annotations(
+            old_pw, old_ph, eff_w * fit_screen_zoom, eff_h * fit_screen_zoom
+        )
         self._zoom = fit_screen_zoom
         self._pan_x = 0
         self._pan_y = 0
@@ -122,6 +172,9 @@ class PresentationZoomPanMixin(_Base):
         new_pan_x = vp_x - page_x * ratio
         new_pan_y = vp_y - page_y * ratio
 
+        self._rescale_current_page_annotations(
+            old_pw, old_ph, old_pw * ratio, old_ph * ratio
+        )
         self._zoom = new_zoom
         self._zoom_factor = new_zoom / max(1e-4, self._base_fit_zoom)
         self._pan_x = int(round(new_pan_x))
@@ -225,6 +278,6 @@ class PresentationZoomPanMixin(_Base):
         zoom = self._zoom if self._zoom and self._zoom > 0 else (base_zoom * self._zoom_factor)
         pw = eff_w * zoom
         ph = eff_h * zoom
-        offset_x = float(self._pan_x) if pw > self.width() else (self.width() - pw) / 2.0
-        offset_y = float(self._pan_y) if ph > self.height() else (self.height() - ph) / 2.0
+        offset_x = 0.0 if pw > self.width() else (self.width() - pw) / 2.0
+        offset_y = 0.0 if ph > self.height() else (self.height() - ph) / 2.0
         return pw, ph, offset_x, offset_y, eff_w, eff_h

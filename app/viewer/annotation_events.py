@@ -1,3 +1,4 @@
+
 # app/viewer/annotation_events.py
 """PDF_Editor – Mouse, keyboard, and context-menu interaction mixin for presentation AnnotationOverlay."""
 
@@ -18,6 +19,32 @@ if TYPE_CHECKING:
     _Base = QWidget
 else:
     _Base = object
+
+
+def _move_cursor_vertical(text: str, cursor_pos: int, delta: int) -> int:
+    """Move cursor index up (delta < 0) or down (delta > 0) by one line while preserving column."""
+    lines = text.split("\n")
+    if len(lines) <= 1:
+        return 0 if delta < 0 else len(text)
+    pos = 0
+    cur_li = 0
+    cur_col = 0
+    for li, ln in enumerate(lines):
+        if cursor_pos <= pos + len(ln):
+            cur_li = li
+            cur_col = max(0, cursor_pos - pos)
+            break
+        pos += len(ln) + 1
+    else:
+        cur_li = len(lines) - 1
+        cur_col = len(lines[-1])
+    target_li = cur_li + delta
+    if target_li < 0:
+        return 0
+    if target_li >= len(lines):
+        return len(text)
+    target_start = sum(len(lines[i]) + 1 for i in range(target_li))
+    return target_start + min(cur_col, len(lines[target_li]))
 
 
 class AnnotationEventsMixin(_Base):
@@ -69,6 +96,17 @@ class AnnotationEventsMixin(_Base):
         def _untransformed_point(self, pos: QPoint) -> QPoint: ...
         def _new_stroke(self, start: QPoint) -> Stroke: ...
         def _erase_at(self, pos: QPoint) -> bool: ...
+
+    def _overlay_bounds(self) -> tuple[float, float]:
+        parent = self.parentWidget()
+        ow = float(self.width())
+        oh = float(self.height())
+        if parent is not None:
+            pw = float(getattr(parent, "_rendered_pw", 0.0) or 0.0)
+            ph = float(getattr(parent, "_rendered_ph", 0.0) or 0.0)
+            ow = max(ow, pw)
+            oh = max(oh, ph)
+        return ow, oh
 
     def contextMenuEvent(self, e) -> None:
         if self._active_box is not None and not self._active_box.text.strip():
@@ -144,16 +182,15 @@ class AnnotationEventsMixin(_Base):
             init_w = max(52.0, fm.averageCharWidth() * 3 + 16.0)
             init_h = max(34.0, fm.lineSpacing() + 12.0)
 
-            x_init = unpanned_pos_f.x()
-            y_init = unpanned_pos_f.y()
+            x_init = max(10.0, unpanned_pos_f.x())
+            y_init = max(10.0, unpanned_pos_f.y())
 
-            pw = getattr(parent, "_rendered_pw", float(self.width())) if parent else float(self.width())
-            ph = getattr(parent, "_rendered_ph", float(self.height())) if parent else float(self.height())
+            ow, oh = self._overlay_bounds()
 
-            if x_init + init_w > pw - 10:
-                x_init = max(10.0, pw - init_w - 10)
-            if y_init + init_h > ph - 10:
-                y_init = max(10.0, ph - init_h - 10)
+            if x_init + init_w > ow - 10.0:
+                x_init = max(10.0, ow - init_w - 10.0)
+            if y_init + init_h > oh - 10.0:
+                y_init = max(10.0, oh - init_h - 10.0)
 
             new_box = TextBox(
                 rect=QRectF(x_init, y_init, init_w, init_h),
@@ -321,9 +358,7 @@ class AnnotationEventsMixin(_Base):
                 return
 
         if self._active_box is not None:
-            parent = self.parentWidget()
-            pw = getattr(parent, "_rendered_pw", float(self.width())) if parent else float(self.width())
-            ph = getattr(parent, "_rendered_ph", float(self.height())) if parent else float(self.height())
+            ow, oh = self._overlay_bounds()
 
             # Ctrl + Arrow keys nudge the text box position by pixels
             if (modifiers & Qt.KeyboardModifier.ControlModifier) and key in (
@@ -345,15 +380,15 @@ class AnnotationEventsMixin(_Base):
                 r = QRectF(self._active_box.rect)
                 r.translate(dx, dy)
 
-                if pw > 20 and ph > 20:
+                if ow > 20 and oh > 20:
                     if r.left() < 5.0:
                         r.moveLeft(5.0)
-                    if r.right() > pw - 5.0:
-                        r.moveRight(pw - 5.0)
+                    if r.right() > ow - 5.0:
+                        r.moveRight(max(5.0 + r.width(), ow - 5.0))
                     if r.top() < 5.0:
                         r.moveTop(5.0)
-                    if r.bottom() > ph - 5.0:
-                        r.moveBottom(ph - 5.0)
+                    if r.bottom() > oh - 5.0:
+                        r.moveBottom(max(5.0 + r.height(), oh - 5.0))
 
                 self._active_box.rect = r
                 self.update()
@@ -377,7 +412,7 @@ class AnnotationEventsMixin(_Base):
                 self._active_box.text = t_str
                 self._cursor_pos = s_min + 1
                 self._clear_text_selection()
-                auto_fit_box_to_text(self._active_box, pw, ph)
+                auto_fit_box_to_text(self._active_box, ow, oh)
                 self._cursor_visible = True
                 self.update()
                 e.accept()
@@ -394,7 +429,7 @@ class AnnotationEventsMixin(_Base):
                 elif self._cursor_pos > 0:
                     self._active_box.text = t_str[:self._cursor_pos - 1] + t_str[self._cursor_pos:]
                     self._cursor_pos -= 1
-                auto_fit_box_to_text(self._active_box, pw, ph)
+                auto_fit_box_to_text(self._active_box, ow, oh)
                 self._cursor_visible = True
                 self.update()
                 e.accept()
@@ -408,15 +443,31 @@ class AnnotationEventsMixin(_Base):
                     self._active_box.text = t_str[:s_min] + t_str[s_max:]
                     self._cursor_pos = s_min
                     self._clear_text_selection()
-                    auto_fit_box_to_text(self._active_box, pw, ph)
+                    auto_fit_box_to_text(self._active_box, ow, oh)
                     self._cursor_visible = True
                     self.update()
                 elif self._cursor_pos < len(t_str):
                     self._push_undo()
                     self._active_box.text = t_str[:self._cursor_pos] + t_str[self._cursor_pos + 1:]
-                    auto_fit_box_to_text(self._active_box, pw, ph)
+                    auto_fit_box_to_text(self._active_box, ow, oh)
                     self._cursor_visible = True
                     self.update()
+                e.accept()
+                return
+
+            if key == Qt.Key.Key_Up:
+                self._cursor_pos = _move_cursor_vertical(self._active_box.text, self._cursor_pos, -1)
+                self._clear_text_selection()
+                self._cursor_visible = True
+                self.update()
+                e.accept()
+                return
+
+            if key == Qt.Key.Key_Down:
+                self._cursor_pos = _move_cursor_vertical(self._active_box.text, self._cursor_pos, 1)
+                self._clear_text_selection()
+                self._cursor_visible = True
+                self.update()
                 e.accept()
                 return
 
@@ -487,7 +538,7 @@ class AnnotationEventsMixin(_Base):
                     self._active_box.text = t_str
                     self._cursor_pos = s_min + len(clip_text)
                     self._clear_text_selection()
-                    auto_fit_box_to_text(self._active_box, pw, ph)
+                    auto_fit_box_to_text(self._active_box, ow, oh)
                     self._cursor_visible = True
                     self.update()
                 e.accept()
@@ -502,7 +553,7 @@ class AnnotationEventsMixin(_Base):
                 self._active_box.text = t_str
                 self._cursor_pos = s_min + len(char)
                 self._clear_text_selection()
-                auto_fit_box_to_text(self._active_box, pw, ph)
+                auto_fit_box_to_text(self._active_box, ow, oh)
                 self._cursor_visible = True
                 self.update()
                 e.accept()

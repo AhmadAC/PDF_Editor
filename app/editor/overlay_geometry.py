@@ -1,3 +1,4 @@
+
 # app/editor/overlay_geometry.py
 """Pure geometry, snapshot, preview-ops, background sampling, and vector-item transform helpers for editor overlays."""
 
@@ -65,8 +66,11 @@ def overlay_pdf_rect(ov: dict, zoom: float = 1.0) -> fitz.Rect | None:
         pt = ov["point"]
         sz = float(ov.get("size", 12))
         txt = ov.get("text", "")
-        tw = max(16.0, len(txt) * sz * 0.65)
-        r = fitz.Rect(pt.x, pt.y - sz * 0.85, pt.x + tw, pt.y + sz * 0.25)
+        lines = txt.split("\n") or [""]
+        max_len = max((len(ln) for ln in lines), default=1)
+        tw = max(16.0, max_len * sz * 0.65)
+        th = max(sz * 1.1, len(lines) * sz * 1.2)
+        r = fitz.Rect(pt.x, pt.y - sz * 0.85, pt.x + tw, pt.y - sz * 0.85 + th)
         ov["rect"] = r
         return r
     return None

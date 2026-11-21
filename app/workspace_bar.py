@@ -200,7 +200,7 @@ class WorkspaceBar(QWidget):
         self._present_btn.setObjectName("viewer_nav_btn")
         self._present_btn.setFixedSize(28, 28)
         self._present_btn.setIconSize(QSize(15, 15))
-        _a11y(self._present_btn, t("viewer.presentation") + " (Ctrl+1 / F5)")
+        _a11y(self._present_btn, t("viewer.presentation") + " (Alt+1 / F5)")
         layout.addWidget(self._present_btn)
 
         self._search_top_btn = QPushButton()

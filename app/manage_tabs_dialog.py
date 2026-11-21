@@ -1,29 +1,36 @@
-
 # app/manage_tabs_dialog.py
-"""PDF_Editor – Manage & Switch Tabs dialog matching LMS sheet management layout and functionality."""
+"""PDF_Editor – ManageTabsDialog facade composing tab preview, custom list, and tab management actions."""
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QEvent, QPoint, QSize, Qt
-from PySide6.QtGui import QColor, QFont, QIcon
+from PySide6.QtCore import QEvent, QSize, Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
-    QMessageBox,
     QPushButton,
     QVBoxLayout,
-    QWidget,
 )
+from shiboken6 import isValid
 
 from app.constants import ACCENT, BG_CARD, BG_INPUT, BORDER, TEXT_PRI, TEXT_SEC
+from app.manage_tabs_actions import ManageTabsActionsMixin
+from app.manage_tabs_list import _ManageTabItemDelegate, _ManageTabsListWidget
+from app.manage_tabs_preview import (
+    ROLE_DISK_PATH,
+    ROLE_DISPLAY_NAME,
+    ROLE_IS_ACTIVE,
+    ROLE_IS_DIRTY,
+    ROLE_PAGE_RANGE,
+    ROLE_THUMBNAIL,
+    ROLE_VIEWER_ID,
+    _natural_sort_key,
+    _PagePreviewPopup,
+)
 from app.utils import (
     SVG_ARROW_DOWN,
     SVG_ARROW_TO_BOTTOM,
@@ -31,47 +38,51 @@ from app.utils import (
     SVG_ARROW_UP,
     SVG_CLONE,
     SVG_EDIT,
-    SVG_FILE_PDF,
     SVG_PLUS,
-    SVG_SEARCH,
+    SVG_SORT,
     SVG_TRASH,
     is_dark,
     svg_icon,
 )
-from app.window_tab_file_ops import get_tab_disk_path, rename_tab_file_on_disk
 
 if TYPE_CHECKING:
     from app.window import MainWindow
 
+__all__ = [
+    "ManageTabsDialog",
+    "ROLE_DISK_PATH",
+    "ROLE_DISPLAY_NAME",
+    "ROLE_IS_ACTIVE",
+    "ROLE_IS_DIRTY",
+    "ROLE_PAGE_RANGE",
+    "ROLE_THUMBNAIL",
+    "ROLE_VIEWER_ID",
+    "_ManageTabItemDelegate",
+    "_ManageTabsListWidget",
+    "_PagePreviewPopup",
+    "_natural_sort_key",
+]
 
-class _ManageTabsListWidget(QListWidget):
-    """QListWidget supporting internal drag-and-drop reordering with signal emission."""
 
-    def __init__(self, dialog: ManageTabsDialog, parent=None) -> None:
-        super().__init__(parent)
-        self._dialog = dialog
-        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.setAlternatingRowColors(True)
-
-    def dropEvent(self, event):
-        super().dropEvent(event)
-        self._dialog._on_list_dropped()
-
-
-class ManageTabsDialog(QDialog):
-    """Dialog to search, filter, reorder, rename, duplicate, delete/close, and jump between open tabs."""
+class ManageTabsDialog(ManageTabsActionsMixin, QDialog):
+    """Facade dialog to search, filter, reorder, rename, duplicate, delete/close, sort, and jump between open tabs."""
 
     def __init__(self, main_window: MainWindow) -> None:
         super().__init__(main_window)
         self.win = main_window
         self.setWindowTitle("Manage & Switch Tabs — PDF_Editor")
         self.setModal(True)
-        self.setMinimumSize(780, 520)
-        self.resize(840, 560)
+        self.setMinimumSize(820, 560)
+        self.resize(880, 600)
 
         self._dark = is_dark()
+        self._viewer_by_id: dict[int, Any] = {}
+        self._thumb_cache: dict[str, QPixmap] = {}
+        self._current_sort_mode: str = ""
+        self._preview_popup: _PagePreviewPopup | None = None
+        self._last_popup_closed_ms: float = 0.0
+        self._last_popup_closed_vid: int | None = None
+
         self._setup_ui()
         self._apply_theme()
         self._populate_tabs()
@@ -81,7 +92,11 @@ class ManageTabsDialog(QDialog):
         root.setContentsMargins(14, 14, 14, 12)
         root.setSpacing(10)
 
-        # ── Search Input ───────────────────────────────────────────────────
+        dark = self._dark
+        ico_col = TEXT_PRI if dark else "#1A2B28"
+        red_col = "#EF4444" if dark else "#DC2626"
+
+        # ── Search Input & Top Sort Button ─────────────────────────────────
         search_row = QHBoxLayout()
         search_row.setSpacing(8)
 
@@ -92,6 +107,16 @@ class ManageTabsDialog(QDialog):
         self.search_input.textChanged.connect(self._on_search_changed)
         self.search_input.installEventFilter(self)
         search_row.addWidget(self.search_input, 1)
+
+        self.btn_top_sort = QPushButton("Sort Sheets ▾")
+        self.btn_top_sort.setIcon(svg_icon(SVG_SORT, color=ico_col, size=15))
+        self.btn_top_sort.setIconSize(QSize(15, 15))
+        self.btn_top_sort.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_top_sort.setFixedHeight(38)
+        self.btn_top_sort.setToolTip("Sort sheets (A-Z, Z-A, page count, unsaved)")
+        self.btn_top_sort.clicked.connect(lambda: self._show_sort_menu(self.btn_top_sort))
+        search_row.addWidget(self.btn_top_sort)
+
         root.addLayout(search_row)
 
         # ── Body: List on left, Action buttons on right ────────────────────
@@ -99,6 +124,8 @@ class ManageTabsDialog(QDialog):
         body_h.setSpacing(12)
 
         self.list_widget = _ManageTabsListWidget(self, self)
+        self._delegate = _ManageTabItemDelegate(self, self.list_widget)
+        self.list_widget.setItemDelegate(self._delegate)
         self.list_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.list_widget.itemSelectionChanged.connect(self._update_button_states)
         body_h.addWidget(self.list_widget, 1)
@@ -106,10 +133,6 @@ class ManageTabsDialog(QDialog):
         btn_col = QVBoxLayout()
         btn_col.setSpacing(6)
         btn_col.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-        dark = self._dark
-        ico_col = TEXT_PRI if dark else "#1A2B28"
-        red_col = "#EF4444" if dark else "#DC2626"
 
         def _make_action_btn(text: str, svg_src: str, col: str = ico_col, obj_name: str = ""):
             b = QPushButton(text)
@@ -135,7 +158,7 @@ class ManageTabsDialog(QDialog):
         self.btn_delete.clicked.connect(self._delete_selected)
         btn_col.addWidget(self.btn_delete)
 
-        btn_col.addSpacing(6)
+        btn_col.addSpacing(4)
 
         self.btn_move_up = _make_action_btn("Move Up", SVG_ARROW_UP)
         self.btn_move_up.clicked.connect(self._move_up)
@@ -153,7 +176,24 @@ class ManageTabsDialog(QDialog):
         self.btn_move_bottom.clicked.connect(self._move_to_bottom)
         btn_col.addWidget(self.btn_move_bottom)
 
-        btn_col.addSpacing(6)
+        btn_col.addSpacing(4)
+
+        self.btn_sort_az = _make_action_btn("Sort (A → Z)", SVG_SORT)
+        self.btn_sort_az.setToolTip("Sort all sheets alphabetically A to Z (natural numerical sort)")
+        self.btn_sort_az.clicked.connect(lambda: self._sort_tabs("name_asc"))
+        btn_col.addWidget(self.btn_sort_az)
+
+        self.btn_sort_za = _make_action_btn("Sort (Z → A)", SVG_SORT)
+        self.btn_sort_za.setToolTip("Sort all sheets alphabetically Z to A (reverse natural numerical sort)")
+        self.btn_sort_za.clicked.connect(lambda: self._sort_tabs("name_desc"))
+        btn_col.addWidget(self.btn_sort_za)
+
+        self.btn_sort_menu = _make_action_btn("Sort Options ▾", SVG_SORT)
+        self.btn_sort_menu.setToolTip("Additional sorting options: Page count, unsaved first, reverse")
+        self.btn_sort_menu.clicked.connect(lambda: self._show_sort_menu(self.btn_sort_menu))
+        btn_col.addWidget(self.btn_sort_menu)
+
+        btn_col.addSpacing(4)
 
         self.btn_add = _make_action_btn("+ Add Sheet", SVG_PLUS)
         self.btn_add.setToolTip("Open new PDF document in a tab")
@@ -170,7 +210,7 @@ class ManageTabsDialog(QDialog):
         bottom_h.setSpacing(10)
 
         self.tip_lbl = QLabel(
-            "Tip: Ctrl/Shift+Click to multi-select. Drag items to reorder. Double-click or press Enter to jump to sheet."
+            "Tip: Click any Page 1 thumbnail to expand (click again or outside to close). Double-click or press Enter to jump."
         )
         self.tip_lbl.setWordWrap(True)
         self.tip_lbl.setStyleSheet(f"color: {TEXT_SEC}; font-size: 9.5pt;")
@@ -202,9 +242,7 @@ class ManageTabsDialog(QDialog):
             f"border-radius: 6px; padding: 6px 12px; font-size: 11pt; color: {fg}; }}"
             f"QListWidget {{ background-color: {bg_inp}; border: 1px solid {brd}; "
             f"border-radius: 6px; outline: none; padding: 4px; font-size: 11pt; color: {fg}; }}"
-            f"QListWidget::item {{ padding: 8px 12px; margin: 1px 2px; border-radius: 5px; min-height: 32px; }}"
-            f"QListWidget::item:selected {{ background-color: {'#264F78' if dark else '#D6E8FA'}; border: 1px solid {ACCENT}; color: #FFFFFF; font-weight: 600; }}"
-            f"QListWidget::item:hover:!selected {{ background-color: {'#333333' if dark else '#F1F5F9'}; }}"
+            f"QListWidget::item {{ padding: 0px; margin: 2px 2px; border-radius: 5px; min-height: 56px; }}"
             f"QPushButton {{ background-color: {'#383A40' if dark else '#FFFFFF'}; border: 1px solid {brd}; "
             f"border-radius: 6px; padding: 6px 14px; font-size: 10pt; font-weight: 500; color: {fg}; text-align: left; }}"
             f"QPushButton:hover:enabled {{ background-color: {'#4F5254' if dark else '#F1F5F9'}; border-color: {ACCENT}; }}"
@@ -218,202 +256,11 @@ class ManageTabsDialog(QDialog):
             f"QPushButton#btn_jump:disabled {{ background-color: {'#374151' if dark else '#D1D5DB'}; color: {'#9CA3AF' if dark else '#9CA3AF'}; }}"
         )
 
-    def _populate_tabs(self, preserve_selection: bool = True):
-        selected_viewers = [
-            self.list_widget.item(i).data(Qt.ItemDataRole.UserRole)
-            for i in range(self.list_widget.count())
-            if self.list_widget.item(i).isSelected()
-        ]
-
-        self.list_widget.clear()
-        query = self.search_input.text().strip().lower()
-
-        active_v = getattr(self.win, "_viewer", None)
-        viewers = getattr(self.win, "_viewers", [])
-
-        select_row = -1
-        dark = self._dark
-
-        for i, v in enumerate(viewers):
-            disk_p = get_tab_disk_path(self.win, v)
-            tab_text = self.win._tab_bar.tabText(i)
-            is_dirty = self.win._is_viewer_dirty(v)
-            is_active = (v is active_v)
-
-            base_name = os.path.basename(disk_p) if disk_p else tab_text
-            display_name = f"* {base_name}" if is_dirty else base_name
-
-            if query and (query not in display_name.lower() and query not in disk_p.lower()):
-                continue
-
-            item = QListWidgetItem()
-            item.setText(display_name)
-            item.setToolTip(f"{disk_p}\n(Tab {i + 1})" if disk_p else f"Tab {i + 1}")
-            item.setData(Qt.ItemDataRole.UserRole, v)
-
-            if is_active:
-                f = item.font()
-                f.setBold(True)
-                item.setFont(f)
-                item.setIcon(svg_icon(SVG_FILE_PDF, color=ACCENT, size=18))
-            else:
-                item.setIcon(svg_icon(SVG_FILE_PDF, color=TEXT_SEC if dark else "#6B7280", size=18))
-
-            self.list_widget.addItem(item)
-            row_idx = self.list_widget.count() - 1
-
-            if preserve_selection and v in selected_viewers:
-                item.setSelected(True)
-            elif select_row < 0 and is_active:
-                select_row = row_idx
-
-        if not self.list_widget.selectedItems() and select_row >= 0:
-            self.list_widget.setCurrentRow(select_row)
-
-        self._update_button_states()
-
-    def _on_search_changed(self, _text: str):
-        self._populate_tabs(preserve_selection=True)
-
-    def _update_button_states(self):
-        sel_items = self.list_widget.selectedItems()
-        n_sel = len(sel_items)
-        has_sel = (n_sel > 0)
-        is_single = (n_sel == 1)
-
-        self.btn_jump.setEnabled(has_sel)
-        self.btn_rename.setEnabled(is_single)
-        self.btn_duplicate.setEnabled(is_single)
-        self.btn_delete.setEnabled(has_sel)
-
-        can_move = False
-        if is_single:
-            v = sel_items[0].data(Qt.ItemDataRole.UserRole)
-            if v in self.win._viewers:
-                cur_pos = self.win._viewers.index(v)
-                total = len(self.win._viewers)
-                self.btn_move_up.setEnabled(cur_pos > 0)
-                self.btn_move_top.setEnabled(cur_pos > 0)
-                self.btn_move_down.setEnabled(cur_pos < total - 1)
-                self.btn_move_bottom.setEnabled(cur_pos < total - 1)
-                can_move = True
-
-        if not can_move:
-            self.btn_move_up.setEnabled(False)
-            self.btn_move_down.setEnabled(False)
-            self.btn_move_top.setEnabled(False)
-            self.btn_move_bottom.setEnabled(False)
-
-    def _selected_viewers(self) -> list[Any]:
-        return [
-            item.data(Qt.ItemDataRole.UserRole)
-            for item in self.list_widget.selectedItems()
-            if item.data(Qt.ItemDataRole.UserRole) in self.win._viewers
-        ]
-
-    def _jump_to_selected(self):
-        viewers = self._selected_viewers()
-        if not viewers:
-            item = self.list_widget.currentItem()
-            if item:
-                v = item.data(Qt.ItemDataRole.UserRole)
-                if v in self.win._viewers:
-                    viewers = [v]
-        if not viewers:
-            return
-
-        target_v = viewers[0]
-        idx = self.win._viewers.index(target_v)
-        self.win._tab_bar.setCurrentIndex(idx)
-        self.win._viewer_stack.setCurrentIndex(idx)
-        self.accept()
-
-    def _on_item_double_clicked(self, _item: QListWidgetItem):
-        self._jump_to_selected()
-
-    def _on_list_dropped(self):
-        """Handle drag-and-drop manual reordering in the list."""
-        new_order: list[int] = []
-        for i in range(self.list_widget.count()):
-            v = self.list_widget.item(i).data(Qt.ItemDataRole.UserRole)
-            if v in self.win._viewers:
-                new_order.append(self.win._viewers.index(v))
-        if len(new_order) == len(self.win._viewers):
-            self.win.reorder_tabs(new_order)
-            self._populate_tabs(preserve_selection=True)
-
-    def _rename_selected(self):
-        viewers = self._selected_viewers()
-        if len(viewers) != 1:
-            return
-        v = viewers[0]
-        tab_idx = self.win._viewers.index(v)
-        rename_tab_file_on_disk(self.win, tab_idx, v)
-        self._populate_tabs(preserve_selection=True)
-
-    def _duplicate_selected(self):
-        viewers = self._selected_viewers()
-        if len(viewers) != 1:
-            return
-        v = viewers[0]
-        path = v.current_path() or getattr(v, "_original_doc_path", "")
-        if path and os.path.isfile(path):
-            self.win._load_and_track(path)
-            self._populate_tabs(preserve_selection=True)
-
-    def _delete_selected(self):
-        viewers = self._selected_viewers()
-        if not viewers:
-            return
-        indices = sorted([self.win._viewers.index(v) for v in viewers], reverse=True)
-        for idx in indices:
-            self.win._close_tab(idx)
-        self._populate_tabs(preserve_selection=False)
-
-    def _move_up(self):
-        viewers = self._selected_viewers()
-        if len(viewers) != 1:
-            return
-        v = viewers[0]
-        cur_idx = self.win._viewers.index(v)
-        if cur_idx > 0:
-            self.win.reorder_tab(cur_idx, cur_idx - 1)
-            self._populate_tabs(preserve_selection=True)
-
-    def _move_down(self):
-        viewers = self._selected_viewers()
-        if len(viewers) != 1:
-            return
-        v = viewers[0]
-        cur_idx = self.win._viewers.index(v)
-        if cur_idx < len(self.win._viewers) - 1:
-            self.win.reorder_tab(cur_idx, cur_idx + 1)
-            self._populate_tabs(preserve_selection=True)
-
-    def _move_to_top(self):
-        viewers = self._selected_viewers()
-        if len(viewers) != 1:
-            return
-        v = viewers[0]
-        cur_idx = self.win._viewers.index(v)
-        if cur_idx > 0:
-            self.win.reorder_tab(cur_idx, 0)
-            self._populate_tabs(preserve_selection=True)
-
-    def _move_to_bottom(self):
-        viewers = self._selected_viewers()
-        if len(viewers) != 1:
-            return
-        v = viewers[0]
-        cur_idx = self.win._viewers.index(v)
-        total = len(self.win._viewers)
-        if cur_idx < total - 1:
-            self.win.reorder_tab(cur_idx, total - 1)
-            self._populate_tabs(preserve_selection=True)
-
-    def _add_sheet(self):
-        self.win._open_pdf()
-        self._populate_tabs(preserve_selection=True)
+    def closeEvent(self, event):
+        if self._preview_popup is not None and isValid(self._preview_popup):
+            self._preview_popup.close()
+            self._preview_popup = None
+        super().closeEvent(event)
 
     def eventFilter(self, watched, event):
         if watched is self.search_input and event.type() == QEvent.Type.KeyPress:

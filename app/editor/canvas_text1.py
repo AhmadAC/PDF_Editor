@@ -1,8 +1,6 @@
 
-
 # app/editor/canvas_text1.py
-
-"""Inline text editor controller for Foxit-style in-place editing & insertion with per-selection color, smooth expansion, and installed system font support."""
+"""Inline text editor controller for Foxit-style in-place editing & insertion with per-selection color, multi-line expansion, and installed system font support."""
 
 from __future__ import annotations
 
@@ -88,13 +86,14 @@ def _color_value_to_tuple(c) -> tuple[float, float, float]:
 
 
 class _InlineRichEdit(QTextEdit):
-    """Single-line inline editor supporting per-selection rich text colors with QLineEdit-compatible helpers."""
+    """Inline editor supporting per-selection rich text colors, multi-line Enter expansion, and QLineEdit-compatible helpers."""
 
     returnPressed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._base_color = QColor(0, 0, 0)
+        self._multiline_enter = False
         self.setAcceptRichText(False)
         self.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -107,6 +106,9 @@ class _InlineRichEdit(QTextEdit):
         pal = self.palette()
         pal.setColor(QPalette.ColorRole.Base, Qt.GlobalColor.transparent)
         self.setPalette(pal)
+
+    def set_multiline_enter(self, enabled: bool) -> None:
+        self._multiline_enter = bool(enabled)
 
     def text(self) -> str:
         return self.toPlainText()
@@ -230,7 +232,15 @@ class _InlineRichEdit(QTextEdit):
         return runs
 
     def keyPressEvent(self, e):
-        if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (e.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+        if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            mods = e.modifiers()
+            if mods & Qt.KeyboardModifier.ControlModifier:
+                e.accept()
+                self.returnPressed.emit()
+                return
+            if self._multiline_enter or (mods & Qt.KeyboardModifier.ShiftModifier):
+                super().keyPressEvent(e)
+                return
             e.accept()
             self.returnPressed.emit()
             return
@@ -269,6 +279,8 @@ class CanvasInlineTextManager:
         self.target_overlay = target_overlay
         self.page_idx = page_idx
         self.original_text = span.get("text", "")
+        is_added_overlay = bool(target_overlay and target_overlay.get("type") == "text")
+        self.edit.set_multiline_enter(is_added_overlay)
 
         bb = span["bbox"]
         visual_size = float(span.get("size") or span.get("font_size") or 0)
@@ -324,6 +336,7 @@ class CanvasInlineTextManager:
         self.insert_color = tuple(color)
         self.insert_font = font or "Helvetica"
         self.insert_flags = (16 if bold else 0) | (2 if italic else 0)
+        self.edit.set_multiline_enter(True)
         self.edit.blockSignals(True)
         self.edit.setText("")
         self.edit.blockSignals(False)
@@ -511,17 +524,22 @@ class CanvasInlineTextManager:
             if origin:
                 baseline_y = yo + int(round(origin[1] * z))
                 ascent = fm.ascent()
-                top_y = baseline_y - ascent - max(2, (h - fm.height()) // 2)
+                if len(lines) > 1:
+                    top_y = baseline_y - ascent - 3
+                else:
+                    top_y = baseline_y - ascent - max(2, (h - fm.height()) // 2)
                 x = int(round(origin[0] * z)) - 4
                 y = top_y
             else:
                 x = int(round(bb[0] * z)) - 4
                 y = yo + int(round(bb[1] * z)) - 3
-            if x + w > c.width() - 16:
-                c.setFixedSize(max(c.width(), x + w + 32), c.height())
+            need_w = max(c.width(), x + w + 32)
+            need_h = max(c.height(), y + h + 32)
+            if need_w > c.width() or need_h > c.height():
+                c.setFixedSize(need_w, need_h)
             self.edit.setGeometry(x, y, w, h)
-            self.edit.ensureCursorVisible()
             self.edit.horizontalScrollBar().setValue(0)
+            self.edit.verticalScrollBar().setValue(0)
         elif self.mode == "insert" and self.insert_point is not None:
             px, py = self.insert_point
             size = self.insert_size
@@ -537,11 +555,13 @@ class CanvasInlineTextManager:
             h = max(int(px_size * 1.35) + 6, int(fm.lineSpacing() * len(lines) + 8), 24)
             x = int(round(px * z)) - 4
             y = yo + int(round(py * z)) - 3
-            if x + w > c.width() - 16:
-                c.setFixedSize(max(c.width(), x + w + 32), c.height())
+            need_w = max(c.width(), x + w + 32)
+            need_h = max(c.height(), y + h + 32)
+            if need_w > c.width() or need_h > c.height():
+                c.setFixedSize(need_w, need_h)
             self.edit.setGeometry(x, y, w, h)
-            self.edit.ensureCursorVisible()
             self.edit.horizontalScrollBar().setValue(0)
+            self.edit.verticalScrollBar().setValue(0)
 
     def commit(self):
         if self.mode is None or not self.edit.isVisible():
@@ -587,7 +607,6 @@ class CanvasInlineTextManager:
         fm = self.edit.fontMetrics()
         edit_x = self.edit.x()
         edit_y = self.edit.y()
-        edit_h = self.edit.height()
 
         self.edit.hide()
         self.mode = None
@@ -645,13 +664,15 @@ class CanvasInlineTextManager:
                 if target_ov.get("type") == "text_edit" and font_name != orig_font:
                     target_ov["_font_changed"] = True
 
-                est_w = max(20.0, (fm.horizontalAdvance(new_text) / z) if new_text else 20.0)
+                lines = new_text.split("\n") or [""]
+                est_w = max(20.0, max((fm.horizontalAdvance(ln) for ln in lines), default=20.0) / z)
+                est_h = max(12.0, (fm.lineSpacing() * len(lines)) / z)
                 if target_ov.get("type") == "text_edit" and "bbox" in target_ov:
                     ob = target_ov["bbox"]
-                    target_ov["bbox"] = [ob[0], ob[1], max(ob[2], ob[0] + est_w), ob[3]]
+                    target_ov["bbox"] = [ob[0], ob[1], max(ob[2], ob[0] + est_w), max(ob[3], ob[1] + est_h)]
                 elif target_ov.get("type") == "text" and "rect" in target_ov and target_ov["rect"] is not None:
                     orr = fitz.Rect(target_ov["rect"])
-                    target_ov["rect"] = fitz.Rect(orr.x0, orr.y0, max(orr.x1, orr.x0 + est_w), orr.y1)
+                    target_ov["rect"] = fitz.Rect(orr.x0, orr.y0, max(orr.x1, orr.x0 + est_w), max(orr.y1, orr.y0 + est_h))
 
                 if was_untouched:
                     target_ov["_dirty"] = True
@@ -687,15 +708,17 @@ class CanvasInlineTextManager:
             if not new_text.strip():
                 return
             yo = self.canvas._page_offsets[page_idx][0] if page_idx < len(self.canvas._page_offsets) else 0
+            lines = new_text.split("\n") or [""]
             screen_x = edit_x + 4
-            screen_y = edit_y + (edit_h - fm.height()) // 2 + fm.ascent()
+            top_screen_y = edit_y + 3
+            screen_y = top_screen_y + fm.ascent()
             pdf_baseline_x = screen_x / z
             pdf_baseline_y = (screen_y - yo) / z
 
-            char_w = isize * 0.55
-            est_w = max(20.0, (fm.horizontalAdvance(new_text) / z) if new_text else len(new_text) * char_w)
-            pdf_top_y = (edit_y + (edit_h - fm.height()) // 2 - yo) / z
-            pdf_bottom_y = pdf_top_y + fm.height() / z
+            est_w = max(20.0, max((fm.horizontalAdvance(ln) for ln in lines), default=20.0) / z)
+            total_h_px = max(float(fm.height()), fm.lineSpacing() * len(lines))
+            pdf_top_y = (top_screen_y - yo) / z
+            pdf_bottom_y = pdf_top_y + total_h_px / z
             rect = fitz.Rect(pdf_baseline_x, pdf_top_y, pdf_baseline_x + est_w, pdf_bottom_y)
             edit = {
                 "type": "text",
@@ -755,4 +778,3 @@ class CanvasInlineTextManager:
                 self.commit()
                 return False
         return False
-

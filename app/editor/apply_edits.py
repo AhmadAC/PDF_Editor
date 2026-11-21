@@ -1,5 +1,6 @@
+
 # app/editor/apply_edits.py
-"""PDF_Editor – Two-phase edit-application dispatcher supporting multi-color text runs, grouped objects, z-order, opacity, rotation, flip, and batched surgical image/drawing removal."""
+"""PDF_Editor – Two-phase edit-application dispatcher supporting multi-line & multi-color text runs, grouped objects, z-order, opacity, rotation, flip, and batched surgical image/drawing removal."""
 
 import io
 import os
@@ -528,6 +529,9 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
             is_bold = bool((flags & 16) or "bold" in font_req.lower())
             is_italic = bool((flags & 2) or "italic" in font_req.lower() or "oblique" in font_req.lower())
             sz = float(e.get("size", 12))
+            line_step = sz * 1.2
+            base_x = float(e["point"].x)
+            base_y = float(e["point"].y)
 
             morph_arg = None
             if rot or flip_h or flip_v:
@@ -535,53 +539,65 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                 if rr:
                     cx, cy = (rr.x0 + rr.x1) / 2.0, (rr.y0 + rr.y1) / 2.0
                 else:
-                    pt = e["point"]
-                    cx, cy = float(pt.x), float(pt.y)
+                    cx, cy = base_x, base_y
                 morph_arg = (fitz.Point(cx, cy), _build_transform_matrix(fitz, rot, flip_h, flip_v))
 
             runs = e.get("runs")
             if runs and len(runs) > 0:
-                cur_x = float(e["point"].x)
-                base_y = float(e["point"].y)
+                line_runs_list: list[list[dict]] = [[]]
                 for run in runs:
-                    rt = run.get("text", "")
-                    if not rt:
-                        continue
-                    r_bold = bool(run.get("bold", is_bold))
-                    r_italic = bool(run.get("italic", is_italic))
-                    r_fontname, r_fontfile, r_probe, r_emb = _resolve_fitz_font(fitz, font_req, r_bold, r_italic)
-                    if r_emb:
-                        embedded_font = True
-                    r_kw: dict = {
-                        "fontsize": sz,
-                        "color": _color_value_to_rgb(run.get("color", e.get("color", (0, 0, 0)))),
-                        "fontname": r_fontname,
-                        "fill_opacity": op,
-                        "overlay": overlay_flag,
-                    }
-                    if r_fontfile:
-                        r_kw["fontfile"] = r_fontfile
-                    if morph_arg is not None:
-                        r_kw["morph"] = morph_arg
-                    pg.insert_text(fitz.Point(cur_x, base_y), rt, **r_kw)
-                    cur_x += r_probe.text_length(rt, fontsize=sz)
+                    parts = run.get("text", "").split("\n")
+                    for idx, part in enumerate(parts):
+                        if idx > 0:
+                            line_runs_list.append([])
+                        if part:
+                            line_runs_list[-1].append(dict(run, text=part))
+
+                for li, line_runs in enumerate(line_runs_list):
+                    cur_x = base_x
+                    cur_y = base_y + li * line_step
+                    for run in line_runs:
+                        rt = run.get("text", "")
+                        if not rt:
+                            continue
+                        r_bold = bool(run.get("bold", is_bold))
+                        r_italic = bool(run.get("italic", is_italic))
+                        r_fontname, r_fontfile, r_probe, r_emb = _resolve_fitz_font(fitz, font_req, r_bold, r_italic)
+                        if r_emb:
+                            embedded_font = True
+                        r_kw: dict = {
+                            "fontsize": sz,
+                            "color": _color_value_to_rgb(run.get("color", e.get("color", (0, 0, 0)))),
+                            "fontname": r_fontname,
+                            "fill_opacity": op,
+                            "overlay": overlay_flag,
+                        }
+                        if r_fontfile:
+                            r_kw["fontfile"] = r_fontfile
+                        if morph_arg is not None:
+                            r_kw["morph"] = morph_arg
+                        pg.insert_text(fitz.Point(cur_x, cur_y), rt, **r_kw)
+                        cur_x += r_probe.text_length(rt, fontsize=sz)
             else:
                 fontname, fontfile_arg, _f_probe, is_emb = _resolve_fitz_font(fitz, font_req, is_bold, is_italic)
                 if is_emb:
                     embedded_font = True
                 color = _color_value_to_rgb(e.get("color", (0, 0, 0)))
-                kw: dict = {
-                    "fontsize": sz,
-                    "color": color,
-                    "fontname": fontname,
-                    "fill_opacity": op,
-                    "overlay": overlay_flag,
-                }
-                if fontfile_arg:
-                    kw["fontfile"] = fontfile_arg
-                if morph_arg is not None:
-                    kw["morph"] = morph_arg
-                pg.insert_text(e["point"], e["text"], **kw)
+                for li, line_txt in enumerate(str(e.get("text", "")).split("\n")):
+                    if not line_txt:
+                        continue
+                    kw: dict = {
+                        "fontsize": sz,
+                        "color": color,
+                        "fontname": fontname,
+                        "fill_opacity": op,
+                        "overlay": overlay_flag,
+                    }
+                    if fontfile_arg:
+                        kw["fontfile"] = fontfile_arg
+                    if morph_arg is not None:
+                        kw["morph"] = morph_arg
+                    pg.insert_text(fitz.Point(base_x, base_y + li * line_step), line_txt, **kw)
 
         elif etype in ("image", "signature"):
             path = e.get("path", "")

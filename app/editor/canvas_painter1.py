@@ -1,5 +1,6 @@
+
 # app/editor/canvas_painter1.py
-"""Canvas painter: renders pages, overlays, multi-color text runs, grouped pictures, vector drawings, opacity, rotation, flips, check/cross stamps, text, notes, and strokes."""
+"""Canvas painter: renders pages, overlays, multi-line & multi-color text runs, grouped pictures, vector drawings, opacity, rotation, flips, check/cross stamps, text, notes, and strokes."""
 
 from __future__ import annotations
 
@@ -27,6 +28,18 @@ def _to_qcolor(c) -> QColor:
     return QColor("#000000")
 
 
+def _split_runs_by_newline(runs: list[dict]) -> list[list[dict]]:
+    lines: list[list[dict]] = [[]]
+    for run in runs:
+        parts = run.get("text", "").split("\n")
+        for idx, part in enumerate(parts):
+            if idx > 0:
+                lines.append([])
+            if part:
+                lines[-1].append(dict(run, text=part))
+    return lines
+
+
 def _draw_text_with_runs(
     p: QPainter,
     bx: float,
@@ -36,26 +49,31 @@ def _draw_text_with_runs(
     base_font: QFont,
     base_color,
 ) -> None:
+    line_step = QFontMetricsF(base_font).lineSpacing()
     if not runs:
         p.setFont(base_font)
         p.setPen(_to_qcolor(base_color))
-        p.drawText(QPointF(bx, by), text)
+        for li, line_txt in enumerate((text or "").split("\n")):
+            if line_txt:
+                p.drawText(QPointF(bx, by + li * line_step), line_txt)
         return
 
-    cur_x = bx
-    for run in runs:
-        rt = run.get("text", "")
-        if not rt:
-            continue
-        rf = QFont(base_font)
-        if "bold" in run:
-            rf.setBold(bool(run["bold"]))
-        if "italic" in run:
-            rf.setItalic(bool(run["italic"]))
-        p.setFont(rf)
-        p.setPen(_to_qcolor(run.get("color", base_color)))
-        p.drawText(QPointF(cur_x, by), rt)
-        cur_x += QFontMetricsF(rf).horizontalAdvance(rt)
+    for li, line_runs in enumerate(_split_runs_by_newline(runs)):
+        cur_x = bx
+        cur_y = by + li * line_step
+        for run in line_runs:
+            rt = run.get("text", "")
+            if not rt:
+                continue
+            rf = QFont(base_font)
+            if "bold" in run:
+                rf.setBold(bool(run["bold"]))
+            if "italic" in run:
+                rf.setItalic(bool(run["italic"]))
+            p.setFont(rf)
+            p.setPen(_to_qcolor(run.get("color", base_color)))
+            p.drawText(QPointF(cur_x, cur_y), rt)
+            cur_x += QFontMetricsF(rf).horizontalAdvance(rt)
 
 
 def _draw_selection_box(p: QPainter, qr: QRect, handle_size: int = 8, draw_handles: bool = True, is_locked: bool = False) -> None:
@@ -123,6 +141,9 @@ def _paint_overlay_body(
     rot = int(e.get("rotation", 0)) % 360
     flip_h = bool(e.get("flip_h", False))
     flip_v = bool(e.get("flip_v", False))
+    dev = p.device()
+    dpi_y = float(dev.logicalDpiY()) if (dev is not None and hasattr(dev, "logicalDpiY") and dev.logicalDpiY() > 0) else 96.0
+    dpi_scale = 72.0 / dpi_y
 
     if etype == "group":
         r = overlay_pdf_rect(e, zoom=z)
@@ -348,7 +369,7 @@ def _paint_overlay_body(
             fname = e.get("font", "Helvetica")
             resolved_fam = _resolve_font_family(fname)
             f2 = QFont(resolved_fam)
-            f2.setPointSizeF(max(4.0, float(e.get("size", 12)) * z * 0.75))
+            f2.setPointSizeF(max(4.0, float(e.get("size", 12)) * z * dpi_scale))
             flags = int(e.get("flags", 0) or 0)
             if (flags & 16) or "bold" in fname.lower():
                 f2.setBold(True)
@@ -435,7 +456,7 @@ def _paint_overlay_body(
             resolved_fam = _resolve_font_family(fname)
             fnt = QFont(resolved_fam)
             sz = float(e.get("font_size", e.get("size", 12)))
-            fnt.setPointSizeF(max(4.0, sz * z * 0.75))
+            fnt.setPointSizeF(max(4.0, sz * z * dpi_scale))
             flags = int(e.get("flags", 0) or 0)
             if (flags & 16) or "bold" in fname.lower():
                 fnt.setBold(True)

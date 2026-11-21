@@ -1,5 +1,3 @@
-
-
 # app/window.py
 """PDF_Editor – MainWindow: application main window facade with Alt+P Command Palette and Selection Pane integration."""
 
@@ -480,8 +478,8 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         QShortcut(QKeySequence("Ctrl+Shift+P"), self, self._show_command_palette)
         QShortcut(QKeySequence("Ctrl+Shift+T"), self, self._show_manage_tabs_dialog)
         QShortcut(QKeySequence("F5"), self, self._start_presentation)
-        sc_c1 = QShortcut(QKeySequence("Ctrl+1"), self, lambda: self._handle_ctrl_digit(1))
-        sc_c1.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_alt1 = QShortcut(QKeySequence("Alt+1"), self, self._start_presentation)
+        sc_alt1.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         QShortcut(QKeySequence("F11"), self, self._toggle_fullscreen)
         QShortcut(QKeySequence("Ctrl+O"), self, self._open_pdf)
         sc_hist = QShortcut(QKeySequence("Ctrl+H"), self, self._show_recent_files_menu)
@@ -511,9 +509,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
 
         assert len(NAV_ITEMS) <= 18, f"Max 18 tool shortcuts defined but NAV_ITEMS has {len(NAV_ITEMS)}."
         for idx in range(len(NAV_ITEMS)):
-            if idx == 0:
-                continue
-            elif idx < 9:
+            if idx < 9:
                 sc_d = QShortcut(QKeySequence(f"Ctrl+{idx+1}"), self, lambda d=idx + 1: self._handle_ctrl_digit(d))
                 sc_d.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             elif idx < 18:
@@ -540,8 +536,6 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
 
         if digit == 0:
             self._zoom_reset_current()
-        elif digit == 1:
-            self._start_presentation()
         else:
             tool_idx = digit - 1
             if 0 <= tool_idx < len(NAV_ITEMS):
@@ -620,7 +614,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
                 "name": "Presentation Mode (Full Screen Slideshow)",
                 "category": "View",
                 "action": self._start_presentation,
-                "shortcut": "F5 / Ctrl+1",
+                "shortcut": "F5 / Alt+1",
                 "icon": svg_for_name("fa5s.tv", ACCENT, 18),
             },
             {
@@ -938,4 +932,3 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         except Exception:
             pass
         super().closeEvent(event)
-

@@ -219,9 +219,7 @@ class AnnotationOverlay(AnnotationEventsMixin, QWidget):
         new_font_size = max(6.0, min(220.0, round(box.font_size * factor, 1)))
         box.font_size = new_font_size
 
-        parent = self.parentWidget()
-        pw = getattr(parent, "_rendered_pw", float(self.width())) if parent else float(self.width())
-        ph = getattr(parent, "_rendered_ph", float(self.height())) if parent else float(self.height())
+        ow, oh = self._overlay_bounds()
 
         cx = box.rect.center().x()
         cy = box.rect.center().y()
@@ -234,17 +232,13 @@ class AnnotationOverlay(AnnotationEventsMixin, QWidget):
         needed_w = max(52.0, max(box.rect.width() * factor, max_line_w + 24.0))
         needed_h = max(34.0, max(box.rect.height() * factor, fm.lineSpacing() * max(1, len(lines)) + 16.0))
 
-        x0 = cx - needed_w / 2.0
-        y0 = cy - needed_h / 2.0
+        x0 = max(10.0, cx - needed_w / 2.0)
+        y0 = max(10.0, cy - needed_h / 2.0)
 
-        if x0 + needed_w > pw - 10.0:
-            x0 = max(10.0, pw - 10.0 - needed_w)
-        if x0 < 10.0:
-            x0 = 10.0
-        if y0 + needed_h > ph - 10.0:
-            y0 = max(10.0, ph - 10.0 - needed_h)
-        if y0 < 10.0:
-            y0 = 10.0
+        if x0 + needed_w > ow - 10.0:
+            x0 = max(10.0, ow - 10.0 - needed_w)
+        if y0 + needed_h > oh - 10.0:
+            y0 = max(10.0, oh - 10.0 - needed_h)
 
         box.rect = QRectF(x0, y0, needed_w, needed_h)
         self.update()

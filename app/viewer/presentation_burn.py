@@ -1,3 +1,4 @@
+
 # app/viewer/presentation_burn.py
 """PDF_Editor – Presentation annotation export and document burning mixin."""
 
@@ -5,11 +6,14 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 import fitz
+from PySide6.QtGui import QFont, QFontMetricsF
 from PySide6.QtWidgets import QWidget
 
+from app.utils import find_system_font_file
 from app.viewer.annotation_layer import ToolMode
 
 if TYPE_CHECKING:
@@ -18,6 +22,15 @@ else:
     _Base = object
 
 _log = logging.getLogger(__name__)
+
+
+def _box_font_metrics(overlay: Any, font_size: float) -> QFontMetricsF:
+    """Measure QFont('Segoe UI') with the exact same QPaintDevice metrics used by AnnotationPainter."""
+    qfont = QFont("Segoe UI", int(font_size))
+    qfont.setPointSizeF(font_size)
+    if overlay is not None:
+        return QFontMetricsF(qfont, overlay)
+    return QFontMetricsF(qfont)
 
 
 class PresentationBurnMixin(_Base):
@@ -44,7 +57,8 @@ class PresentationBurnMixin(_Base):
         if not pages_with_annots:
             return False
 
-        dpi_y = float(self.logicalDpiY()) if hasattr(self, "logicalDpiY") and self.logicalDpiY() > 0 else 96.0
+        dpi_source = self._overlay if self._overlay is not None else self
+        dpi_y = float(dpi_source.logicalDpiY()) if hasattr(dpi_source, "logicalDpiY") and dpi_source.logicalDpiY() > 0 else 96.0
         dpi_ratio = dpi_y / 72.0
         added_any = False
 
@@ -106,37 +120,30 @@ class PresentationBurnMixin(_Base):
             for box in self._overlay._text_boxes.get(page_idx, []):
                 if not box.text.strip():
                     continue
-                x0 = (box.rect.left() - offset_x) * scale_x
-                y0 = (box.rect.top() - offset_y) * scale_y
-                x1 = (box.rect.right() - offset_x) * scale_x
+                fm = _box_font_metrics(self._overlay, box.font_size)
+                inner_x0 = (box.rect.left() - offset_x + 7.0) * scale_x
+                inner_y0 = (box.rect.top() - offset_y + 5.0) * scale_y
+                first_baseline_y = inner_y0 + fm.ascent() * scale_y
                 pdf_font_size = max(4.0, float(box.font_size * dpi_ratio * scale_y))
+                box_w = max(20.0, (box.rect.width() - 14.0) * scale_x)
+                box_h = max(12.0, (box.rect.height() - 10.0) * scale_y)
                 col = (
                     float(box.color.redF()),
                     float(box.color.greenF()),
                     float(box.color.blueF()),
                 )
-                lines = box.text.splitlines() or [box.text]
-                line_step = pdf_font_size * 1.25
-                inner_x0 = max(0.0, x0 + 7.0 * scale_x)
-                inner_y0 = max(0.0, y0 + 5.0 * scale_y)
-                for li, line_txt in enumerate(lines):
-                    if not line_txt.strip():
-                        continue
-                    ly_top = inner_y0 + li * line_step
-                    baseline_y = ly_top + pdf_font_size * 0.88
-                    est_w = max(20.0, x1 - inner_x0, len(line_txt) * pdf_font_size * 0.55)
-                    edit_tab._add({
-                        "type": "text",
-                        "page": page_idx,
-                        "point": fitz.Point(inner_x0, baseline_y),
-                        "rect": fitz.Rect(inner_x0, ly_top, inner_x0 + est_w, ly_top + line_step),
-                        "text": line_txt,
-                        "size": pdf_font_size,
-                        "color": col,
-                        "font": "Helvetica",
-                        "flags": 0,
-                    })
-                    added_any = True
+                edit_tab._add({
+                    "type": "text",
+                    "page": page_idx,
+                    "point": fitz.Point(inner_x0, first_baseline_y),
+                    "rect": fitz.Rect(inner_x0, inner_y0, inner_x0 + box_w, inner_y0 + box_h),
+                    "text": box.text,
+                    "size": pdf_font_size,
+                    "color": col,
+                    "font": "Segoe UI",
+                    "flags": 0,
+                })
+                added_any = True
 
         return added_any
 
@@ -151,7 +158,12 @@ class PresentationBurnMixin(_Base):
             return False
 
         any_modified = False
-        dpi_y = float(self.logicalDpiY()) if hasattr(self, "logicalDpiY") and self.logicalDpiY() > 0 else 96.0
+        embedded_font = False
+        segoe_ttf = find_system_font_file("Segoe UI")
+        has_segoe = bool(segoe_ttf and os.path.isfile(segoe_ttf))
+
+        dpi_source = self._overlay if self._overlay is not None else self
+        dpi_y = float(dpi_source.logicalDpiY()) if hasattr(dpi_source, "logicalDpiY") and dpi_source.logicalDpiY() > 0 else 96.0
         dpi_ratio = dpi_y / 72.0
 
         for page_idx in pages_with_annots:
@@ -272,18 +284,35 @@ class PresentationBurnMixin(_Base):
                         float(box.color.greenF()),
                         float(box.color.blueF()),
                     )
+
+                    fm = _box_font_metrics(self._overlay, box.font_size)
+                    ascent_pdf = fm.ascent() * scale_y
+                    line_step_pdf = fm.lineSpacing() * scale_y
+
                     pad_x = 7.0 * scale_x
                     pad_y = 5.0 * scale_y
-                    inner_x0 = pdf_rect.x0 + pad_x
-                    inner_y0 = pdf_rect.y0 + pad_y
+                    inner_x0 = tl.x + pad_x
+                    inner_y0 = tl.y + pad_y
 
-                    lines = box.text.splitlines() or [box.text]
-                    line_step = pdf_font_size * 1.25
+                    lines = box.text.split("\n")
+                    text_kw: dict[str, Any] = {
+                        "fontsize": pdf_font_size,
+                        "rotate": (page_rot + rot) % 360,
+                    }
+                    if has_segoe:
+                        text_kw["fontname"] = "pres_segoe"
+                        text_kw["fontfile"] = segoe_ttf
+                        embedded_font = True
+                    else:
+                        text_kw["fontname"] = "helv"
 
                     for li, line_txt in enumerate(lines):
                         if not line_txt:
                             continue
-                        baseline_vis = fitz.Point(inner_x0, inner_y0 + li * line_step + pdf_font_size * 0.88)
+                        baseline_vis = fitz.Point(
+                            inner_x0,
+                            inner_y0 + ascent_pdf + li * line_step_pdf,
+                        )
                         if box.has_stroke:
                             for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)]:
                                 out_vis = fitz.Point(
@@ -293,21 +322,21 @@ class PresentationBurnMixin(_Base):
                                 page.insert_text(
                                     out_vis * derot,
                                     line_txt,
-                                    fontsize=pdf_font_size,
                                     color=(0.0, 0.0, 0.0),
-                                    fontname="helv",
-                                    rotate=(page_rot + rot) % 360,
+                                    **text_kw,
                                 )
                         page.insert_text(
                             baseline_vis * derot,
                             line_txt,
-                            fontsize=pdf_font_size,
                             color=text_color,
-                            fontname="helv",
-                            rotate=(page_rot + rot) % 360,
+                            **text_kw,
                         )
                     any_modified = True
                 except Exception as e:
                     _log.warning("Failed to burn text box: %s", e)
+
+        if embedded_font:
+            with contextlib.suppress(Exception):
+                self._doc.subset_fonts()
 
         return any_modified

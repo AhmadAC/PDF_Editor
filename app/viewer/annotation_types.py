@@ -119,7 +119,7 @@ def fit_font_size(text: str, rect: QRectF, min_size: float = 8.0, max_size: floa
 
 def auto_fit_box_to_text(box: TextBox, overlay_width: float, overlay_height: float,
                          pad_x: float = 16.0, pad_y: float = 12.0) -> None:
-    """Dynamically expand or shrink the text box to fit typed text at its current font size."""
+    """Expand the text box rightward and downward to fit typed text without shifting its left edge."""
     font = QFont("Segoe UI", int(box.font_size))
     font.setPointSizeF(box.font_size)
     fm = QFontMetricsF(font)
@@ -134,15 +134,6 @@ def auto_fit_box_to_text(box: TextBox, overlay_width: float, overlay_height: flo
 
     x0 = box.rect.left()
     y0 = box.rect.top()
-
-    if x0 + needed_w > overlay_width - 10.0:
-        x0 = max(10.0, overlay_width - 10.0 - needed_w)
-
-    max_avail_w = max(52.0, overlay_width - 16.0)
-    needed_w = min(needed_w, max_avail_w)
-
-    max_avail_h = max(34.0, overlay_height - 10.0 - y0)
-    needed_h = min(needed_h, max_avail_h)
 
     box.rect = QRectF(x0, y0, needed_w, needed_h)
 
