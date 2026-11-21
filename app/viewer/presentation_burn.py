@@ -1,4 +1,3 @@
-
 # app/viewer/presentation_burn.py
 """PDF_Editor – Presentation annotation export and document burning mixin."""
 
@@ -142,6 +141,12 @@ class PresentationBurnMixin(_Base):
                     "color": col,
                     "font": "Segoe UI",
                     "flags": 0,
+                    "has_cloud": bool(box.has_cloud),
+                    "cloud_enabled": bool(box.has_cloud),
+                    "has_stroke": bool(box.has_stroke),
+                    "outline_enabled": bool(box.has_stroke),
+                    "outline_thickness": max(1.0, round(pdf_font_size * 0.065, 1)),
+                    "outline_color": (0.0, 0.0, 0.0),
                 })
                 added_any = True
 
@@ -261,22 +266,29 @@ class PresentationBurnMixin(_Base):
                 if not box.text.strip():
                     continue
                 try:
-                    tl = to_visual_pdf(box.rect.topLeft())
-                    br = to_visual_pdf(box.rect.bottomRight())
-                    pdf_rect = fitz.Rect(tl, br).normalize()
+                    tl = to_unrotated_pdf(box.rect.topLeft())
+                    br = to_unrotated_pdf(box.rect.bottomRight())
+                    unrot_rect = fitz.Rect(tl, br).normalize()
                     pdf_font_size = max(4.0, float(box.font_size * dpi_ratio * scale_y))
 
                     if box.has_cloud:
                         try:
-                            unrot_rect = pdf_rect * derot
                             shape = page.new_shape()
                             shape.draw_rect(unrot_rect)
-                            shape.finish(color=None, fill=(1.0, 1.0, 1.0), fill_opacity=0.4)
-                            shape.commit()
-                        except Exception:
-                            bg_annot = page.add_rect_annot(pdf_rect)
-                            bg_annot.set_colors(fill=(1, 1, 1))
-                            bg_annot.set_opacity(102 / 255.0)
+                            shape.finish(
+                                color=(0.80, 0.80, 0.80),
+                                fill=(1.0, 1.0, 1.0),
+                                fill_opacity=0.6,
+                                stroke_opacity=0.6,
+                                width=0.8,
+                            )
+                            shape.commit(overlay=True)
+                        except Exception as e_cloud:
+                            _log.debug("Shape cloud failed, using annot fallback: %s", e_cloud)
+                            bg_annot = page.add_rect_annot(unrot_rect)
+                            bg_annot.set_colors(stroke=(0.8, 0.8, 0.8), fill=(1, 1, 1))
+                            bg_annot.set_border(width=0.8)
+                            bg_annot.set_opacity(0.6)
                             bg_annot.update()
 
                     text_color = (
@@ -291,8 +303,8 @@ class PresentationBurnMixin(_Base):
 
                     pad_x = 7.0 * scale_x
                     pad_y = 5.0 * scale_y
-                    inner_x0 = tl.x + pad_x
-                    inner_y0 = tl.y + pad_y
+                    inner_x0 = to_visual_pdf(box.rect.topLeft()).x + pad_x
+                    inner_y0 = to_visual_pdf(box.rect.topLeft()).y + pad_y
 
                     lines = box.text.split("\n")
                     text_kw: dict[str, Any] = {
@@ -306,6 +318,15 @@ class PresentationBurnMixin(_Base):
                     else:
                         text_kw["fontname"] = "helv"
 
+                    stroke_r = max(1.2, pdf_font_size * 0.065)
+                    stroke_offsets = [
+                        (stroke_r, 0.0), (-stroke_r, 0.0), (0.0, stroke_r), (0.0, -stroke_r),
+                        (stroke_r * 0.707, stroke_r * 0.707), (-stroke_r * 0.707, stroke_r * 0.707),
+                        (stroke_r * 0.707, -stroke_r * 0.707), (-stroke_r * 0.707, -stroke_r * 0.707),
+                        (stroke_r * 0.5, 0.0), (-stroke_r * 0.5, 0.0),
+                        (0.0, stroke_r * 0.5), (0.0, -stroke_r * 0.5),
+                    ]
+
                     for li, line_txt in enumerate(lines):
                         if not line_txt:
                             continue
@@ -314,10 +335,10 @@ class PresentationBurnMixin(_Base):
                             inner_y0 + ascent_pdf + li * line_step_pdf,
                         )
                         if box.has_stroke:
-                            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)]:
+                            for dx, dy in stroke_offsets:
                                 out_vis = fitz.Point(
-                                    baseline_vis.x + dx * scale_x,
-                                    baseline_vis.y + dy * scale_y,
+                                    baseline_vis.x + dx,
+                                    baseline_vis.y + dy,
                                 )
                                 page.insert_text(
                                     out_vis * derot,

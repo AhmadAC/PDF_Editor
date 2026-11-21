@@ -30,6 +30,9 @@ _EFFECT_KEYS = (
     "outline_enabled",
     "outline_thickness",
     "outline_color",
+    "has_cloud",
+    "cloud_enabled",
+    "has_stroke",
 )
 
 

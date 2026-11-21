@@ -1,5 +1,5 @@
 # app/editor/canvas_painter1.py
-"""Canvas painter: renders pages, overlays, multi-line & multi-color text runs, drop shadows, outlines, grouped pictures, vector drawings, opacity, rotation, flips, check/cross stamps, text, notes, and strokes."""
+"""Canvas painter: renders pages, overlays, multi-line & multi-color text runs, drop shadows, outlines, cloud boxes, grouped pictures, vector drawings, opacity, rotation, flips, check/cross stamps, text, notes, and strokes."""
 
 from __future__ import annotations
 
@@ -137,9 +137,16 @@ def _draw_text_with_runs(
                 p.restore()
 
     # Pass 2: Outline Stroke
-    if effects and effects.get("outline_enabled") and float(effects.get("outline_thickness", 0.0)) > 0.0:
-        out_thick_px = float(effects.get("outline_thickness", 1.0)) * zoom
-        out_col = _to_qcolor(effects.get("outline_color", (0.0, 0.0, 0.0)))
+    has_outline = bool(
+        effects and (
+            (effects.get("outline_enabled") and float(effects.get("outline_thickness", 0.0)) > 0.0)
+            or effects.get("has_stroke")
+        )
+    )
+    if has_outline:
+        thick_val = float(effects.get("outline_thickness", 1.5)) if effects else 1.5
+        out_thick_px = max(1.0, thick_val * zoom)
+        out_col = _to_qcolor(effects.get("outline_color", (0.0, 0.0, 0.0)) if effects else (0.0, 0.0, 0.0))
         out_path = QPainterPath()
         for cur_y, rx, rf, _rc, rt in laid_out:
             out_path.addText(QPointF(rx, cur_y), rf, rt)
@@ -458,6 +465,16 @@ def _paint_overlay_body(
             ls_pdf = e.get("line_step")
             line_step_px = (float(ls_pdf) * z) if (ls_pdf and float(ls_pdf) > 0) else None
             runs = e.get("runs")
+
+            # Draw cloud background card if enabled
+            if (e.get("has_cloud") or e.get("cloud_enabled")) and r is not None:
+                p.save()
+                p.setPen(QPen(QColor(180, 180, 180, int(150 * op)), 1))
+                p.setBrush(QColor(255, 255, 255, int(153 * op)))
+                qr_cloud = QRectF(r.x0 * z - 4, yo + r.y0 * z - 4, r.width * z + 8, r.height * z + 8)
+                p.drawRoundedRect(qr_cloud, 6.0, 6.0)
+                p.restore()
+
             if (rot or flip_h or flip_v) and r is not None:
                 cx = (r.x0 + r.x1) * 0.5 * z
                 cy = yo + (r.y0 + r.y1) * 0.5 * z
@@ -524,7 +541,7 @@ def _paint_overlay_body(
         qr = QRect(int(r[0]*z) - 1, yo+int(r[1]*z) - 1,
                    max(1, int((r[2]-r[0])*z)) + 2, max(1, int((r[3]-r[1])*z)) + 2)
         orig_raw = e.get("_orig_rect")
-        has_fx = bool(e.get("shadow_enabled") or e.get("outline_enabled"))
+        has_fx = bool(e.get("shadow_enabled") or e.get("outline_enabled") or e.get("has_stroke") or e.get("has_cloud"))
         is_untouched_existing = bool(
             not force_draw
             and e.get("_existing")
@@ -561,6 +578,15 @@ def _paint_overlay_body(
             baseline_x = origin[0] * z
             baseline_y = yo + origin[1] * z
             runs = e.get("runs")
+
+            # Draw cloud background card if enabled
+            if e.get("has_cloud") or e.get("cloud_enabled"):
+                p.save()
+                p.setPen(QPen(QColor(180, 180, 180, int(150 * op)), 1))
+                p.setBrush(QColor(255, 255, 255, int(153 * op)))
+                p.drawRoundedRect(QRectF(qr.adjusted(-3, -3, 3, 3)), 6.0, 6.0)
+                p.restore()
+
             if rot or flip_h or flip_v:
                 cx = (r[0] + r[2]) * 0.5 * z
                 cy = yo + (r[1] + r[3]) * 0.5 * z

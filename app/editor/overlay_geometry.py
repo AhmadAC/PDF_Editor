@@ -127,6 +127,7 @@ def snapshot_overlay(ov: dict) -> dict:
         "shadow_enabled", "shadow_angle", "shadow_opacity",
         "shadow_distance", "shadow_thickness", "shadow_color",
         "outline_enabled", "outline_thickness", "outline_color",
+        "has_cloud", "cloud_enabled", "has_stroke",
     ):
         if k in ov:
             snap[k] = ov[k]
@@ -144,6 +145,7 @@ def restore_overlay_snapshot(ov: dict, snap: dict) -> None:
         "shadow_enabled", "shadow_angle", "shadow_opacity",
         "shadow_distance", "shadow_thickness", "shadow_color",
         "outline_enabled", "outline_thickness", "outline_color",
+        "has_cloud", "cloud_enabled", "has_stroke",
     )
     for k in mutable_keys:
         if k in snap:
