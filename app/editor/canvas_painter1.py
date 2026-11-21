@@ -1,3 +1,4 @@
+
 # app/editor/canvas_painter1.py
 """Canvas painter: renders pages, overlays, multi-line & multi-color text runs, drop shadows, outlines, cloud boxes, grouped pictures, vector drawings, opacity, rotation, flips, check/cross stamps, text, notes, and strokes."""
 
@@ -136,7 +137,7 @@ def _draw_text_with_runs(
                 p.drawImage(br.topLeft(), img)
                 p.restore()
 
-    # Pass 2: Outline Stroke
+    # Pass 2: Outline Stroke (Matching presentation mode 8-way clean offset)
     has_outline = bool(
         effects and (
             (effects.get("outline_enabled") and float(effects.get("outline_thickness", 0.0)) > 0.0)
@@ -144,18 +145,20 @@ def _draw_text_with_runs(
         )
     )
     if has_outline:
-        thick_val = float(effects.get("outline_thickness", 1.5)) if effects else 1.5
-        out_thick_px = max(1.0, thick_val * zoom)
         out_col = _to_qcolor(effects.get("outline_color", (0.0, 0.0, 0.0)) if effects else (0.0, 0.0, 0.0))
-        out_path = QPainterPath()
-        for cur_y, rx, rf, _rc, rt in laid_out:
-            out_path.addText(QPointF(rx, cur_y), rf, rt)
+        thick_val = float(effects.get("outline_thickness", 1.0)) if effects else 1.0
+        step = max(1.0, round(thick_val * zoom))
+        offsets = [
+            (-step, 0.0), (step, 0.0), (0.0, -step), (0.0, step),
+            (-step, -step), (step, step), (-step, step), (step, -step)
+        ]
         p.save()
         p.setOpacity(opacity)
-        p.strokePath(
-            out_path,
-            QPen(out_col, out_thick_px * 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin),
-        )
+        p.setPen(out_col)
+        for cur_y, rx, rf, _rc, rt in laid_out:
+            p.setFont(rf)
+            for dx, dy in offsets:
+                p.drawText(QPointF(rx + dx, cur_y + dy), rt)
         p.restore()
 
     # Pass 3: Foreground Fill Text
@@ -466,13 +469,13 @@ def _paint_overlay_body(
             line_step_px = (float(ls_pdf) * z) if (ls_pdf and float(ls_pdf) > 0) else None
             runs = e.get("runs")
 
-            # Draw cloud background card if enabled
+            # Draw cloud background card matching presentation mode: 40% white, 8px radius, NO border
             if (e.get("has_cloud") or e.get("cloud_enabled")) and r is not None:
                 p.save()
-                p.setPen(QPen(QColor(180, 180, 180, int(150 * op)), 1))
-                p.setBrush(QColor(255, 255, 255, int(153 * op)))
-                qr_cloud = QRectF(r.x0 * z - 4, yo + r.y0 * z - 4, r.width * z + 8, r.height * z + 8)
-                p.drawRoundedRect(qr_cloud, 6.0, 6.0)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(255, 255, 255, int(round(102 * op))))
+                qr_cloud = QRectF(r.x0 * z, yo + r.y0 * z, r.width * z, r.height * z)
+                p.drawRoundedRect(qr_cloud, 8.0, 8.0)
                 p.restore()
 
             if (rot or flip_h or flip_v) and r is not None:
@@ -579,12 +582,12 @@ def _paint_overlay_body(
             baseline_y = yo + origin[1] * z
             runs = e.get("runs")
 
-            # Draw cloud background card if enabled
+            # Draw cloud background card matching presentation mode: 40% white, 8px radius, NO border
             if e.get("has_cloud") or e.get("cloud_enabled"):
                 p.save()
-                p.setPen(QPen(QColor(180, 180, 180, int(150 * op)), 1))
-                p.setBrush(QColor(255, 255, 255, int(153 * op)))
-                p.drawRoundedRect(QRectF(qr.adjusted(-3, -3, 3, 3)), 6.0, 6.0)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(255, 255, 255, int(round(102 * op))))
+                p.drawRoundedRect(QRectF(qr.adjusted(-4, -4, 4, 4)), 8.0, 8.0)
                 p.restore()
 
             if rot or flip_h or flip_v:
@@ -853,3 +856,4 @@ class CanvasPainter:
                 p.setBrush(QColor(59, 130, 246, 35))
                 p.drawRect(qr)
                 _draw_selection_box(p, qr, handle_size=8, draw_handles=True, is_locked=False)
+

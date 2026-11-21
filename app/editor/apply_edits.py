@@ -1,3 +1,5 @@
+
+
 # app/editor/apply_edits.py
 """PDF_Editor – Two-phase edit-application dispatcher supporting multi-line & multi-color text runs, grouped objects, z-order, opacity, rotation, flip, and batched surgical image/drawing removal."""
 
@@ -541,29 +543,26 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
                     cx, cy = base_x, base_y
                 morph_arg = (fitz.Point(cx, cy), _build_transform_matrix(fitz, rot, flip_h, flip_v))
 
-            # Burn Cloud panel if requested
+            # Burn Cloud panel matching presentation mode: 40% white, no harsh border
             if (e.get("has_cloud") or e.get("cloud_enabled")) and e.get("rect"):
                 r_cloud = fitz.Rect(e["rect"])
                 shape_cloud = pg.new_shape()
                 shape_cloud.draw_rect(r_cloud)
                 shape_cloud.finish(
-                    color=(0.80, 0.80, 0.80),
+                    color=None,
                     fill=(1.0, 1.0, 1.0),
-                    fill_opacity=0.6 * op,
-                    stroke_opacity=0.6 * op,
-                    width=0.8,
+                    fill_opacity=0.4 * op,
+                    stroke_opacity=0.0,
                 )
                 shape_cloud.commit(overlay=overlay_flag)
 
             has_stroke = bool(e.get("has_stroke") or e.get("outline_enabled"))
-            out_thick = float(e.get("outline_thickness", max(1.2, sz * 0.065)))
             out_col = _color_value_to_rgb(e.get("outline_color", (0, 0, 0)))
+            stroke_r = max(0.65, min(1.2, sz * 0.035))
             stroke_offsets = [
-                (out_thick, 0.0), (-out_thick, 0.0), (0.0, out_thick), (0.0, -out_thick),
-                (out_thick * 0.707, out_thick * 0.707), (-out_thick * 0.707, out_thick * 0.707),
-                (out_thick * 0.707, -out_thick * 0.707), (-out_thick * 0.707, -out_thick * 0.707),
-                (out_thick * 0.5, 0.0), (-out_thick * 0.5, 0.0),
-                (0.0, out_thick * 0.5), (0.0, -out_thick * 0.5),
+                (-stroke_r, 0.0), (stroke_r, 0.0), (0.0, -stroke_r), (0.0, stroke_r),
+                (-stroke_r * 0.707, -stroke_r * 0.707), (stroke_r * 0.707, stroke_r * 0.707),
+                (-stroke_r * 0.707, stroke_r * 0.707), (stroke_r * 0.707, -stroke_r * 0.707),
             ] if has_stroke else []
 
             runs = e.get("runs")
@@ -707,3 +706,4 @@ def apply_pending_edits(doc, pending, *, warn_fn=None) -> ApplyResult:
         except Exception:
             _log.exception("subset_fonts after text edit failed")
     return result
+

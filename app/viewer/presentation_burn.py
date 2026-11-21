@@ -120,12 +120,20 @@ class PresentationBurnMixin(_Base):
                 if not box.text.strip():
                     continue
                 fm = _box_font_metrics(self._overlay, box.font_size)
-                inner_x0 = (box.rect.left() - offset_x + 7.0) * scale_x
-                inner_y0 = (box.rect.top() - offset_y + 5.0) * scale_y
-                first_baseline_y = inner_y0 + fm.ascent() * scale_y
+
+                # Outer cloud card rect matching presentation box.rect geometry
+                cloud_x0 = (box.rect.left() - offset_x) * scale_x
+                cloud_y0 = (box.rect.top() - offset_y) * scale_y
+                cloud_w = max(24.0, box.rect.width() * scale_x)
+                cloud_h = max(16.0, box.rect.height() * scale_y)
+                full_rect = fitz.Rect(cloud_x0, cloud_y0, cloud_x0 + cloud_w, cloud_y0 + cloud_h)
+
+                # Inner text baseline matching presentation inner_rect offset (7px left, 5px top)
+                inner_x0 = cloud_x0 + (7.0 * scale_x)
+                inner_y0 = cloud_y0 + (5.0 * scale_y)
+                first_baseline_y = inner_y0 + (fm.ascent() * scale_y)
                 pdf_font_size = max(4.0, float(box.font_size * dpi_ratio * scale_y))
-                box_w = max(20.0, (box.rect.width() - 14.0) * scale_x)
-                box_h = max(12.0, (box.rect.height() - 10.0) * scale_y)
+
                 col = (
                     float(box.color.redF()),
                     float(box.color.greenF()),
@@ -135,7 +143,8 @@ class PresentationBurnMixin(_Base):
                     "type": "text",
                     "page": page_idx,
                     "point": fitz.Point(inner_x0, first_baseline_y),
-                    "rect": fitz.Rect(inner_x0, inner_y0, inner_x0 + box_w, inner_y0 + box_h),
+                    "rect": full_rect,
+                    "cloud_rect": full_rect,
                     "text": box.text,
                     "size": pdf_font_size,
                     "color": col,
@@ -145,7 +154,7 @@ class PresentationBurnMixin(_Base):
                     "cloud_enabled": bool(box.has_cloud),
                     "has_stroke": bool(box.has_stroke),
                     "outline_enabled": bool(box.has_stroke),
-                    "outline_thickness": max(1.0, round(pdf_font_size * 0.065, 1)),
+                    "outline_thickness": 1.0,
                     "outline_color": (0.0, 0.0, 0.0),
                 })
                 added_any = True
@@ -266,29 +275,28 @@ class PresentationBurnMixin(_Base):
                 if not box.text.strip():
                     continue
                 try:
-                    tl = to_unrotated_pdf(box.rect.topLeft())
-                    br = to_unrotated_pdf(box.rect.bottomRight())
-                    unrot_rect = fitz.Rect(tl, br).normalize()
+                    tl_unrot = to_unrotated_pdf(box.rect.topLeft())
+                    br_unrot = to_unrotated_pdf(box.rect.bottomRight())
+                    unrot_rect = fitz.Rect(tl_unrot, br_unrot).normalize()
                     pdf_font_size = max(4.0, float(box.font_size * dpi_ratio * scale_y))
 
+                    # Pure 40% white cloud card with no harsh border, matching presentation mode
                     if box.has_cloud:
                         try:
                             shape = page.new_shape()
                             shape.draw_rect(unrot_rect)
                             shape.finish(
-                                color=(0.80, 0.80, 0.80),
+                                color=None,
                                 fill=(1.0, 1.0, 1.0),
-                                fill_opacity=0.6,
-                                stroke_opacity=0.6,
-                                width=0.8,
+                                fill_opacity=0.4,
+                                stroke_opacity=0.0,
                             )
                             shape.commit(overlay=True)
                         except Exception as e_cloud:
                             _log.debug("Shape cloud failed, using annot fallback: %s", e_cloud)
                             bg_annot = page.add_rect_annot(unrot_rect)
-                            bg_annot.set_colors(stroke=(0.8, 0.8, 0.8), fill=(1, 1, 1))
-                            bg_annot.set_border(width=0.8)
-                            bg_annot.set_opacity(0.6)
+                            bg_annot.set_colors(stroke=None, fill=(1, 1, 1))
+                            bg_annot.set_opacity(0.4)
                             bg_annot.update()
 
                     text_color = (
@@ -318,13 +326,12 @@ class PresentationBurnMixin(_Base):
                     else:
                         text_kw["fontname"] = "helv"
 
-                    stroke_r = max(1.2, pdf_font_size * 0.065)
+                    # 1px-equivalent clean outline offsets avoiding bulky bubble distortion
+                    stroke_r = max(0.65, min(1.2, pdf_font_size * 0.035))
                     stroke_offsets = [
-                        (stroke_r, 0.0), (-stroke_r, 0.0), (0.0, stroke_r), (0.0, -stroke_r),
-                        (stroke_r * 0.707, stroke_r * 0.707), (-stroke_r * 0.707, stroke_r * 0.707),
-                        (stroke_r * 0.707, -stroke_r * 0.707), (-stroke_r * 0.707, -stroke_r * 0.707),
-                        (stroke_r * 0.5, 0.0), (-stroke_r * 0.5, 0.0),
-                        (0.0, stroke_r * 0.5), (0.0, -stroke_r * 0.5),
+                        (-stroke_r, 0.0), (stroke_r, 0.0), (0.0, -stroke_r), (0.0, stroke_r),
+                        (-stroke_r * 0.707, -stroke_r * 0.707), (stroke_r * 0.707, stroke_r * 0.707),
+                        (-stroke_r * 0.707, stroke_r * 0.707), (stroke_r * 0.707, -stroke_r * 0.707),
                     ]
 
                     for li, line_txt in enumerate(lines):

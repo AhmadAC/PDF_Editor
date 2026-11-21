@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import re
 import time
 from typing import Any
@@ -78,7 +79,8 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
         self._dark_mode = bool(dark_mode)
         self._hud_last_shown_ms = 0.0
         self._viewer: Any = viewer
-        self._edit_tab: Any = None
+        self._edit_tab: Any = kwargs.get("edit_tab")
+        self._temp_source_path: str = kwargs.get("temp_source_path", "")
         self._toolbar_enabled: bool = True
 
         self._zoom: float | None = None
@@ -97,7 +99,7 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
         self._initial_top_left_pdf_y: float | None = None
 
         win = self._viewer.window() if self._viewer is not None else None
-        if win is not None and hasattr(win, "_edit_tool_idx") and hasattr(win, "stack"):
+        if self._edit_tab is None and win is not None and hasattr(win, "_edit_tool_idx") and hasattr(win, "stack"):
             edit_idx = win._edit_tool_idx()
             if getattr(win, "_current_tool", -1) == edit_idx and edit_idx >= 0:
                 candidate = win.stack.widget(edit_idx)
@@ -751,6 +753,11 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
         ):
             if tmr is not None and isValid(tmr):
                 tmr.stop()
+
+        if self._temp_source_path and os.path.isfile(self._temp_source_path):
+            with contextlib.suppress(Exception):
+                os.unlink(self._temp_source_path)
+            self._temp_source_path = ""
 
         if self._edit_tab is not None:
             if self._doc is not None:

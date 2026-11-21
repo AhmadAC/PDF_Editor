@@ -561,6 +561,10 @@ class CanvasInlineTextManager:
             self.span["flags"] = flags
             if effects is not None:
                 for k in _EFFECT_KEYS:
+                    if k in ("has_cloud", "cloud_enabled", "has_stroke"):
+                        if k in effects:
+                            self.span[k] = effects[k]
+                        continue
                     if k in effects:
                         self.span[k] = effects[k]
                     else:
@@ -594,6 +598,10 @@ class CanvasInlineTextManager:
                 ov["flags"] = flags
                 if effects is not None:
                     for k in _EFFECT_KEYS:
+                        if k in ("has_cloud", "cloud_enabled", "has_stroke"):
+                            if k in effects:
+                                ov[k] = effects[k]
+                            continue
                         if k in effects:
                             ov[k] = effects[k]
                         else:
@@ -815,7 +823,7 @@ class CanvasInlineTextManager:
                 for k in _EFFECT_KEYS:
                     if k in cur_effects:
                         target_ov[k] = cur_effects[k]
-                    else:
+                    elif k not in ("has_cloud", "cloud_enabled", "has_stroke"):
                         target_ov.pop(k, None)
                 if runs_to_store:
                     target_ov["runs"] = runs_to_store
