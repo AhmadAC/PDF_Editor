@@ -61,12 +61,14 @@ class ManageTabsActionsMixin(_Base):
         _viewer_by_id: dict[int, Any]
         _thumb_cache: dict[str, QPixmap]
         _current_sort_mode: str
+        _sort_asc_next: bool
         _preview_popup: _PagePreviewPopup | None
         _last_popup_closed_ms: float
         _last_popup_closed_vid: int | None
         search_input: QLineEdit
         list_widget: QListWidget
         btn_top_sort: QPushButton
+        btn_sort_toggle: QPushButton
         btn_jump: QPushButton
         btn_rename: QPushButton
         btn_duplicate: QPushButton
@@ -75,6 +77,8 @@ class ManageTabsActionsMixin(_Base):
         btn_move_down: QPushButton
         btn_move_top: QPushButton
         btn_move_bottom: QPushButton
+
+        def _set_sort_toggle_state(self, asc_next: bool) -> None: ...
 
     def _on_preview_popup_closed(self, viewer_id: int | None) -> None:
         self._last_popup_closed_ms = time.monotonic() * 1000.0
@@ -339,6 +343,12 @@ class ManageTabsActionsMixin(_Base):
             return
 
         self._current_sort_mode = mode
+
+        if hasattr(self, "_set_sort_toggle_state"):
+            if mode == "name_asc":
+                self._set_sort_toggle_state(asc_next=False)
+            elif mode == "name_desc":
+                self._set_sort_toggle_state(asc_next=True)
 
         new_order = list(range(total_viewers))
         for slot_pos, item_info in zip(target_indices, items_to_sort):

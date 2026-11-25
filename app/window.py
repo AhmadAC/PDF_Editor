@@ -1,5 +1,5 @@
 # app/window.py
-"""PDF_Editor – MainWindow: application main window facade with Alt+P Command Palette and Selection Pane integration."""
+"""PDF_Editor – MainWindow: application main window facade with Alt+P Command Palette, History, and Selection Pane integration."""
 
 from __future__ import annotations
 
@@ -205,6 +205,8 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         self._manage_tabs_btn.clicked.connect(self._show_manage_tabs_dialog)
         self._right_pane_toggle_btn.clicked.connect(self._toggle_right_pane)
         self._open_pdf_btn.clicked.connect(self._open_pdf)
+        self._open_pdf_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._open_pdf_btn.customContextMenuRequested.connect(lambda _: self._show_recent_files_menu())
         self._toc_top_btn.clicked.connect(self._toggle_pages_sidebar)
         self._night_top_btn.clicked.connect(self._toggle_night_mode_top)
         self._print_top_btn.clicked.connect(lambda: self._viewer._print_pdf() if self._viewer else None)

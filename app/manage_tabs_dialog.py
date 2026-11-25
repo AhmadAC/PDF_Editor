@@ -79,6 +79,7 @@ class ManageTabsDialog(ManageTabsActionsMixin, QDialog):
         self._viewer_by_id: dict[int, Any] = {}
         self._thumb_cache: dict[str, QPixmap] = {}
         self._current_sort_mode: str = ""
+        self._sort_asc_next: bool = True
         self._preview_popup: _PagePreviewPopup | None = None
         self._last_popup_closed_ms: float = 0.0
         self._last_popup_closed_vid: int | None = None
@@ -178,15 +179,10 @@ class ManageTabsDialog(ManageTabsActionsMixin, QDialog):
 
         btn_col.addSpacing(4)
 
-        self.btn_sort_az = _make_action_btn("Sort (A → Z)", SVG_SORT)
-        self.btn_sort_az.setToolTip("Sort all sheets alphabetically A to Z (natural numerical sort)")
-        self.btn_sort_az.clicked.connect(lambda: self._sort_tabs("name_asc"))
-        btn_col.addWidget(self.btn_sort_az)
-
-        self.btn_sort_za = _make_action_btn("Sort (Z → A)", SVG_SORT)
-        self.btn_sort_za.setToolTip("Sort all sheets alphabetically Z to A (reverse natural numerical sort)")
-        self.btn_sort_za.clicked.connect(lambda: self._sort_tabs("name_desc"))
-        btn_col.addWidget(self.btn_sort_za)
+        self.btn_sort_toggle = _make_action_btn("Sort (A → Z)", SVG_SORT)
+        self.btn_sort_toggle.setToolTip("Sort all sheets alphabetically (A → Z / Z → A toggle)")
+        self.btn_sort_toggle.clicked.connect(self._toggle_sort_name)
+        btn_col.addWidget(self.btn_sort_toggle)
 
         self.btn_sort_menu = _make_action_btn("Sort Options ▾", SVG_SORT)
         self.btn_sort_menu.setToolTip("Additional sorting options: Page count, unsaved first, reverse")
@@ -226,6 +222,23 @@ class ManageTabsDialog(ManageTabsActionsMixin, QDialog):
 
         root.addLayout(bottom_h)
         self.search_input.setFocus()
+
+    def _set_sort_toggle_state(self, asc_next: bool) -> None:
+        self._sort_asc_next = asc_next
+        if asc_next:
+            self.btn_sort_toggle.setText("Sort (A → Z)")
+            self.btn_sort_toggle.setToolTip("Sort all sheets alphabetically A to Z (click to toggle)")
+        else:
+            self.btn_sort_toggle.setText("Sort (Z → A)")
+            self.btn_sort_toggle.setToolTip("Sort all sheets alphabetically Z to A (click to toggle)")
+
+    def _toggle_sort_name(self) -> None:
+        if getattr(self, "_sort_asc_next", True):
+            self._sort_tabs("name_asc")
+            self._set_sort_toggle_state(asc_next=False)
+        else:
+            self._sort_tabs("name_desc")
+            self._set_sort_toggle_state(asc_next=True)
 
     def _apply_theme(self):
         dark = self._dark

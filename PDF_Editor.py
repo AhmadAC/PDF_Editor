@@ -4,7 +4,9 @@ import ctypes
 import importlib.util
 import logging
 import os
+import re
 import sys
+from functools import wraps
 from pathlib import Path
 
 # Configure environment for native KDE Plasma 6 / Dolphin file picker dialogs on Linux / Fedora Kinoite
@@ -29,6 +31,122 @@ if str(PROJECT_ROOT) not in sys.path:
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QImageReader
 from PySide6.QtWidgets import QApplication, QMessageBox
+
+
+def _clean_action_text(text: str) -> str:
+    """Strips mnemonic '&' prefixes while preserving escaped '&&' and standalone ' & ' as '&'."""
+    return re.sub(r'&&|&(?=\S)', lambda m: '&' if m.group(0) == '&&' else '', text)
+
+
+_AMPERSAND_FIX_INSTALLED = False
+
+
+def install_global_ampersand_fix() -> None:
+    """Globally strips mnemonic '&' prefixes across PySide6 actions, menus, buttons, tabs, and group boxes."""
+    global _AMPERSAND_FIX_INSTALLED
+    if _AMPERSAND_FIX_INSTALLED:
+        return
+
+    from PySide6 import QtGui, QtWidgets
+
+    def _clean_kwargs(kwargs: dict) -> dict:
+        for kw in ("text", "title", "label"):
+            if kw in kwargs and isinstance(kwargs[kw], str):
+                kwargs[kw] = _clean_action_text(kwargs[kw])
+        return kwargs
+
+    def _clean_text_or_icon_text(args: tuple, kwargs: dict):
+        if args:
+            if isinstance(args[0], str):
+                args = (_clean_action_text(args[0]),) + args[1:]
+            elif len(args) > 1 and isinstance(args[0], QIcon) and isinstance(args[1], str):
+                args = (args[0], _clean_action_text(args[1])) + args[2:]
+        return args, _clean_kwargs(kwargs)
+
+    def _clean_after_one_arg(args: tuple, kwargs: dict):
+        if len(args) > 1:
+            if isinstance(args[1], str):
+                args = (args[0], _clean_action_text(args[1])) + args[2:]
+            elif len(args) > 2 and isinstance(args[1], QIcon) and isinstance(args[2], str):
+                args = (args[0], args[1], _clean_action_text(args[2])) + args[3:]
+        return args, _clean_kwargs(kwargs)
+
+    def _clean_after_two_args(args: tuple, kwargs: dict):
+        if len(args) > 2:
+            if isinstance(args[2], str):
+                args = (args[0], args[1], _clean_action_text(args[2])) + args[3:]
+            elif len(args) > 3 and isinstance(args[2], QIcon) and isinstance(args[3], str):
+                args = (args[0], args[1], args[2], _clean_action_text(args[3])) + args[4:]
+        return args, _clean_kwargs(kwargs)
+
+    def _wrap_method(cls, method_name: str, cleaner) -> None:
+        if cls is None or method_name not in cls.__dict__:
+            return
+        orig = cls.__dict__[method_name]
+        if getattr(orig, "_ampersand_fixed", False):
+            return
+
+        @wraps(orig)
+        def wrapper(self, *args, **kwargs):
+            args, kwargs = cleaner(args, kwargs)
+            return orig(self, *args, **kwargs)
+
+        wrapper._ampersand_fixed = True
+        setattr(cls, method_name, wrapper)
+
+    # Actions
+    QAction = getattr(QtGui, "QAction", None)
+    for m in ("__init__", "setText", "setIconText"):
+        _wrap_method(QAction, m, _clean_text_or_icon_text)
+
+    # Buttons
+    for cls_name in (
+        "QAbstractButton",
+        "QPushButton",
+        "QCheckBox",
+        "QRadioButton",
+        "QToolButton",
+        "QCommandLinkButton",
+    ):
+        cls = getattr(QtWidgets, cls_name, None)
+        for m in ("__init__", "setText"):
+            _wrap_method(cls, m, _clean_text_or_icon_text)
+
+    # Menus, menu bars, toolbars, and widget actions
+    QMenu = getattr(QtWidgets, "QMenu", None)
+    for m in ("__init__", "setTitle", "addAction", "addMenu"):
+        _wrap_method(QMenu, m, _clean_text_or_icon_text)
+
+    QMenuBar = getattr(QtWidgets, "QMenuBar", None)
+    for m in ("addAction", "addMenu"):
+        _wrap_method(QMenuBar, m, _clean_text_or_icon_text)
+
+    _wrap_method(getattr(QtWidgets, "QToolBar", None), "addAction", _clean_text_or_icon_text)
+    _wrap_method(getattr(QtWidgets, "QWidget", None), "addAction", _clean_text_or_icon_text)
+
+    # Tabs
+    QTabBar = getattr(QtWidgets, "QTabBar", None)
+    _wrap_method(QTabBar, "addTab", _clean_text_or_icon_text)
+    _wrap_method(QTabBar, "insertTab", _clean_after_one_arg)
+    _wrap_method(QTabBar, "setTabText", _clean_after_one_arg)
+
+    QTabWidget = getattr(QtWidgets, "QTabWidget", None)
+    _wrap_method(QTabWidget, "addTab", _clean_after_one_arg)
+    _wrap_method(QTabWidget, "insertTab", _clean_after_two_args)
+    _wrap_method(QTabWidget, "setTabText", _clean_after_one_arg)
+
+    # Group boxes & dialog buttons
+    QGroupBox = getattr(QtWidgets, "QGroupBox", None)
+    for m in ("__init__", "setTitle"):
+        _wrap_method(QGroupBox, m, _clean_text_or_icon_text)
+
+    _wrap_method(QMessageBox, "addButton", _clean_text_or_icon_text)
+    _wrap_method(getattr(QtWidgets, "QDialogButtonBox", None), "addButton", _clean_text_or_icon_text)
+
+    _AMPERSAND_FIX_INSTALLED = True
+
+
+install_global_ampersand_fix()
 
 # Fast non-importing dependency availability checks
 if importlib.util.find_spec("pypdf") is None:
