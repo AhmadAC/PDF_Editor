@@ -1,7 +1,7 @@
 
 
 # app/viewer/presentation.py
-"""PDF_Editor – Presentation mode facade: fullscreen single-page viewer with transitions, auto-advance, and annotation sync."""
+"""PDF_Editor – Presentation mode facade: fullscreen single-page viewer (standalone or split-embedded) with transitions, auto-advance, and annotation sync."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import re
 import time
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer, QPoint
+from PySide6.QtCore import Qt, QTimer, QPoint, Signal
 from PySide6.QtGui import QPixmap, QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import QWidget, QLabel, QApplication, QMenu
 from shiboken6 import isValid
@@ -58,6 +58,8 @@ _PALETTE_HOTKEYS = {
 class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin, PresentationBurnMixin, QWidget):
     """Fullscreen presentation viewer with PowerPoint/Edge-style annotation HUD, page transitions, and right-click toolbar toggle."""
 
+    close_requested = Signal()
+
     def __init__(
         self,
         path: str,
@@ -69,8 +71,12 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
         *args: Any,
         **kwargs: Any,
     ) -> None:
-        super().__init__()
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        super().__init__(kwargs.get("parent"))
+        self._embedded = bool(kwargs.get("embedded", False))
+        self._cleaned_up = False
+        if not self._embedded:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
         self._path = path
         self._password = password
         self._current = start_page
@@ -101,7 +107,7 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
         self._initial_top_left_pdf_y: float | None = None
 
         win = self._viewer.window() if self._viewer is not None else None
-        if self._edit_tab is None and win is not None and hasattr(win, "_edit_tool_idx") and hasattr(win, "stack"):
+        if not self._embedded and self._edit_tab is None and win is not None and hasattr(win, "_edit_tool_idx") and hasattr(win, "stack"):
             edit_idx = win._edit_tool_idx()
             if getattr(win, "_current_tool", -1) == edit_idx and edit_idx >= 0:
                 candidate = win.stack.widget(edit_idx)
@@ -131,7 +137,7 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
                     self._current = edit_canvas.page_at_y(sb_v.value())
 
                 norm_zoom = getattr(edit_canvas, "_zoom", None)
-                if norm_zoom and norm_zoom > 0:
+                if norm_zoom and norm_zoom > 0 and not self._embedded:
                     self._zoom = float(norm_zoom)
                 norm_zf = getattr(edit_canvas, "_zoom_factor", 1.0)
                 if norm_zf and norm_zf > 0:
@@ -158,7 +164,7 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
                 self._page_crops = dict(getattr(canvas, "_page_crops", {}))
 
                 norm_zoom = getattr(canvas, "_zoom", None)
-                if norm_zoom and norm_zoom > 0:
+                if norm_zoom and norm_zoom > 0 and not self._embedded:
                     self._zoom = float(norm_zoom)
                 norm_zf = getattr(canvas, "_zoom_factor", 1.0)
                 if norm_zf and norm_zf > 0:
@@ -238,12 +244,13 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
         self._hud_hide_timer.setSingleShot(True)
         self._hud_hide_timer.timeout.connect(self._on_hud_hide)
 
-        self.setWindowFlags(Qt.WindowType.Window)
+        if not self._embedded:
+            self.setWindowFlags(Qt.WindowType.Window)
+            self.setWindowState(Qt.WindowState.WindowFullScreen)
         self.setStyleSheet("background: #000000;")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.BlankCursor)
-        self.setWindowState(Qt.WindowState.WindowFullScreen)
 
         for seq, fn in [
             ("Ctrl++", self._zoom_in),
@@ -347,7 +354,7 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
         menu.addSeparator()
 
         act_exit = menu.addAction(svg_icon(SVG_CLOSE, color="#EF4444", size=15), "End Presentation\tEsc")
-        act_exit.triggered.connect(lambda _=False: self.close())
+        act_exit.triggered.connect(lambda _=False: self.close_requested.emit() if self._embedded else self.close())
 
         if hasattr(e, "globalPos"):
             global_pt = e.globalPos()
@@ -378,15 +385,21 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
             screen = self.screen() or QApplication.primaryScreen()
             geom = screen.geometry()
             dpr = screen.devicePixelRatio() or 1.0
-            sw = float(self.width()) if self.width() > 100 else float(geom.width())
-            sh = float(self.height()) if self.height() > 100 else float(geom.height())
+            if self._embedded:
+                sw = float(self.width()) if self.width() > 50 else float(geom.width()) / 2.0
+                sh = float(self.height()) if self.height() > 50 else float(geom.height())
+            else:
+                sw = float(self.width()) if self.width() > 100 else float(geom.width())
+                sh = float(self.height()) if self.height() > 100 else float(geom.height())
 
             eff_w = page.rect.height if rot in (90, 270) else page.rect.width
             eff_h = page.rect.width if rot in (90, 270) else page.rect.height
             eff_w = max(1.0, eff_w)
             eff_h = max(1.0, eff_h)
 
-            if self._edit_tab is not None and hasattr(self._edit_tab, "_canvas"):
+            if self._embedded:
+                self._base_fit_zoom = sw / eff_w
+            elif self._edit_tab is not None and hasattr(self._edit_tab, "_canvas"):
                 base_avail = float(getattr(self._edit_tab._canvas, "_base_avail", 0) or 0)
                 self._base_fit_zoom = (base_avail / eff_w) if base_avail > 100 else (sw / eff_w)
             elif self._viewer is not None and hasattr(self._viewer, "_canvas"):
@@ -435,7 +448,8 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
                 top_left_pdf_y = self._initial_top_left_pdf_y or 0.0
                 self._pan_x = -int(round(top_left_pdf_x * zoom))
                 self._pan_y = -int(round(top_left_pdf_y * zoom))
-                if self.isVisible() and self.width() > 300:
+                min_ready_w = 100 if self._embedded else 300
+                if self.isVisible() and self.width() > min_ready_w:
                     self._initial_top_left_pdf_x = None
                     self._initial_top_left_pdf_y = None
 
@@ -650,7 +664,11 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
             return
 
         if key == Qt.Key.Key_Escape:
-            self.close()
+            if self._embedded:
+                self.close_requested.emit()
+                e.accept()
+            else:
+                self.close()
         elif key == Qt.Key.Key_Right:
             if self._current < self._total - 1:
                 self._go_to_page(self._current + 1, align_bottom=False)
@@ -677,6 +695,7 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
             self._go_to_page(self._total - 1)
 
     def mousePressEvent(self, e):
+        self.setFocus()
         pw = getattr(self, "_rendered_pw", float(self.width()))
         ph = getattr(self, "_rendered_ph", float(self.height()))
         can_pan = (pw > float(self.width()) or ph > float(self.height()))
@@ -732,14 +751,20 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
     def resizeEvent(self, _):
         if not self._ready:
             return
+        if self._embedded:
+            self._zoom = None
         if isValid(self._overlay):
             self._overlay.setGeometry(self.rect())
         if isValid(self._hud):
             self._hud.reposition()
         self._update_counter()
-        QTimer.singleShot(0, lambda: self._render(transition=False))
+        QTimer.singleShot(0, lambda: self._render(transition=False) if isValid(self) else None)
 
-    def closeEvent(self, event):
+    def commit_and_cleanup(self) -> None:
+        if getattr(self, "_cleaned_up", False):
+            return
+        self._cleaned_up = True
+
         any_modified = False
         try:
             if self._edit_tab is not None:
@@ -781,13 +806,12 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
                 if win and hasattr(win, "_update_undo_redo_buttons"):
                     with contextlib.suppress(Exception):
                         win._update_undo_redo_buttons()
-            super().closeEvent(event)
             return
 
         doc_to_save = self._doc if (any_modified and self._doc is not None) else None
         viewer: Any = getattr(self, "_viewer", None)
 
-        if viewer is not None:
+        if viewer is not None and not self._embedded:
             canvas = getattr(viewer, "_canvas", None)
             if canvas is not None:
                 try:
@@ -811,7 +835,7 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
                     self._doc.close()
                 self._doc = None
 
-        if viewer is not None:
+        if viewer is not None and not self._embedded:
             canvas = getattr(viewer, "_canvas", None)
             if canvas is not None:
                 try:
@@ -824,5 +848,7 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
                 except Exception as e:
                     _log.warning("Failed to layout normal view on exit: %s", e)
 
+    def closeEvent(self, event):
+        self.commit_and_cleanup()
         super().closeEvent(event)
 

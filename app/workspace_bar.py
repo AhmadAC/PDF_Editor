@@ -1,6 +1,7 @@
 
 # app/workspace_bar.py
-"""PDF_Editor – WorkspaceBar: top toolbar for workspace actions and navigation using SVG icons."""
+"""PDF_Editor – WorkspaceBar: top toolbar for workspace actions, split screen, and navigation using SVG icons."""
+
 from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QLabel, QPushButton, QLineEdit, QSizePolicy, QToolTip
@@ -25,9 +26,11 @@ from app.utils import (
     SVG_ROTATE_LEFT,
     SVG_ROTATE_RIGHT,
     SVG_SEARCH,
+    SVG_SPLIT_SCREEN,
     SVG_SUN,
     SVG_TH_LARGE,
     SVG_TV,
+    SVG_UNSPLIT_SCREEN,
     SVG_ZOOM_IN,
     SVG_ZOOM_OUT,
     _paint_bg,
@@ -128,7 +131,7 @@ class WorkspaceBar(QWidget):
             btn.setToolTip(tip)
             btn.setAccessibleName(tip)
 
-        # ── Left Side: App Sidebar Toggle, Pages Sidebar Toggle & Manage Tabs ──────
+        # ── Left Side: App Sidebar Toggle, Pages Sidebar Toggle, Split Screen & Manage Tabs ──────
         self._sidebar_toggle_btn = QPushButton()
         self._ico_bars = svg_icon(SVG_BARS, color=TEXT_PRI, size=15)
         self._sidebar_toggle_btn.setIcon(self._ico_bars)
@@ -155,6 +158,15 @@ class WorkspaceBar(QWidget):
         self._manage_tabs_btn.setIconSize(QSize(15, 15))
         _a11y(self._manage_tabs_btn, "Manage & Switch Tabs (Ctrl+Shift+T)")
         layout.addWidget(self._manage_tabs_btn)
+
+        self._split_btn = QPushButton()
+        self._ico_split = svg_icon(SVG_SPLIT_SCREEN, color=TEXT_PRI, size=15)
+        self._split_btn.setIcon(self._ico_split)
+        self._split_btn.setObjectName("viewer_nav_btn")
+        self._split_btn.setFixedSize(28, 28)
+        self._split_btn.setIconSize(QSize(15, 15))
+        _a11y(self._split_btn, "Split Screen (Side-by-Side View) (Ctrl+\\)")
+        layout.addWidget(self._split_btn)
 
         self._breadcrumb = ElidedLabel("")
         self._breadcrumb.setObjectName("workspace_title")
@@ -372,6 +384,15 @@ class WorkspaceBar(QWidget):
     def paintEvent(self, event):
         _paint_bg(self)
 
+    def set_split_active(self, active: bool, dark: bool):
+        bar_color = TEXT_PRI if dark else _LP
+        if active:
+            self._split_btn.setIcon(svg_icon(SVG_UNSPLIT_SCREEN, color=ACCENT, size=15))
+            self._split_btn.setToolTip("Unsplit Screen (Close Split View) (Ctrl+\\)")
+        else:
+            self._split_btn.setIcon(svg_icon(SVG_SPLIT_SCREEN, color=bar_color, size=15))
+            self._split_btn.setToolTip("Split Screen (Side-by-Side View) (Ctrl+\\)")
+
     def update_theme(self, dark: bool, sidebar_collapsed: bool = False):
         bar_color = TEXT_PRI if dark else _LP
         self._ico_bars = svg_icon(SVG_BARS, color=bar_color, size=15)
@@ -381,6 +402,16 @@ class WorkspaceBar(QWidget):
         self._sidebar_toggle_btn.setIcon(self._ico_bars)
         self._pages_toggle_btn.setIcon(self._ico_pages)
         self._manage_tabs_btn.setIcon(self._ico_manage_tabs)
+
+        win = self.window()
+        is_split = getattr(win, "_split_active", False) if win else False
+        if is_split:
+            self._split_btn.setIcon(svg_icon(SVG_UNSPLIT_SCREEN, color=ACCENT, size=15))
+            self._split_btn.setToolTip("Unsplit Screen (Close Split View) (Ctrl+\\)")
+        else:
+            self._split_btn.setIcon(svg_icon(SVG_SPLIT_SCREEN, color=bar_color, size=15))
+            self._split_btn.setToolTip("Split Screen (Side-by-Side View) (Ctrl+\\)")
+
         self._right_pane_toggle_btn.setIcon(svg_icon(SVG_COLUMNS, color=bar_color, size=15))
         self._open_pdf_btn.setIcon(svg_icon(SVG_FOLDER, color=bar_color, size=15))
         self._toc_top_btn.setIcon(svg_icon(SVG_BOOKMARK, color=bar_color, size=15))
@@ -401,3 +432,4 @@ class WorkspaceBar(QWidget):
         self._last_pg_btn.setIcon(svg_icon(SVG_DOUBLE_RIGHT, color=bar_color, size=15))
 
         self._theme_btn.setIcon(svg_icon(SVG_SUN if dark else SVG_MOON, color="#FBBF24" if dark else ACCENT, size=15))
+

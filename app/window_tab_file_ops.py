@@ -1,3 +1,4 @@
+
 # app/window_tab_file_ops.py
 """PDF_Editor – Tab disk file operations: Rename on Disk and Delete from Disk with lock release."""
 
@@ -110,7 +111,6 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
     ps_map = getattr(win, "_pipeline_state", {})
     ps = ps_map.get(id(viewer)) if isinstance(ps_map, dict) else None
 
-    # If the file hasn't been written to disk yet (e.g. freshly generated watermarked tab)
     if not file_exists_on_disk:
         if ps is not None:
             ps["original_path"] = new_path
@@ -118,6 +118,8 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
         viewer._name_lbl.setText(f"* {new_name}")
         win._tab_bar.setTabText(tab_idx, f"* {new_name}")
         win._tab_bar.setTabToolTip(tab_idx, f"{new_path} (unsaved)")
+        if hasattr(win, "_refresh_secondary_tab_combo"):
+            win._refresh_secondary_tab_combo()
         if hasattr(win, "_update_breadcrumb"):
             win._update_breadcrumb()
         if viewer is getattr(win, "_viewer", None) and hasattr(win, "setWindowTitle"):
@@ -129,7 +131,6 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
             win._sb.showMessage(msg)
         return
 
-    # File exists on disk - perform full disk rename releasing locks
     curr_viewer_path = viewer.current_path()
     viewer_holds_disk_file = bool(
         curr_viewer_path and os.path.normcase(os.path.normpath(os.path.abspath(curr_viewer_path))) == os.path.normcase(os.path.normpath(os.path.abspath(disk_path)))
@@ -219,6 +220,8 @@ def rename_tab_file_on_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) -> N
             with contextlib.suppress(Exception):
                 ref()
 
+    if hasattr(win, "_refresh_secondary_tab_combo"):
+        win._refresh_secondary_tab_combo()
     if hasattr(win, "_update_breadcrumb"):
         win._update_breadcrumb()
     if viewer is getattr(win, "_viewer", None) and hasattr(win, "setWindowTitle"):
@@ -273,3 +276,4 @@ def delete_tab_file_from_disk(win: Any, tab_idx: int, viewer: PdfViewerPanel) ->
         win._set_status(msg)
     elif hasattr(win, "_sb"):
         win._sb.showMessage(msg)
+

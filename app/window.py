@@ -1,6 +1,5 @@
-
 # app/window.py
-"""PDF_Editor – MainWindow: application main window facade with Alt+P Command Palette, History, and Selection Pane integration."""
+"""PDF_Editor – MainWindow: application main window facade with Split Screen, Alt+P Command Palette, History, and Selection Pane integration."""
 
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ from PySide6.QtGui import (
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSplitter,
+    QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSplitter,
     QStackedWidget, QStatusBar, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget
 )
 from shiboken6 import isValid
@@ -34,7 +33,7 @@ from app.viewer.canvas_1 import _SelectCanvas
 from app.viewer.panel import PdfViewerPanel
 from app.viewer.panel_page_ops import cleanup_page_clipboard
 from app.viewer.thumbnails import ThumbnailPanel
-from app.widgets import DropFileEdit
+from app.widgets import DropFileEdit, MultiDropWidget
 from app.window_actions import (
     WindowActionsMixin as _WindowActionsMixin,
     _has_dirty_user_pending,
@@ -174,6 +173,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         self._sidebar_toggle_btn = wb._sidebar_toggle_btn
         self._pages_toggle_btn = wb._pages_toggle_btn
         self._manage_tabs_btn = wb._manage_tabs_btn
+        self._split_btn = wb._split_btn
         self._right_pane_toggle_btn = wb._right_pane_toggle_btn
         self._breadcrumb = wb._breadcrumb
         self._open_pdf_btn = wb._open_pdf_btn
@@ -204,6 +204,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         self._sidebar_toggle_btn.clicked.connect(self._toggle_sidebar)
         self._pages_toggle_btn.clicked.connect(self._toggle_pages_sidebar)
         self._manage_tabs_btn.clicked.connect(self._show_manage_tabs_dialog)
+        self._split_btn.clicked.connect(self._toggle_split_screen)
         self._right_pane_toggle_btn.clicked.connect(self._toggle_right_pane)
         self._open_pdf_btn.clicked.connect(self._open_pdf)
         self._open_pdf_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -236,6 +237,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         main_h = QHBoxLayout(body)
         main_h.setContentsMargins(10, 10, 10, 0)
         main_h.setSpacing(0)
+        self._body_layout = main_h
 
         self._sidebar = QWidget()
         self._sidebar.setObjectName("sidebar")
@@ -422,10 +424,27 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         self._tab_bar.setVisible(False)
         tab_row.addWidget(self._tab_bar, 1)
 
+        # Split screen container: hosts primary viewer stack on the left and secondary split viewer on the right
+        self._viewer_split_container = QSplitter(Qt.Orientation.Horizontal)
+        self._viewer_split_container.setObjectName("viewer_split_container")
+        self._viewer_split_container.setHandleWidth(2)
+        self._viewer_split_container.setChildrenCollapsible(False)
+
         self._viewer_stack = QStackedWidget()
         self._viewers: list[PdfViewerPanel] = []
+        self._viewer_split_container.addWidget(self._viewer_stack)
+
+        self._secondary_container = QWidget()
+        self._secondary_container.setObjectName("secondary_split_container")
+        self._secondary_container.setVisible(False)
+        self._viewer_split_container.addWidget(self._secondary_container)
+
+        self._viewer_split_container.setStretchFactor(0, 1)
+        self._viewer_split_container.setStretchFactor(1, 1)
+
+        self._setup_secondary_container()
         self._add_viewer_tab()
-        tc_lay.addWidget(self._viewer_stack, 1)
+        tc_lay.addWidget(self._viewer_split_container, 1)
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
         self._splitter.setHandleWidth(1)
@@ -480,6 +499,8 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         QShortcut(QKeySequence("Alt+P"), self, self._show_command_palette)
         QShortcut(QKeySequence("Ctrl+Shift+P"), self, self._show_command_palette)
         QShortcut(QKeySequence("Ctrl+Shift+T"), self, self._show_manage_tabs_dialog)
+        QShortcut(QKeySequence("Ctrl+\\"), self, self._toggle_split_screen)
+        QShortcut(QKeySequence("Ctrl+|"), self, self._toggle_split_screen)
         QShortcut(QKeySequence("F5"), self, self._start_presentation)
         sc_alt1 = QShortcut(QKeySequence("Alt+1"), self, self._start_presentation)
         sc_alt1.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -558,6 +579,27 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
     def _show_command_palette(self):
         """Build actions list and present the Alt+P Command Palette."""
         commands: list[dict[str, Any]] = [
+            {
+                "name": "Split Screen (Side-by-Side View)",
+                "category": "View",
+                "action": self._toggle_split_screen,
+                "shortcut": "Ctrl+\\",
+                "icon": svg_for_name("split-screen", ACCENT, 18),
+            },
+            {
+                "name": "Unsplit Screen (Close Split View)",
+                "category": "View",
+                "action": self.unsplit_screen,
+                "shortcut": "Ctrl+\\",
+                "icon": svg_for_name("unsplit-screen", ACCENT, 18),
+            },
+            {
+                "name": "Swap Split Sides (Left <-> Right)",
+                "category": "View",
+                "action": self.swap_split_panes,
+                "shortcut": "",
+                "icon": svg_for_name("fa5s.exchange-alt", ACCENT, 18),
+            },
             {
                 "name": "Reset PDF (Delete All Text, Drawings & Edits)",
                 "category": "Edit",
@@ -873,6 +915,13 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
             if sig is not None and hasattr(sig, "connect"):
                 sig.connect(handler)
 
+    def keyPressEvent(self, event):
+        if getattr(self, "_fullscreen", False) and event.key() == Qt.Key.Key_Escape:
+            self._toggle_fullscreen()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def closeEvent(self, event):
         for v in self._viewers:
             if self._viewer_has_unsaved(v):
@@ -917,6 +966,8 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
                                 edit_w.auto_load(st_path)
                                 if getattr(edit_w, "_user_pending", None) or (hasattr(edit_w, "_history") and edit_w._history.has_page_ops()):
                                     edit_w._run()
+        if getattr(self, "_split_active", False):
+            self.unsplit_screen()
         for v in list(self._viewers):
             self._cleanup_pipeline(id(v))
         cleanup_page_clipboard()

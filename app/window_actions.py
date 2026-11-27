@@ -1,4 +1,4 @@
-
+#################### START OF FILE: app/window_actions.py ####################
 
 # app/window_actions.py
 """PDF_Editor – WindowActionsMixin facade: navigation, themes, unsaved dirty indicators, presentation mode, reset, and viewer UI interactions."""
@@ -38,6 +38,7 @@ from app.nav_config import NAV_ITEMS, _NAV_KEYS
 from app.styles import STYLE, STYLE_LIGHT
 from app.utils import SVG_MOON, SVG_SUN, _make_palette, show_error, svg_for_name, svg_icon
 from app.viewer.presentation import PresentationWidget
+from app.viewer.split_presentation import SplitPresentationWidget
 from app.widgets import DropFileEdit, MultiDropWidget
 from app.window_nav_page import WindowNavPageMixin
 from app.window_recent_menu import WindowRecentMenuMixin
@@ -68,6 +69,7 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
         _tab_bar: _ViewerTabBar
         _viewers: list[PdfViewerPanel]
         _viewer: PdfViewerPanel | None
+        _viewer_stack: QStackedWidget
         _current_tool: int
         _saved_right_width: int
         _right_tool_container: QWidget
@@ -104,12 +106,16 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
         _lang_btn: QPushButton
         _toc_top_btn: QPushButton
         _night_top_btn: QPushButton
-        _presentation: PresentationWidget | None
+        _presentation: PresentationWidget | SplitPresentationWidget | None
         _dark_mode: bool
         _qapp: QApplication
         _workspace_bar: WorkspaceBar
         _sb: QStatusBar
         _fullscreen: bool
+        _secondary_header: QWidget
+        _secondary_viewer: PdfViewerPanel | None
+        _split_active: bool
+        _body_layout: QHBoxLayout
 
         def _get_or_create_tool(self, index: int) -> QWidget | None: ...
         def _add_viewer_tab(self, path: str = ...) -> PdfViewerPanel: ...
@@ -538,19 +544,49 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
 
     def _toggle_fullscreen(self):
         self._fullscreen = not self._fullscreen
+        body_h = getattr(self, "_body_layout", None)
         if self._fullscreen:
             self._workspace_bar.setVisible(False)
             self._sidebar.setVisible(False)
             self._sb.setVisible(False)
+            self._tab_bar.setVisible(False)
+            if hasattr(self, "_secondary_header") and getattr(self, "_split_active", False):
+                self._secondary_header.setVisible(False)
+            if body_h is not None:
+                body_h.setContentsMargins(0, 0, 0, 0)
             self.showFullScreen()
         else:
             self._workspace_bar.setVisible(True)
             if not self._sidebar_collapsed:
                 self._sidebar.setVisible(True)
             self._sb.setVisible(True)
+            self._update_tab_bar_visibility()
+            if hasattr(self, "_secondary_header") and getattr(self, "_split_active", False):
+                self._secondary_header.setVisible(True)
+            if body_h is not None:
+                body_h.setContentsMargins(10, 10, 10, 0)
             self.showMaximized()
+        self._relayout_viewer()
 
     def _start_presentation(self):
+        if getattr(self, "_split_active", False) and getattr(self, "_secondary_viewer", None) is not None:
+            v_prim = self._viewer_stack.currentWidget()
+            v_sec = self._secondary_viewer
+            if v_prim and v_sec:
+                try:
+                    split_pres = SplitPresentationWidget(
+                        v_prim, v_sec, dark_mode=self._dark_mode, parent=self
+                    )
+                    split_pres.destroyed.connect(
+                        lambda _=None, w=split_pres: setattr(self, "_presentation", None) if getattr(self, "_presentation", None) is w else None
+                    )
+                    self._presentation = split_pres
+                    self._presentation.show()
+                    return
+                except Exception as e:
+                    show_error(self, e)
+                    return
+
         edit_idx = self._edit_tool_idx()
         in_edit_mode = (self._current_tool == edit_idx)
         edit_w: Any = self._get_or_create_tool(edit_idx) if in_edit_mode else None
@@ -742,5 +778,3 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
         pres = getattr(self, "_presentation", None)
         if pres is not None and isValid(pres):
             pres.update_theme(self._dark_mode)
-
-

@@ -1,3 +1,4 @@
+
 # app/styles.py
 
 """PDF_Editor – stylesheet strings (dark + light themes)."""
@@ -343,6 +344,21 @@ QSplitter::handle {{ background: {BORDER}; width: 1px; }}
 }}
 #theme_btn:hover {{ background: #4F5254; border-color: {ACCENT}; }}
 
+/* ── Split Screen Secondary Container ────────────────────────────────── */
+#secondary_split_container {{
+    background: {BG_INNER};
+    border-left: 1px solid {BORDER};
+}}
+#secondary_split_header {{
+    background: #202020;
+    border-bottom: 1px solid #3A3A3A;
+    border-left: 1px solid #3A3A3A;
+}}
+#secondary_split_header QLabel {{
+    color: {TEXT_PRI};
+    background: transparent;
+}}
+
 /* ── Tab bar container & Tabs (Dark Mode) ────────────────────────────── */
 #tab_bar_container {{
     background: #202020; border-bottom: 1px solid #3A3A3A; min-height: 36px;
@@ -657,6 +673,21 @@ QSplitter::handle {{ background: {_LO}; width: 1px; }}
     padding: 0; min-width: 28px; max-width: 28px; min-height: 28px; max-height: 28px; color: {_LP};
 }}
 #theme_btn:hover {{ background: #E2E8F0; border-color: {_LA}; }}
+
+/* ── Split Screen Secondary Container ────────────────────────────────── */
+#secondary_split_container {{
+    background: {_LN};
+    border-left: 1px solid {_LO};
+}}
+#secondary_split_header {{
+    background: #E8EEF3;
+    border-bottom: 1px solid #CBD5E1;
+    border-left: 1px solid #CBD5E1;
+}}
+#secondary_split_header QLabel {{
+    color: {_LP};
+    background: transparent;
+}}
 
 /* ── Tab bar container & Tabs (Light Mode) ────────────────────────────── */
 #tab_bar_container {{

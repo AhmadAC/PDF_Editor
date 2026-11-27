@@ -1,3 +1,4 @@
+
 # app/utils.py
 """PDF_Editor – Utility facade re-exporting SVG icons, font resolution, compression, and UI helpers."""
 
@@ -71,6 +72,7 @@ from app.utils_svg import (
     SVG_SEARCH,
     SVG_SIGNATURE,
     SVG_SORT,
+    SVG_SPLIT_SCREEN,
     SVG_STAMP,
     SVG_STICKY_NOTE,
     SVG_SUN,
@@ -81,6 +83,7 @@ from app.utils_svg import (
     SVG_TH_LARGE,
     SVG_TRASH,
     SVG_TV,
+    SVG_UNSPLIT_SCREEN,
     SVG_UPLOAD,
     SVG_VECTOR_SQUARE,
     SVG_ZOOM_IN,
@@ -152,8 +155,8 @@ __all__ = [
     "SVG_EYE", "SVG_POINTER", "SVG_FONT", "SVG_IMAGE", "SVG_HIGHLIGHTER", "SVG_VECTOR_SQUARE",
     "SVG_STICKY_NOTE", "SVG_CLIPBOARD_LIST", "SVG_SIGNATURE", "SVG_PEN", "SVG_ERASER",
     "SVG_BOLD", "SVG_ITALIC", "SVG_PLUS", "SVG_MINUS", "SVG_PLUS_CIRCLE", "SVG_DOT_CIRCLE",
-    "SVG_FILE_ALT", "SVG_FILE_CODE", "SVG_BOOK", "SVG_MANAGE_TABS", "ICON_SVGS", "_TOOL_SVGS",
-    "svg_pixmap", "svg_icon", "svg_for_name",
+    "SVG_FILE_ALT", "SVG_FILE_CODE", "SVG_BOOK", "SVG_MANAGE_TABS", "SVG_SPLIT_SCREEN",
+    "SVG_UNSPLIT_SCREEN", "ICON_SVGS", "_TOOL_SVGS", "svg_pixmap", "svg_icon", "svg_for_name",
 
     # Font Discovery
     "find_system_font_file", "get_system_font_families",
@@ -171,3 +174,4 @@ __all__ = [
     "is_dark", "error_color", "success_color", "result_label_style",
     "setup_logging", "show_error",
 ]
+

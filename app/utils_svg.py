@@ -1,4 +1,3 @@
-
 # app/utils_svg.py
 """PDF_Editor – Inline SVG vector assets and icon rendering utilities."""
 
@@ -93,6 +92,8 @@ SVG_BOOK = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="
 SVG_MANAGE_TABS = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 3v6"/><circle cx="6" cy="6" r="0.8" fill="{color}"/></svg>"""
 SVG_ARROW_TO_TOP = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="4" x2="20" y2="4"/><polyline points="7 13 12 8 17 13"/><line x1="12" y1="8" x2="12" y2="20"/></svg>"""
 SVG_ARROW_TO_BOTTOM = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="20" x2="20" y2="20"/><polyline points="7 11 12 16 17 11"/><line x1="12" y1="16" x2="12" y2="4"/></svg>"""
+SVG_SPLIT_SCREEN = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/></svg>"""
+SVG_UNSPLIT_SCREEN = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="9 9 12 12 15 9"/><polyline points="9 15 12 12 15 15"/></svg>"""
 
 ICON_SVGS = {
     "fa5s.stamp": SVG_STAMP,
@@ -167,6 +168,8 @@ ICON_SVGS = {
     "fa5s.plus-circle": SVG_PLUS_CIRCLE,
     "fa5s.dot-circle": SVG_DOT_CIRCLE,
     "manage-tabs": SVG_MANAGE_TABS,
+    "split-screen": SVG_SPLIT_SCREEN,
+    "unsplit-screen": SVG_UNSPLIT_SCREEN,
 }
 
 _TOOL_SVGS = ICON_SVGS

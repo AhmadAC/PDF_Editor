@@ -1,3 +1,4 @@
+
 # app/window_pipeline.py
 """PDF_Editor – Pipeline processing, Save As, Save As Copy, read-only fallback, and security wiping mixin."""
 from __future__ import annotations
@@ -169,7 +170,7 @@ class WindowPipelineMixin(_Base):
             self._pipeline_state[vid] = ps
         ps["temp_path"] = temp_path
         viewer.load(temp_path, _is_history_step=True)
-        idx = self._viewer_stack.currentIndex()
+        idx = self._viewers.index(viewer) if viewer in self._viewers else self._viewer_stack.currentIndex()
         orig_name = os.path.basename(ps["original_path"])
         self._tab_bar.setTabText(idx, f"* {orig_name}")
         self._tab_bar.setTabToolTip(idx, f"{ps['original_path']} (modified)")
@@ -272,7 +273,7 @@ class WindowPipelineMixin(_Base):
         self._cleanup_pipeline(vid)
         viewer.load(path, target_page=cur_page, target_scroll=scroll_val, selected_pages=cur_selected, _is_history_step=True)
         viewer._original_doc_path = path
-        idx = self._viewer_stack.currentIndex()
+        idx = self._viewers.index(viewer) if viewer in self._viewers else self._viewer_stack.currentIndex()
         base_name = os.path.basename(path)
         self._tab_bar.setTabText(idx, base_name)
         self._tab_bar.setTabToolTip(idx, path)
@@ -445,3 +446,4 @@ class WindowPipelineMixin(_Base):
         holders += list(self._viewers)
         for holder in holders:
             self._wipe_password_holder(holder)
+

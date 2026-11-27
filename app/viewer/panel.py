@@ -1,5 +1,4 @@
 
-
 # app/viewer/panel.py
 """PDF_Editor – PdfViewerPanel: PDF viewer with drag & drop, text selection, SVG icons, signatures, and thumbnail multi-page actions."""
 import contextlib
@@ -14,7 +13,6 @@ from PySide6.QtWidgets import (
     QScrollArea, QFrame, QLineEdit, QSplitter, QTabWidget,
     QTreeWidget, QTextEdit
 )
-from PySide6.QtGui import QKeySequence, QShortcut
 
 from app.constants import TEXT_SEC
 from app.i18n import t, _CONFIG_PATH
@@ -58,6 +56,7 @@ class PdfViewerPanel(PanelHistoryMixin, PanelPageOpsMixin, PanelSearchPrintMixin
         self._original_doc_path = ""
         self._fitz_doc = None
         self._pdf_password = ""
+        self._scrollbars_hidden = False
 
         self._undo_stack: list[dict] = []
         self._redo_stack: list[dict] = []
@@ -325,10 +324,35 @@ class PdfViewerPanel(PanelHistoryMixin, PanelPageOpsMixin, PanelSearchPrintMixin
         self._pending_search_query = ""
 
         # Shortcuts (Correctly scoped context)
+        from PySide6.QtGui import QKeySequence, QShortcut
         sc_find = QShortcut(QKeySequence("Ctrl+F"), self, self._toggle_search)
         sc_find.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         sc_esc = QShortcut(QKeySequence("Escape"), self._search_input, self._close_search)
         sc_esc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+
+    def set_scrollbars_hidden(self, hidden: bool) -> None:
+        """Make scrollbars invisible (used in split screen mode) while preserving wheel and keyboard scrolling."""
+        self._scrollbars_hidden = bool(hidden)
+        if hidden:
+            qss = (
+                "QScrollBar:vertical, QScrollBar:horizontal {"
+                "  width: 0px; height: 0px; max-width: 0px; max-height: 0px;"
+                "  margin: 0px; padding: 0px; border: none; background: transparent;"
+                "}"
+            )
+            self._canvas_scroll.setStyleSheet(qss)
+            if hasattr(self, "_thumbnails") and hasattr(self._thumbnails, "_view"):
+                self._thumbnails._view.setStyleSheet(qss)
+            if hasattr(self, "_toc_tree"):
+                self._toc_tree.setStyleSheet(qss)
+        else:
+            self._canvas_scroll.setStyleSheet("")
+            if hasattr(self, "_thumbnails") and hasattr(self._thumbnails, "_view"):
+                self._thumbnails._view.setStyleSheet("")
+            if hasattr(self, "_toc_tree"):
+                self._toc_tree.setStyleSheet("")
+        if hasattr(self, "_canvas") and getattr(self._canvas, "_doc", None):
+            QTimer.singleShot(0, self._canvas._on_viewport_resized)
 
     def _select_all_text(self) -> None:
         """Trigger select-all on the active canvas or focused text edit."""
