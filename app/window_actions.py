@@ -1,4 +1,3 @@
-#################### START OF FILE: app/window_actions.py ####################
 
 # app/window_actions.py
 """PDF_Editor – WindowActionsMixin facade: navigation, themes, unsaved dirty indicators, presentation mode, reset, and viewer UI interactions."""
@@ -113,6 +112,8 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
         _sb: QStatusBar
         _fullscreen: bool
         _secondary_header: QWidget
+        _left_viewer: PdfViewerPanel | None
+        _right_viewer: PdfViewerPanel | None
         _secondary_viewer: PdfViewerPanel | None
         _split_active: bool
         _body_layout: QHBoxLayout
@@ -569,13 +570,16 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
         self._relayout_viewer()
 
     def _start_presentation(self):
-        if getattr(self, "_split_active", False) and getattr(self, "_secondary_viewer", None) is not None:
-            v_prim = self._viewer_stack.currentWidget()
-            v_sec = self._secondary_viewer
-            if v_prim and v_sec:
+        if getattr(self, "_split_active", False):
+            v_left = getattr(self, "_left_viewer", None) or (
+                self._viewer_stack.currentWidget() if hasattr(self, "_viewer_stack") else None
+            )
+            v_right = getattr(self, "_right_viewer", None) or getattr(self, "_secondary_viewer", None)
+
+            if v_left is not None and v_right is not None and v_left is not v_right:
                 try:
                     split_pres = SplitPresentationWidget(
-                        v_prim, v_sec, dark_mode=self._dark_mode, parent=self
+                        v_left, v_right, dark_mode=self._dark_mode, parent=self
                     )
                     split_pres.destroyed.connect(
                         lambda _=None, w=split_pres: setattr(self, "_presentation", None) if getattr(self, "_presentation", None) is w else None

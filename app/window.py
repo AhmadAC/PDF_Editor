@@ -1,3 +1,5 @@
+
+
 # app/window.py
 """PDF_Editor – MainWindow: application main window facade with Split Screen, Alt+P Command Palette, History, and Selection Pane integration."""
 

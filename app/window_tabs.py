@@ -221,6 +221,8 @@ class WindowTabsMixin(_Base):
         _secondary_viewer_lay: QVBoxLayout
         _split_active: bool
         _active_split_pane: str
+        _left_viewer: PdfViewerPanel | None
+        _right_viewer: PdfViewerPanel | None
         _secondary_viewer: PdfViewerPanel | None
         _updating_sec_combo: bool
         _fullscreen: bool
@@ -245,11 +247,15 @@ class WindowTabsMixin(_Base):
 
     @property
     def _viewer(self) -> PdfViewerPanel | None:
+        if getattr(self, "_split_active", False):
+            if getattr(self, "_active_split_pane", "left") == "right":
+                if getattr(self, "_right_viewer", None) is not None:
+                    return self._right_viewer
+            else:
+                if getattr(self, "_left_viewer", None) is not None:
+                    return self._left_viewer
+
         if hasattr(self, "_viewers") and self._viewers:
-            if getattr(self, "_split_active", False) and getattr(self, "_active_split_pane", "left") == "right":
-                sec_v = getattr(self, "_secondary_viewer", None)
-                if sec_v is not None:
-                    return sec_v
             w = self._viewer_stack.currentWidget()
             if isinstance(w, PdfViewerPanel):
                 return w
@@ -263,6 +269,8 @@ class WindowTabsMixin(_Base):
         """Create the Firefox-style right pane container for split screen view."""
         self._split_active = False
         self._active_split_pane = "left"
+        self._left_viewer = None
+        self._right_viewer = None
         self._secondary_viewer = None
         self._updating_sec_combo = False
 
@@ -329,7 +337,7 @@ class WindowTabsMixin(_Base):
             def eventFilter(self, watched, event):
                 if event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.FocusIn):
                     if getattr(win_self, "_split_active", False):
-                        if getattr(win_self, "_secondary_viewer", None) is target_viewer:
+                        if getattr(win_self, "_right_viewer", None) is target_viewer:
                             win_self._set_active_split_pane("right")
                         else:
                             win_self._set_active_split_pane("left")
@@ -363,7 +371,7 @@ class WindowTabsMixin(_Base):
         v_prim = self._viewers[primary_idx]
         v_sec = self._viewers[secondary_idx]
 
-        if getattr(self, "_split_active", False) and getattr(self, "_secondary_viewer", None) is v_sec:
+        if getattr(self, "_split_active", False) and getattr(self, "_right_viewer", None) is v_sec:
             self._set_active_split_pane("right")
             return
 
@@ -372,10 +380,14 @@ class WindowTabsMixin(_Base):
 
         self._split_active = True
         self._active_split_pane = "left"
+        self._left_viewer = v_prim
+        self._right_viewer = v_sec
         self._secondary_viewer = v_sec
 
         self._viewer_stack.removeWidget(v_sec)
         self._viewer_stack.setCurrentWidget(v_prim)
+
+        v_sec.setParent(self._secondary_viewer_holder)
         self._secondary_viewer_lay.addWidget(v_sec)
         v_sec.show()
 
@@ -411,32 +423,39 @@ class WindowTabsMixin(_Base):
         if not getattr(self, "_split_active", False):
             return
 
-        v_sec = getattr(self, "_secondary_viewer", None)
-        if v_sec is not None:
-            self._secondary_viewer_lay.removeWidget(v_sec)
-            v_sec.hide()
+        r_v = getattr(self, "_right_viewer", None) or getattr(self, "_secondary_viewer", None)
+        if r_v is not None:
+            self._secondary_viewer_lay.removeWidget(r_v)
+            r_v.hide()
 
         for i, v in enumerate(self._viewers):
+            v.setParent(self._viewer_stack)
             if self._viewer_stack.indexOf(v) != i:
                 if self._viewer_stack.indexOf(v) != -1:
                     self._viewer_stack.removeWidget(v)
                 self._viewer_stack.insertWidget(i, v)
             v.set_scrollbars_hidden(False)
 
+        active_to_keep = self._left_viewer or self._viewer_stack.currentWidget()
+
         self._secondary_container.setVisible(False)
         self._split_active = False
+        self._left_viewer = None
+        self._right_viewer = None
         self._secondary_viewer = None
         self._active_split_pane = "left"
 
         if hasattr(self, "_workspace_bar") and hasattr(self._workspace_bar, "set_split_active"):
             self._workspace_bar.set_split_active(False, self._dark_mode)
 
-        cur_idx = self._tab_bar.currentIndex()
-        if 0 <= cur_idx < len(self._viewers):
-            cur_v = self._viewers[cur_idx]
-            self._viewer_stack.setCurrentWidget(cur_v)
-            if hasattr(cur_v._canvas, "_on_viewport_resized"):
-                QTimer.singleShot(10, cur_v._canvas._on_viewport_resized)
+        if active_to_keep in self._viewers:
+            self._viewer_stack.setCurrentWidget(active_to_keep)
+            cur_idx = self._viewers.index(active_to_keep)
+            self._tab_bar.blockSignals(True)
+            self._tab_bar.setCurrentIndex(cur_idx)
+            self._tab_bar.blockSignals(False)
+            if hasattr(active_to_keep._canvas, "_on_viewport_resized"):
+                QTimer.singleShot(10, active_to_keep._canvas._on_viewport_resized)
 
         self._update_tab_bar_visibility()
         self._update_page_nav()
@@ -445,42 +464,49 @@ class WindowTabsMixin(_Base):
 
     def swap_split_panes(self) -> None:
         """Swap the positions of the left and right split screen panes."""
-        if not getattr(self, "_split_active", False) or getattr(self, "_secondary_viewer", None) is None:
+        if not getattr(self, "_split_active", False):
             return
 
-        v_sec = self._secondary_viewer
-        v_prim = self._viewer_stack.currentWidget()
-        if not isinstance(v_prim, PdfViewerPanel) or v_sec is None or v_prim is v_sec:
+        old_left = getattr(self, "_left_viewer", None) or self._viewer_stack.currentWidget()
+        old_right = getattr(self, "_right_viewer", None) or getattr(self, "_secondary_viewer", None)
+
+        if not isinstance(old_left, PdfViewerPanel) or not isinstance(old_right, PdfViewerPanel) or old_left is old_right:
             return
 
-        prim_stack_idx = self._viewer_stack.indexOf(v_prim)
+        self._secondary_viewer_lay.removeWidget(old_right)
+        self._viewer_stack.removeWidget(old_left)
 
-        self._secondary_viewer_lay.removeWidget(v_sec)
-        self._viewer_stack.removeWidget(v_prim)
+        old_right.setParent(self._viewer_stack)
+        self._viewer_stack.addWidget(old_right)
+        self._viewer_stack.setCurrentWidget(old_right)
+        old_right.show()
 
-        self._viewer_stack.insertWidget(max(0, prim_stack_idx), v_sec)
-        self._viewer_stack.setCurrentWidget(v_sec)
-        v_sec.show()
+        old_left.setParent(self._secondary_viewer_holder)
+        self._secondary_viewer_lay.addWidget(old_left)
+        old_left.show()
 
-        self._secondary_viewer_lay.addWidget(v_prim)
-        v_prim.show()
-        self._secondary_viewer = v_prim
+        self._left_viewer = old_right
+        self._right_viewer = old_left
+        self._secondary_viewer = old_left
 
-        active_v = self._secondary_viewer if getattr(self, "_active_split_pane", "left") == "right" else v_sec
-        if active_v in self._viewers:
-            a_idx = self._viewers.index(active_v)
+        old_left.set_scrollbars_hidden(True)
+        old_right.set_scrollbars_hidden(True)
+
+        if self._left_viewer in self._viewers:
+            left_tab_idx = self._viewers.index(self._left_viewer)
             self._tab_bar.blockSignals(True)
-            self._tab_bar.setCurrentIndex(a_idx)
+            self._tab_bar.setCurrentIndex(left_tab_idx)
             self._tab_bar.blockSignals(False)
 
         self._refresh_secondary_tab_combo()
 
-        if hasattr(v_prim._canvas, "_on_viewport_resized"):
-            QTimer.singleShot(10, v_prim._canvas._on_viewport_resized)
-        if hasattr(v_sec._canvas, "_on_viewport_resized"):
-            QTimer.singleShot(10, v_sec._canvas._on_viewport_resized)
+        if hasattr(old_left._canvas, "_on_viewport_resized"):
+            QTimer.singleShot(0, old_left._canvas._on_viewport_resized)
+        if hasattr(old_right._canvas, "_on_viewport_resized"):
+            QTimer.singleShot(0, old_right._canvas._on_viewport_resized)
 
-        if active_v is not None:
+        active_v = self._viewer
+        if active_v and hasattr(active_v, "_canvas"):
             self._setup_zoom_bar(True, canvas=active_v._canvas)
         self._update_page_nav()
         self._update_breadcrumb()
@@ -495,16 +521,15 @@ class WindowTabsMixin(_Base):
             return
         self._active_split_pane = side
 
-        if side == "right" and getattr(self, "_secondary_viewer", None) is not None:
-            if self._secondary_viewer in self._viewers:
-                sec_idx = self._viewers.index(self._secondary_viewer)
+        if side == "right" and getattr(self, "_right_viewer", None) is not None:
+            if self._right_viewer in self._viewers:
+                sec_idx = self._viewers.index(self._right_viewer)
                 self._tab_bar.blockSignals(True)
                 self._tab_bar.setCurrentIndex(sec_idx)
                 self._tab_bar.blockSignals(False)
-        elif side == "left":
-            cur_left = self._viewer_stack.currentWidget()
-            if cur_left in self._viewers:
-                left_idx = self._viewers.index(cur_left)
+        elif side == "left" and getattr(self, "_left_viewer", None) is not None:
+            if self._left_viewer in self._viewers:
+                left_idx = self._viewers.index(self._left_viewer)
                 self._tab_bar.blockSignals(True)
                 self._tab_bar.setCurrentIndex(left_idx)
                 self._tab_bar.blockSignals(False)
@@ -516,10 +541,8 @@ class WindowTabsMixin(_Base):
             self._sec_title_lbl.setStyleSheet(f"font-weight: 700; font-size: 9.5pt; color: {active_col};")
 
         active_v = self._viewer
-        if active_v:
-            canvas = getattr(active_v, "_canvas", None)
-            if canvas:
-                self._setup_zoom_bar(True, canvas=canvas)
+        if active_v and hasattr(active_v, "_canvas"):
+            self._setup_zoom_bar(True, canvas=active_v._canvas)
         self._update_page_nav()
         self._update_breadcrumb()
         self._sync_edit_dirty_indicator()
@@ -530,7 +553,7 @@ class WindowTabsMixin(_Base):
         self._updating_sec_combo = True
         self._sec_tab_combo.clear()
 
-        cur_sec = getattr(self, "_secondary_viewer", None)
+        cur_sec = getattr(self, "_right_viewer", None) or getattr(self, "_secondary_viewer", None)
         selected_idx = -1
 
         for i, v in enumerate(self._viewers):
@@ -552,45 +575,36 @@ class WindowTabsMixin(_Base):
         if not getattr(self, "_split_active", False):
             return
         target_viewer = self._sec_tab_combo.itemData(combo_idx)
-        if target_viewer is None or target_viewer is getattr(self, "_secondary_viewer", None):
+        if target_viewer is None or target_viewer is getattr(self, "_right_viewer", None):
             return
 
-        v_prim = self._viewer_stack.currentWidget()
-        if v_prim is target_viewer:
+        if target_viewer is getattr(self, "_left_viewer", None):
             self.swap_split_panes()
             return
 
         if target_viewer not in self._viewers:
             return
 
-        old_sec = self._secondary_viewer
-        if old_sec is not None:
-            self._secondary_viewer_lay.removeWidget(old_sec)
-            old_sec.hide()
-            if old_sec in self._viewers:
-                idx_old = self._viewers.index(old_sec)
-                self._viewer_stack.insertWidget(min(idx_old, self._viewer_stack.count()), old_sec)
+        old_right = self._right_viewer
+        if old_right is not None:
+            self._secondary_viewer_lay.removeWidget(old_right)
+            old_right.setParent(self._viewer_stack)
+            self._viewer_stack.addWidget(old_right)
+            old_right.hide()
 
         if self._viewer_stack.indexOf(target_viewer) != -1:
             self._viewer_stack.removeWidget(target_viewer)
 
+        self._right_viewer = target_viewer
         self._secondary_viewer = target_viewer
+        target_viewer.setParent(self._secondary_viewer_holder)
         self._secondary_viewer_lay.addWidget(target_viewer)
         target_viewer.set_scrollbars_hidden(True)
         target_viewer.show()
 
-        if isinstance(v_prim, PdfViewerPanel) and self._viewer_stack.indexOf(v_prim) != -1:
-            self._viewer_stack.setCurrentWidget(v_prim)
-
-        if getattr(self, "_active_split_pane", "left") == "right" and target_viewer in self._viewers:
-            t_idx = self._viewers.index(target_viewer)
-            self._tab_bar.blockSignals(True)
-            self._tab_bar.setCurrentIndex(t_idx)
-            self._tab_bar.blockSignals(False)
-
         self._refresh_secondary_tab_combo()
         if hasattr(target_viewer._canvas, "_on_viewport_resized"):
-            QTimer.singleShot(10, target_viewer._canvas._on_viewport_resized)
+            QTimer.singleShot(0, target_viewer._canvas._on_viewport_resized)
         self._update_page_nav()
         self._update_breadcrumb()
         self._sync_edit_dirty_indicator()
@@ -769,7 +783,11 @@ class WindowTabsMixin(_Base):
                             run_fn()
 
         if getattr(self, "_split_active", False):
-            if getattr(self, "_secondary_viewer", None) is viewer or len(self._viewers) <= 2:
+            if (
+                getattr(self, "_right_viewer", None) is viewer
+                or getattr(self, "_left_viewer", None) is viewer
+                or len(self._viewers) <= 2
+            ):
                 self.unsplit_screen()
 
         closed_norm = {os.path.normcase(os.path.normpath(os.path.abspath(p))) for p in (closed_path, orig_path) if p}
@@ -854,7 +872,7 @@ class WindowTabsMixin(_Base):
     def _on_tab_changed(self, index: int) -> None:
         if 0 <= index < len(self._viewers):
             viewer = self._viewers[index]
-            if getattr(self, "_split_active", False) and getattr(self, "_secondary_viewer", None) is viewer:
+            if getattr(self, "_split_active", False) and getattr(self, "_right_viewer", None) is viewer:
                 self._set_active_split_pane("right")
             else:
                 if getattr(self, "_split_active", False):
@@ -1153,4 +1171,6 @@ class WindowTabsMixin(_Base):
             event.acceptProposedAction()
             return
         super().dropEvent(event)
+
+
 
