@@ -283,8 +283,8 @@ def main():
         app_icon = QIcon(str(icon_file))
         app.setWindowIcon(app_icon)
 
-    app.setApplicationName(" ")
-    app.setApplicationDisplayName(" ")
+    app.setApplicationName("")
+    app.setApplicationDisplayName("")
     app.setStyle("Fusion")
     dark = _load_dark_pref()
     app.setPalette(_make_palette(dark))

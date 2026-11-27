@@ -1,6 +1,5 @@
-
 # app/window_actions.py
-"""PDF_Editor – WindowActionsMixin facade: navigation, themes, unsaved dirty indicators, presentation mode, reset, and viewer UI interactions."""
+"""PDF_Editor – WindowActionsMixin facade: navigation, themes, titlebar formatting, unsaved dirty indicators, presentation mode, reset, and viewer UI interactions."""
 
 from __future__ import annotations
 
@@ -60,12 +59,13 @@ def _has_dirty_user_pending(pending_list: list) -> bool:
 
 
 class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsRouterMixin, _Base):
-    """Facade orchestrating zoom actions, theme switching, dirty indicators, presentation launch, reset, and file drag-and-drop."""
+    """Facade orchestrating zoom actions, theme switching, clean title formatting, dirty indicators, presentation launch, reset, and file drag-and-drop."""
 
     if TYPE_CHECKING:
         stack: QStackedWidget
         nav: QListWidget
         _tab_bar: _ViewerTabBar
+        _tab_bar_container: QWidget
         _viewers: list[PdfViewerPanel]
         _viewer: PdfViewerPanel | None
         _viewer_stack: QStackedWidget
@@ -111,7 +111,6 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
         _workspace_bar: WorkspaceBar
         _sb: QStatusBar
         _fullscreen: bool
-        _secondary_header: QWidget
         _left_viewer: PdfViewerPanel | None
         _right_viewer: PdfViewerPanel | None
         _secondary_viewer: PdfViewerPanel | None
@@ -198,9 +197,9 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
 
         if hasattr(self, "setWindowTitle"):
             if active_name:
-                self.setWindowTitle(f"{t('app.name')} - {'* ' if active_dirty else ''}{active_name}")
+                self.setWindowTitle(f"PDF_Editor - {'* ' if active_dirty else ''}{active_name}")
             else:
-                self.setWindowTitle(t("app.name"))
+                self.setWindowTitle("PDF_Editor")
         self._update_breadcrumb()
 
     def _handle_global_reset(self) -> None:
@@ -551,8 +550,8 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
             self._sidebar.setVisible(False)
             self._sb.setVisible(False)
             self._tab_bar.setVisible(False)
-            if hasattr(self, "_secondary_header") and getattr(self, "_split_active", False):
-                self._secondary_header.setVisible(False)
+            if hasattr(self, "_tab_bar_container"):
+                self._tab_bar_container.setVisible(False)
             if body_h is not None:
                 body_h.setContentsMargins(0, 0, 0, 0)
             self.showFullScreen()
@@ -562,18 +561,19 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
                 self._sidebar.setVisible(True)
             self._sb.setVisible(True)
             self._update_tab_bar_visibility()
-            if hasattr(self, "_secondary_header") and getattr(self, "_split_active", False):
-                self._secondary_header.setVisible(True)
             if body_h is not None:
                 body_h.setContentsMargins(10, 10, 10, 0)
             self.showMaximized()
         self._relayout_viewer()
+        QTimer.singleShot(50, self._relayout_viewer)
 
     def _start_presentation(self):
         if getattr(self, "_split_active", False):
-            v_left = getattr(self, "_left_viewer", None) or (
-                self._viewer_stack.currentWidget() if hasattr(self, "_viewer_stack") else None
-            )
+            v_left = getattr(self, "_left_viewer", None)
+            if v_left is None and hasattr(self, "_viewer_stack"):
+                w = self._viewer_stack.currentWidget()
+                if isinstance(w, PdfViewerPanel):
+                    v_left = w
             v_right = getattr(self, "_right_viewer", None) or getattr(self, "_secondary_viewer", None)
 
             if v_left is not None and v_right is not None and v_left is not v_right:

@@ -1,13 +1,14 @@
 
 # app/window_tabs.py
-"""PDF_Editor – Tab management, split-screen viewing (side-by-side like Firefox), unsaved edit checks, and multi-viewer window mixin."""
+"""PDF_Editor – Tab management, clean side-by-side split screen without header offsets, unsaved edit checks, and multi-viewer window mixin."""
 
 from __future__ import annotations
 
+from ctypes import cast
 import os
 import shutil
 import sys
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import (
     QByteArray,
@@ -194,12 +195,14 @@ class _ViewerTabBar(QTabBar):
 
 
 class WindowTabsMixin(_Base):
-    """Mixin for MainWindow managing viewer tabs, split screen, document routing, and tab lifecycle."""
+    """Mixin for MainWindow managing viewer tabs, seamless side-by-side split screen, document routing, and tab lifecycle."""
 
     if TYPE_CHECKING:
         _viewers: list[PdfViewerPanel]
         _viewer_stack: QStackedWidget
         _tab_bar: _ViewerTabBar
+        _tab_bar_container: QWidget
+        _tab_bar_layout: QHBoxLayout
         stack: QStackedWidget
         nav: Any
         _right_tool_container: QWidget
@@ -212,11 +215,6 @@ class WindowTabsMixin(_Base):
         _workspace_bar: Any
         _viewer_split_container: QSplitter
         _secondary_container: QWidget
-        _secondary_header: QWidget
-        _sec_title_lbl: QLabel
-        _sec_tab_combo: FocusComboBox
-        _sec_swap_btn: QPushButton
-        _sec_close_btn: QPushButton
         _secondary_viewer_holder: QWidget
         _secondary_viewer_lay: QVBoxLayout
         _split_active: bool
@@ -224,7 +222,6 @@ class WindowTabsMixin(_Base):
         _left_viewer: PdfViewerPanel | None
         _right_viewer: PdfViewerPanel | None
         _secondary_viewer: PdfViewerPanel | None
-        _updating_sec_combo: bool
         _fullscreen: bool
 
         def _set_status(self, msg: str) -> None: ...
@@ -266,62 +263,26 @@ class WindowTabsMixin(_Base):
         return None
 
     def _setup_secondary_container(self) -> None:
-        """Create the Firefox-style right pane container for split screen view."""
+        """Create the secondary container for split screen view with zero header offset so both PDFs align at identical height."""
         self._split_active = False
         self._active_split_pane = "left"
         self._left_viewer = None
         self._right_viewer = None
         self._secondary_viewer = None
-        self._updating_sec_combo = False
 
         sec_lay = QVBoxLayout(self._secondary_container)
         sec_lay.setContentsMargins(0, 0, 0, 0)
         sec_lay.setSpacing(0)
-
-        self._secondary_header = QWidget()
-        self._secondary_header.setObjectName("secondary_split_header")
-        self._secondary_header.setFixedHeight(34)
-        sec_hdr_lay = QHBoxLayout(self._secondary_header)
-        sec_hdr_lay.setContentsMargins(8, 2, 8, 2)
-        sec_hdr_lay.setSpacing(6)
-
-        self._sec_title_lbl = QLabel("Split View")
-        self._sec_title_lbl.setStyleSheet("font-weight: 700; font-size: 9.5pt;")
-        sec_hdr_lay.addWidget(self._sec_title_lbl)
-
-        self._sec_tab_combo = FocusComboBox()
-        self._sec_tab_combo.setMinimumWidth(160)
-        self._sec_tab_combo.setFixedHeight(26)
-        self._sec_tab_combo.currentIndexChanged.connect(self._on_secondary_tab_combo_changed)
-        sec_hdr_lay.addWidget(self._sec_tab_combo, 1)
-
-        self._sec_swap_btn = QPushButton()
-        self._sec_swap_btn.setObjectName("viewer_nav_btn")
-        self._sec_swap_btn.setFixedSize(26, 26)
-        self._sec_swap_btn.setIcon(svg_icon(SVG_SWAP, color=TEXT_PRI, size=14))
-        self._sec_swap_btn.setIconSize(QSize(14, 14))
-        self._sec_swap_btn.setToolTip("Swap Split Sides (Left <-> Right)")
-        self._sec_swap_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._sec_swap_btn.clicked.connect(self.swap_split_panes)
-        sec_hdr_lay.addWidget(self._sec_swap_btn)
-
-        self._sec_close_btn = QPushButton()
-        self._sec_close_btn.setObjectName("viewer_nav_btn")
-        self._sec_close_btn.setFixedSize(26, 26)
-        self._sec_close_btn.setIcon(svg_icon(SVG_CLOSE, color="#EF4444", size=14))
-        self._sec_close_btn.setIconSize(QSize(14, 14))
-        self._sec_close_btn.setToolTip("Unsplit Screen (Close Split View)")
-        self._sec_close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._sec_close_btn.clicked.connect(self.unsplit_screen)
-        sec_hdr_lay.addWidget(self._sec_close_btn)
-
-        sec_lay.addWidget(self._secondary_header)
 
         self._secondary_viewer_holder = QWidget()
         self._secondary_viewer_lay = QVBoxLayout(self._secondary_viewer_holder)
         self._secondary_viewer_lay.setContentsMargins(0, 0, 0, 0)
         self._secondary_viewer_lay.setSpacing(0)
         sec_lay.addWidget(self._secondary_viewer_holder, 1)
+
+    def _refresh_secondary_tab_combo(self) -> None:
+        """Compatibility no-op since the split view header bar has been removed."""
+        pass
 
     def _toggle_split_screen(self) -> None:
         """Toggle split screen side-by-side mode on or off."""
@@ -385,6 +346,7 @@ class WindowTabsMixin(_Base):
         self._secondary_viewer = v_sec
 
         self._viewer_stack.removeWidget(v_sec)
+        v_sec.setParent(None)
         self._viewer_stack.setCurrentWidget(v_prim)
 
         v_sec.setParent(self._secondary_viewer_holder)
@@ -394,10 +356,7 @@ class WindowTabsMixin(_Base):
         for v in self._viewers:
             v.set_scrollbars_hidden(True)
 
-        self._refresh_secondary_tab_combo()
         self._secondary_container.setVisible(True)
-        if hasattr(self, "_secondary_header"):
-            self._secondary_header.setVisible(not getattr(self, "_fullscreen", False))
 
         total_w = self._viewer_split_container.width() or self.width()
         half_w = max(200, total_w // 2)
@@ -426,6 +385,7 @@ class WindowTabsMixin(_Base):
         r_v = getattr(self, "_right_viewer", None) or getattr(self, "_secondary_viewer", None)
         if r_v is not None:
             self._secondary_viewer_lay.removeWidget(r_v)
+            r_v.setParent(None)
             r_v.hide()
 
         for i, v in enumerate(self._viewers):
@@ -467,14 +427,24 @@ class WindowTabsMixin(_Base):
         if not getattr(self, "_split_active", False):
             return
 
-        old_left = getattr(self, "_left_viewer", None) or self._viewer_stack.currentWidget()
-        old_right = getattr(self, "_right_viewer", None) or getattr(self, "_secondary_viewer", None)
+        old_left = getattr(self, "_left_viewer", None)
+        if old_left is None:
+            w = self._viewer_stack.currentWidget()
+            if isinstance(w, PdfViewerPanel):
+                old_left = w
+
+        old_right = getattr(self, "_right_viewer", None)
+        if old_right is None:
+            old_right = getattr(self, "_secondary_viewer", None)
 
         if not isinstance(old_left, PdfViewerPanel) or not isinstance(old_right, PdfViewerPanel) or old_left is old_right:
             return
 
         self._secondary_viewer_lay.removeWidget(old_right)
+        old_right.setParent(None)
+
         self._viewer_stack.removeWidget(old_left)
+        old_left.setParent(None)
 
         old_right.setParent(self._viewer_stack)
         self._viewer_stack.addWidget(old_right)
@@ -498,7 +468,9 @@ class WindowTabsMixin(_Base):
             self._tab_bar.setCurrentIndex(left_tab_idx)
             self._tab_bar.blockSignals(False)
 
-        self._refresh_secondary_tab_combo()
+        self._viewer_stack.update()
+        self._secondary_viewer_holder.update()
+        self._secondary_container.update()
 
         if hasattr(old_left._canvas, "_on_viewport_resized"):
             QTimer.singleShot(0, old_left._canvas._on_viewport_resized)
@@ -534,77 +506,11 @@ class WindowTabsMixin(_Base):
                 self._tab_bar.setCurrentIndex(left_idx)
                 self._tab_bar.blockSignals(False)
 
-        dark = getattr(self, "_dark_mode", True)
-        pri = TEXT_PRI if dark else _LP
-        active_col = ACCENT if side == "right" else pri
-        if hasattr(self, "_sec_title_lbl"):
-            self._sec_title_lbl.setStyleSheet(f"font-weight: 700; font-size: 9.5pt; color: {active_col};")
-
         active_v = self._viewer
-        if active_v and hasattr(active_v, "_canvas"):
-            self._setup_zoom_bar(True, canvas=active_v._canvas)
-        self._update_page_nav()
-        self._update_breadcrumb()
-        self._sync_edit_dirty_indicator()
-
-    def _refresh_secondary_tab_combo(self) -> None:
-        if not hasattr(self, "_sec_tab_combo"):
-            return
-        self._updating_sec_combo = True
-        self._sec_tab_combo.clear()
-
-        cur_sec = getattr(self, "_right_viewer", None) or getattr(self, "_secondary_viewer", None)
-        selected_idx = -1
-
-        for i, v in enumerate(self._viewers):
-            disk_p = get_tab_disk_path(self, v)
-            tab_text = self._tab_bar.tabText(i)
-            name = os.path.basename(disk_p) if disk_p else tab_text
-            clean_name = name.lstrip("* ")
-            self._sec_tab_combo.addItem(f"Tab {i + 1}: {clean_name}", v)
-            if v is cur_sec:
-                selected_idx = self._sec_tab_combo.count() - 1
-
-        if selected_idx >= 0:
-            self._sec_tab_combo.setCurrentIndex(selected_idx)
-        self._updating_sec_combo = False
-
-    def _on_secondary_tab_combo_changed(self, combo_idx: int) -> None:
-        if getattr(self, "_updating_sec_combo", False):
-            return
-        if not getattr(self, "_split_active", False):
-            return
-        target_viewer = self._sec_tab_combo.itemData(combo_idx)
-        if target_viewer is None or target_viewer is getattr(self, "_right_viewer", None):
-            return
-
-        if target_viewer is getattr(self, "_left_viewer", None):
-            self.swap_split_panes()
-            return
-
-        if target_viewer not in self._viewers:
-            return
-
-        old_right = self._right_viewer
-        if old_right is not None:
-            self._secondary_viewer_lay.removeWidget(old_right)
-            old_right.setParent(self._viewer_stack)
-            self._viewer_stack.addWidget(old_right)
-            old_right.hide()
-
-        if self._viewer_stack.indexOf(target_viewer) != -1:
-            self._viewer_stack.removeWidget(target_viewer)
-
-        self._right_viewer = target_viewer
-        self._secondary_viewer = target_viewer
-        target_viewer.setParent(self._secondary_viewer_holder)
-        self._secondary_viewer_lay.addWidget(target_viewer)
-        target_viewer.set_scrollbars_hidden(True)
-        target_viewer.show()
-
-        self._refresh_secondary_tab_combo()
-        if hasattr(target_viewer._canvas, "_on_viewport_resized"):
-            QTimer.singleShot(0, target_viewer._canvas._on_viewport_resized)
+        if active_v:
+            canvas = getattr(active_v, "_canvas", None)
+            if canvas:
+                self._setup_zoom_bar(True, canvas=canvas)
         self._update_page_nav()
         self._update_breadcrumb()
         self._sync_edit_dirty_indicator()
@@ -650,8 +556,6 @@ class WindowTabsMixin(_Base):
             if self._viewer_stack.indexOf(cur_viewer) != -1:
                 self._viewer_stack.setCurrentWidget(cur_viewer)
 
-        self._refresh_secondary_tab_combo()
-
     def reorder_tabs(self, new_order: list[int]) -> None:
         """Reorder all open tabs based on an updated list of indices."""
         if len(new_order) != len(self._viewers):
@@ -681,8 +585,6 @@ class WindowTabsMixin(_Base):
             self._tab_bar.setCurrentIndex(new_active)
             if self._viewer_stack.indexOf(cur_viewer) != -1:
                 self._viewer_stack.setCurrentWidget(cur_viewer)
-
-        self._refresh_secondary_tab_combo()
 
     def _on_active_tab_clicked(self) -> None:
         toggle_fn = getattr(self, "_toggle_pages_sidebar", None)
@@ -724,7 +626,6 @@ class WindowTabsMixin(_Base):
         if path:
             viewer.load(path)
 
-        self._refresh_secondary_tab_combo()
         self._update_tab_bar_visibility()
         if hasattr(self, "_update_page_nav"):
             self._update_page_nav()
@@ -735,10 +636,15 @@ class WindowTabsMixin(_Base):
     def _update_tab_bar_visibility(self) -> None:
         if getattr(self, "_fullscreen", False):
             self._tab_bar.setVisible(False)
+            if hasattr(self, "_tab_bar_container"):
+                self._tab_bar_container.setVisible(False)
         else:
             has_multiple = len(self._viewers) > 1
             has_open_doc = any(bool(v.current_path()) for v in self._viewers)
-            self._tab_bar.setVisible(has_multiple or has_open_doc)
+            show_bar = has_multiple or has_open_doc or getattr(self, "_split_active", False)
+            self._tab_bar.setVisible(show_bar)
+            if hasattr(self, "_tab_bar_container"):
+                self._tab_bar_container.setVisible(show_bar)
         if hasattr(self, "_sync_edit_dirty_indicator"):
             self._sync_edit_dirty_indicator()
         elif hasattr(self, "_update_breadcrumb"):
@@ -852,9 +758,8 @@ class WindowTabsMixin(_Base):
                     auto_fn(new_path)
             if hasattr(self, "setWindowTitle") and new_v:
                 doc_name = os.path.basename(getattr(new_v, "_original_doc_path", "") or new_path)
-                self.setWindowTitle(f"{t('app.name')} - {doc_name}")
+                self.setWindowTitle(doc_name)
 
-        self._refresh_secondary_tab_combo()
         self._update_tab_bar_visibility()
         if hasattr(self, "_update_page_nav"):
             self._update_page_nav()
@@ -1078,7 +983,7 @@ class WindowTabsMixin(_Base):
         cur_v = self._viewer
         if cur_v and not cur_v.current_path():
             target_v = cur_v
-            idx = self._viewers.index(target_v) if target_v in self._viewers else 0
+            idx = self._viewer_stack.currentIndex()
         else:
             target_v = self._add_viewer_tab()
             idx = len(self._viewers) - 1
@@ -1100,7 +1005,6 @@ class WindowTabsMixin(_Base):
 
         self._tab_bar.setTabText(idx, tab_title)
         self._tab_bar.setTabToolTip(idx, tooltip)
-        self._refresh_secondary_tab_combo()
         self._update_tab_bar_visibility()
         if hasattr(self, "_update_page_nav"):
             self._update_page_nav()
@@ -1171,6 +1075,3 @@ class WindowTabsMixin(_Base):
             event.acceptProposedAction()
             return
         super().dropEvent(event)
-
-
-

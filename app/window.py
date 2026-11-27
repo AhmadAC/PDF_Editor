@@ -1,12 +1,9 @@
-
-
 # app/window.py
 """PDF_Editor – MainWindow: application main window facade with Split Screen, Alt+P Command Palette, History, and Selection Pane integration."""
 
 from __future__ import annotations
 
 import json
-import logging
 import os
 from typing import Any, cast
 
@@ -17,20 +14,18 @@ from PySide6.QtGui import (
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSplitter,
+    QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSplitter,
     QStackedWidget, QStatusBar, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget
 )
 from shiboken6 import isValid
 
-from app.base import BasePage
 from app.command_palette import CommandPalette
-from app.constants import ACCENT, APP_VERSION, DESKTOP, TEXT_PRI, TEXT_SEC, _LQ
+from app.constants import ACCENT, APP_VERSION, TEXT_SEC, _LQ
 from app.i18n import _CONFIG_PATH, t
 from app.nav_config import NAV_ITEMS, _NAV_GROUPS, _NAV_KEYS
 from app.single_instance import SingleInstanceServer
-from app.styles import STYLE, STYLE_LIGHT
 from app.update_controller import UpdateController
-from app.utils import _make_palette, resource_path, svg_for_name
+from app.utils import resource_path, svg_for_name
 from app.viewer.canvas_1 import _SelectCanvas
 from app.viewer.panel import PdfViewerPanel
 from app.viewer.panel_page_ops import cleanup_page_clipboard
@@ -409,9 +404,16 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         tc_lay.setContentsMargins(0, 0, 0, 0)
         tc_lay.setSpacing(0)
 
-        tab_row = QHBoxLayout()
-        tab_row.setContentsMargins(0, 0, 0, 0)
+        self._tab_bar_container = QWidget()
+        self._tab_bar_container.setObjectName("tab_bar_container")
+        self._tab_bar_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._tab_bar_container.setFixedHeight(36)
+        self._tab_bar_container.setVisible(False)
+        tab_row = QHBoxLayout(self._tab_bar_container)
+        tab_row.setContentsMargins(0, 0, 0, 1)
         tab_row.setSpacing(0)
+        self._tab_bar_layout = tab_row
+
         self._tab_bar = _ViewerTabBar()
         self._tab_bar.setTabsClosable(True)
         self._tab_bar.setMovable(True)
@@ -461,7 +463,7 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         content_v = QVBoxLayout(self._content_area)
         content_v.setContentsMargins(0, 0, 0, 0)
         content_v.setSpacing(0)
-        content_v.addLayout(tab_row)
+        content_v.addWidget(self._tab_bar_container)
         content_v.addWidget(self._splitter, 1)
 
         main_h.addWidget(self._sidebar)
@@ -501,12 +503,17 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         QShortcut(QKeySequence("Alt+P"), self, self._show_command_palette)
         QShortcut(QKeySequence("Ctrl+Shift+P"), self, self._show_command_palette)
         QShortcut(QKeySequence("Ctrl+Shift+T"), self, self._show_manage_tabs_dialog)
-        QShortcut(QKeySequence("Ctrl+\\"), self, self._toggle_split_screen)
-        QShortcut(QKeySequence("Ctrl+|"), self, self._toggle_split_screen)
-        QShortcut(QKeySequence("F5"), self, self._start_presentation)
-        sc_alt1 = QShortcut(QKeySequence("Alt+1"), self, self._start_presentation)
-        sc_alt1.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        QShortcut(QKeySequence("F11"), self, self._toggle_fullscreen)
+
+        for seq, fn in (
+            ("Ctrl+\\", self._toggle_split_screen),
+            ("Ctrl+|", self._toggle_split_screen),
+            ("F5", self._start_presentation),
+            ("Alt+1", self._start_presentation),
+            ("F11", self._toggle_fullscreen),
+        ):
+            sc_app = QShortcut(QKeySequence(seq), self, fn)
+            sc_app.setContext(Qt.ShortcutContext.ApplicationShortcut)
+
         QShortcut(QKeySequence("Ctrl+O"), self, self._open_pdf)
         sc_hist = QShortcut(QKeySequence("Ctrl+H"), self, self._show_recent_files_menu)
         sc_hist.setContext(Qt.ShortcutContext.WindowShortcut)

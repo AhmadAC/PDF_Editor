@@ -1,4 +1,3 @@
-
 # app/window_pipeline.py
 """PDF_Editor – Pipeline processing, Save As, Save As Copy, read-only fallback, and security wiping mixin."""
 from __future__ import annotations
@@ -278,7 +277,7 @@ class WindowPipelineMixin(_Base):
         self._tab_bar.setTabText(idx, base_name)
         self._tab_bar.setTabToolTip(idx, path)
         if hasattr(self, "setWindowTitle"):
-            self.setWindowTitle(f"{t('app.name')} - {base_name}")
+            self.setWindowTitle(f"PDF_Editor - {base_name}")
         add_recent_file(path)
         self._sb.showMessage(f"Saved: {base_name}")
 
@@ -446,4 +445,3 @@ class WindowPipelineMixin(_Base):
         holders += list(self._viewers)
         for holder in holders:
             self._wipe_password_holder(holder)
-

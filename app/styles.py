@@ -1,4 +1,3 @@
-
 # app/styles.py
 
 """PDF_Editor – stylesheet strings (dark + light themes)."""
@@ -349,15 +348,6 @@ QSplitter::handle {{ background: {BORDER}; width: 1px; }}
     background: {BG_INNER};
     border-left: 1px solid {BORDER};
 }}
-#secondary_split_header {{
-    background: #202020;
-    border-bottom: 1px solid #3A3A3A;
-    border-left: 1px solid #3A3A3A;
-}}
-#secondary_split_header QLabel {{
-    color: {TEXT_PRI};
-    background: transparent;
-}}
 
 /* ── Tab bar container & Tabs (Dark Mode) ────────────────────────────── */
 #tab_bar_container {{
@@ -633,8 +623,7 @@ QScrollBar:horizontal {{ height: 8px; background: transparent; margin: 0; border
 QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
     background: {_LO}; border-radius: 4px; min-height: 20px;
 }}
-QScrollBar::handle:vertical:hover,
-QScrollBar::handle:horizontal:hover {{ background: #94A3B8; }}
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {{ background: #94A3B8; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; border: none; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 
@@ -678,15 +667,6 @@ QSplitter::handle {{ background: {_LO}; width: 1px; }}
 #secondary_split_container {{
     background: {_LN};
     border-left: 1px solid {_LO};
-}}
-#secondary_split_header {{
-    background: #E8EEF3;
-    border-bottom: 1px solid #CBD5E1;
-    border-left: 1px solid #CBD5E1;
-}}
-#secondary_split_header QLabel {{
-    color: {_LP};
-    background: transparent;
 }}
 
 /* ── Tab bar container & Tabs (Light Mode) ────────────────────────────── */
