@@ -1,6 +1,6 @@
 
 # app/viewer/panel_history.py
-"""PDF_Editor – Panel history, undo/redo state management, and temp pipeline persistence."""
+"""PDF_Editor – Panel history, undo/redo state management, reset, and temp pipeline persistence."""
 from __future__ import annotations
 
 import contextlib
@@ -45,6 +45,9 @@ class PanelHistoryMixin:
             active_sidebar_tab: Any = None,
             _is_history_step: bool = False,
         ) -> None: ...
+        def set_page_rotations(self, rotations: dict[int, int]) -> None: ...
+        def set_page_crops(self, crops: dict[int, tuple[float, float, float, float]]) -> None: ...
+        def set_page_order(self, order: list[int] | None) -> None: ...
 
     def _cleanup_history_files(self):
         for path in getattr(self, "_history_temp_files", set()):
@@ -58,6 +61,78 @@ class PanelHistoryMixin:
 
     def can_redo(self) -> bool:
         return len(getattr(self, "_redo_stack", [])) > 0
+
+    def reset_pdf(self) -> bool:
+        """Reset the PDF document in viewer to its original state (reverting edits, rotations, crops, order),
+        without a confirmation dialog, recordable in undo stack so Ctrl+Z restores everything."""
+        orig_path = getattr(self, "_original_doc_path", "") or getattr(self, "_current_path", "")
+        if not orig_path or not os.path.isfile(orig_path):
+            return False
+
+        has_pipeline = False
+        win: Any = self.window()
+        vid = id(self)
+        if win and hasattr(win, "_pipeline_state"):
+            ps = win._pipeline_state.get(vid)
+            if ps and ps.get("temp_path"):
+                has_pipeline = True
+
+        has_rotations = bool(getattr(self._canvas, "_page_rotations", None))
+        has_crops = bool(getattr(self._canvas, "_page_crops", None))
+        has_order = bool(getattr(self._canvas, "_page_order", None))
+        has_sig = bool(getattr(self._canvas, "_active_sig", None))
+        has_undo = bool(getattr(self, "_undo_stack", None))
+
+        if not has_pipeline and not has_rotations and not has_crops and not has_order and not has_sig and not has_undo and (self._current_path == orig_path):
+            if win and hasattr(win, "_set_status"):
+                win._set_status("Document is already in original state")
+            return False
+
+        scroll_val = self._canvas_scroll.verticalScrollBar().value() if hasattr(self, "_canvas_scroll") else 0
+        viewed_page = self._canvas.page_at_y(scroll_val) if (hasattr(self, "_canvas") and self._canvas.page_count() > 0) else 0
+        cur_selected = self._thumbnails.selected_pages() if hasattr(self, "_thumbnails") else [viewed_page]
+
+        cur_state = {
+            "path": self._current_path,
+            "target_page": viewed_page,
+            "scroll_val": scroll_val,
+            "selected_pages": cur_selected,
+            "is_temp": bool(self._current_path != orig_path),
+            "rotations": dict(getattr(self._canvas, "_page_rotations", {})),
+            "crops": dict(getattr(self._canvas, "_page_crops", {})),
+            "order": list(self._canvas._page_order) if getattr(self._canvas, "_page_order", None) else None,
+            "kind": "reset_pdf",
+        }
+        self._undo_stack.append(cur_state)
+        self._redo_stack.clear()
+
+        # Reset canvas states
+        self._canvas.set_page_rotations({})
+        self._canvas.set_page_crops({})
+        self._canvas.set_page_order(None)
+        self._canvas.cancel_signature_placement()
+        self._canvas._active_sig = None
+
+        if win and hasattr(win, "_pipeline_state"):
+            win._pipeline_state.pop(vid, None)
+
+        self.load(orig_path, target_page=viewed_page, target_scroll=scroll_val, selected_pages=cur_selected, _is_history_step=True)
+        self._original_doc_path = orig_path
+
+        base_name = os.path.basename(orig_path)
+        if win and hasattr(win, "_tab_bar") and hasattr(win, "_viewers"):
+            for idx, v in enumerate(win._viewers):
+                if v is self:
+                    win._tab_bar.setTabText(idx, base_name)
+                    win._tab_bar.setTabToolTip(idx, orig_path)
+                    break
+        if win and hasattr(win, "setWindowTitle"):
+            win.setWindowTitle(f"{t('app.name')} - {base_name}")
+        if win and hasattr(win, "_sync_edit_dirty_indicator"):
+            win._sync_edit_dirty_indicator()
+        if win and hasattr(win, "_set_status"):
+            win._set_status("PDF reset to original (Ctrl+Z to undo)")
+        return True
 
     def undo(self):
         if not getattr(self, "_undo_stack", None):
@@ -75,6 +150,9 @@ class PanelHistoryMixin:
             "scroll_val": scroll_val,
             "selected_pages": selected_pages,
             "is_temp": bool(self._current_path != self._original_doc_path),
+            "rotations": dict(getattr(self._canvas, "_page_rotations", {})),
+            "crops": dict(getattr(self._canvas, "_page_crops", {})),
+            "order": list(self._canvas._page_order) if getattr(self._canvas, "_page_order", None) else None,
         }
         self._redo_stack.append(cur_state)
 
@@ -90,6 +168,13 @@ class PanelHistoryMixin:
                     doc.close()
             self._fitz_doc = None
         self._thumbnails._stop_all_workers()
+
+        if "rotations" in target_state:
+            self.set_page_rotations(target_state["rotations"])
+        if "crops" in target_state:
+            self.set_page_crops(target_state["crops"])
+        if "order" in target_state:
+            self.set_page_order(target_state["order"])
 
         self.load(
             target_path,
@@ -159,6 +244,9 @@ class PanelHistoryMixin:
             "scroll_val": scroll_val,
             "selected_pages": selected_pages,
             "is_temp": bool(self._current_path != self._original_doc_path),
+            "rotations": dict(getattr(self._canvas, "_page_rotations", {})),
+            "crops": dict(getattr(self._canvas, "_page_crops", {})),
+            "order": list(self._canvas._page_order) if getattr(self._canvas, "_page_order", None) else None,
         }
         self._undo_stack.append(cur_state)
 
@@ -174,6 +262,13 @@ class PanelHistoryMixin:
                     doc.close()
             self._fitz_doc = None
         self._thumbnails._stop_all_workers()
+
+        if "rotations" in target_state:
+            self.set_page_rotations(target_state["rotations"])
+        if "crops" in target_state:
+            self.set_page_crops(target_state["crops"])
+        if "order" in target_state:
+            self.set_page_order(target_state["order"])
 
         self.load(
             target_path,
@@ -244,6 +339,9 @@ class PanelHistoryMixin:
                 "scroll_val": scroll_val,
                 "selected_pages": cur_selected,
                 "is_temp": bool(self._current_path != orig_path),
+                "rotations": dict(getattr(self._canvas, "_page_rotations", {})),
+                "crops": dict(getattr(self._canvas, "_page_crops", {})),
+                "order": list(self._canvas._page_order) if getattr(self._canvas, "_page_order", None) else None,
             }
             self._undo_stack.append(prev_state)
             if len(self._undo_stack) > 30:
@@ -340,4 +438,5 @@ class PanelHistoryMixin:
                 win._set_status("Document modified (Press Ctrl+S to save changes)")
         except Exception as exc:
             show_error(self, exc)
+
 

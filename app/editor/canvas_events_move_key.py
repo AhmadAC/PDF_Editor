@@ -224,6 +224,15 @@ class CanvasMoveKeyMixin:
         key = e.key()
         modifiers = e.modifiers()
 
+        if (modifiers & Qt.KeyboardModifier.ControlModifier) and key == Qt.Key.Key_R and not (
+            modifiers & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)
+        ):
+            tab = _find_tab_editar(c)
+            if tab and hasattr(tab, "reset_pdf"):
+                tab.reset_pdf()
+                e.accept()
+                return
+
         if (modifiers & Qt.KeyboardModifier.ControlModifier) and not (
             modifiers & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)
         ):
@@ -301,4 +310,5 @@ class CanvasMoveKeyMixin:
                     c.scale_selected_overlay(0.90)
                     e.accept()
                     return
+
 

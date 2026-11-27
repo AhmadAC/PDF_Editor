@@ -1,3 +1,4 @@
+
 # app/window.py
 """PDF_Editor – MainWindow: application main window facade with Alt+P Command Palette, History, and Selection Pane integration."""
 
@@ -500,13 +501,14 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
         sc_undo = QShortcut(QKeySequence("Ctrl+Z"), self, self._handle_global_undo)
         sc_redo1 = QShortcut(QKeySequence("Ctrl+Y"), self, self._handle_global_redo)
         sc_redo2 = QShortcut(QKeySequence("Ctrl+Shift+Z"), self, self._handle_global_redo)
+        sc_reset = QShortcut(QKeySequence("Ctrl+R"), self, self._handle_global_reset)
         sc_close = QShortcut(QKeySequence("Ctrl+W"), self, self._close_current_tab)
         sc_save = QShortcut(QKeySequence("Ctrl+S"), self, self._save_current_tool)
         sc_save_as = QShortcut(QKeySequence("Ctrl+Shift+S"), self, self._save_as_current_doc)
         sc_pgup = QShortcut(QKeySequence("PgUp"), self, self._goto_prev_page)
         sc_pgdn = QShortcut(QKeySequence("PgDown"), self, self._goto_next_page)
         sc_sel_all = QShortcut(QKeySequence("Ctrl+A"), self, self._handle_global_select_all)
-        for sc in (sc_undo, sc_redo1, sc_redo2, sc_close, sc_save, sc_save_as, sc_pgup, sc_pgdn, sc_sel_all):
+        for sc in (sc_undo, sc_redo1, sc_redo2, sc_reset, sc_close, sc_save, sc_save_as, sc_pgup, sc_pgdn, sc_sel_all):
             sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
         assert len(NAV_ITEMS) <= 18, f"Max 18 tool shortcuts defined but NAV_ITEMS has {len(NAV_ITEMS)}."
@@ -556,6 +558,13 @@ class MainWindow(_WindowTabsMixin, _WindowPipelineMixin, _WindowActionsMixin, QM
     def _show_command_palette(self):
         """Build actions list and present the Alt+P Command Palette."""
         commands: list[dict[str, Any]] = [
+            {
+                "name": "Reset PDF (Delete All Text, Drawings & Edits)",
+                "category": "Edit",
+                "action": self._handle_global_reset,
+                "shortcut": "Ctrl+R",
+                "icon": svg_for_name("fa5s.history", ACCENT, 18),
+            },
             {
                 "name": "Manage & Switch Tabs... (Filter, Reorder, Duplicate & Jump)",
                 "category": "Tabs",

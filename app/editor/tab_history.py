@@ -1,5 +1,5 @@
 # app/editor/tab_history.py
-"""PDF_Editor – tab_history: synchronized action-based history, undo/redo (including thumbnail page ops), grouping/ungrouping, and pending edits management."""
+"""PDF_Editor – tab_history: synchronized action-based history, undo/redo (including thumbnail page ops), grouping/ungrouping, reset, and pending edits management."""
 
 import contextlib
 import os
@@ -8,9 +8,41 @@ import fitz
 
 from app.i18n import t
 from app.editor.canvas_overlay1 import restore_overlay_snapshot, snapshot_overlay
-from app.editor.tab_constants import _MAX_PENDING, _MAX_REDO, _MODE_FORMS
+from app.editor.tab_constants import _MAX_PENDING, _MAX_REDO
 
 _PDF_ANNOT_TEXT: int = getattr(fitz, "PDF_ANNOT_TEXT", 0)
+
+
+def _clone_overlay(ov: dict) -> dict:
+    """Deep-clone an overlay dictionary safely preserving geometry objects."""
+    cloned = dict(ov)
+    if "rect" in cloned and cloned["rect"] is not None:
+        cloned["rect"] = fitz.Rect(cloned["rect"])
+    if "bbox" in cloned and cloned["bbox"] is not None:
+        cloned["bbox"] = list(cloned["bbox"])
+    if "origin" in cloned and cloned["origin"] is not None:
+        cloned["origin"] = list(cloned["origin"])
+    if "_orig_rect" in cloned and cloned["_orig_rect"] is not None:
+        cloned["_orig_rect"] = list(cloned["_orig_rect"])
+    if "_orig_origin" in cloned and cloned["_orig_origin"] is not None:
+        cloned["_orig_origin"] = list(cloned["_orig_origin"])
+    if "_items_rect" in cloned and cloned["_items_rect"] is not None:
+        cloned["_items_rect"] = list(cloned["_items_rect"])
+    if "_annot_bbox" in cloned and cloned["_annot_bbox"] is not None:
+        cloned["_annot_bbox"] = list(cloned["_annot_bbox"])
+    if "rects" in cloned and cloned["rects"] is not None:
+        cloned["rects"] = [fitz.Rect(r) for r in cloned["rects"]]
+    if "points" in cloned and cloned["points"] is not None:
+        cloned["points"] = [(float(px), float(py)) for px, py in cloned["points"]]
+    if "point" in cloned and cloned["point"] is not None:
+        cloned["point"] = fitz.Point(cloned["point"])
+    if "items" in cloned and cloned["items"] is not None:
+        cloned["items"] = list(cloned["items"])
+    if "runs" in cloned and cloned["runs"] is not None:
+        cloned["runs"] = [dict(r) for r in cloned["runs"]]
+    if "children" in cloned and cloned["children"] is not None:
+        cloned["children"] = [_clone_overlay(ch) for ch in cloned["children"]]
+    return cloned
 
 
 class TabHistoryManager:
@@ -120,6 +152,39 @@ class TabHistoryManager:
         lbl = self._format_edit_label(edit)
         self.rebuild_pending_list()
         self.tab._status(t("edit.status.added", label=lbl, count=len(self.tab._user_pending)))
+
+    def reset_all(self) -> bool:
+        """Reset the PDF by removing all text, drawings, and pending edits without a confirmation dialog.
+        Pushes state to undo stack so Ctrl+Z can restore everything."""
+        if not self.pending and not self._undo_stack:
+            self.tab._status("PDF is already in original state")
+            return False
+
+        before_pending = [_clone_overlay(e) for e in self.pending]
+        before_undo_stack = list(self._undo_stack)
+        before_selected_idx = getattr(self.tab._canvas, "_selected_overlay_idx", -1)
+
+        if hasattr(self.tab._canvas, "_cancel_inline"):
+            self.tab._canvas._cancel_inline()
+
+        self.pending.clear()
+        self.tab._canvas._selected_overlay_idx = -1
+        self.tab._canvas.clear_active_selection()
+        self.tab._canvas.set_overlays(self.pending)
+        self.tab._canvas.refresh_pages()
+        self.rebuild_pending_list()
+
+        self.redo_stack.clear()
+        self._push_undo_action({
+            "kind": "reset_all",
+            "before_pending": before_pending,
+            "before_undo_stack": before_undo_stack,
+            "before_selected_idx": before_selected_idx,
+            "edit": None,
+        })
+        self._notify_toolbar()
+        self.tab._status("PDF reset — all text, drawings and edits deleted (Ctrl+Z to undo)")
+        return True
 
     def handle_overlay_committed(self, edit: dict) -> None:
         """Called when an untouched _existing object is moved, resized, or edited for the first time."""
@@ -263,7 +328,7 @@ class TabHistoryManager:
             self.rebuild_pending_list()
 
     def undo(self) -> None:
-        if getattr(self.tab, "_mode_idx", -1) == _MODE_FORMS:
+        if getattr(self.tab, "_mode_idx", -1) == 6:  # _MODE_FORMS
             self.tab._status(t("editor.forms.undo_unavailable"))
             return
 
@@ -294,6 +359,19 @@ class TabHistoryManager:
             self.tab._apply_editor_doc_state(action["before"])
             self._notify_toolbar()
             self.tab._status("Undid page change")
+            return
+
+        if kind == "reset_all":
+            self.pending[:] = [_clone_overlay(e) for e in action.get("before_pending", [])]
+            self.tab._canvas._selected_overlay_idx = action.get("before_selected_idx", -1)
+            self.redo_stack.append(action)
+            if len(self.redo_stack) > _MAX_REDO:
+                self.redo_stack.pop(0)
+            self.rebuild_pending_list()
+            self.tab._canvas.set_overlays(self.pending)
+            self.tab._canvas.refresh_pages()
+            self._notify_toolbar()
+            self.tab._status("Restored all text, drawings and edits (Ctrl+Y to redo reset)")
             return
 
         edit = action["edit"]
@@ -402,6 +480,20 @@ class TabHistoryManager:
             self.tab._apply_editor_doc_state(entry["after"])
             self._notify_toolbar()
             self.tab._status("Redid page change")
+            return
+
+        if kind == "reset_all":
+            self._push_undo_action(entry)
+            if hasattr(self.tab._canvas, "_cancel_inline"):
+                self.tab._canvas._cancel_inline()
+            self.pending.clear()
+            self.tab._canvas._selected_overlay_idx = -1
+            self.tab._canvas.clear_active_selection()
+            self.tab._canvas.set_overlays(self.pending)
+            self.tab._canvas.refresh_pages()
+            self.rebuild_pending_list()
+            self._notify_toolbar()
+            self.tab._status("PDF reset — all text, drawings and edits deleted (Ctrl+Z to undo)")
             return
 
         edit = entry["edit"]
@@ -542,3 +634,4 @@ class TabHistoryManager:
             self.rebuild_pending_list()
         except Exception as ex:
             self.tab._status(t("edit.status.annot_error", ex=ex))
+

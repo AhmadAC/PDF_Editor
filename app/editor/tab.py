@@ -1,3 +1,5 @@
+
+
 # app/editor/tab.py
 """PDF_Editor – TabEditar facade: visual PDF editor tab with Fill & Sign, Foxit-style object editing, grouping/ungrouping, and typography styling."""
 
@@ -218,6 +220,11 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
     def can_redo(self) -> bool:
         return bool(self._redo_stack)
 
+    def reset_pdf(self) -> bool:
+        """Reset the PDF by removing all text, drawings, and pending edits without a confirmation dialog.
+        Pushes state to undo stack so Ctrl+Z can restore everything."""
+        return self._history.reset_all()
+
     def _on_canvas_overlay_changed(self):
         self.update()
         if self._selection_pane is not None and isValid(self._selection_pane):
@@ -282,7 +289,7 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
         self._history.redo()
 
     def _clear_pending(self):
-        self._history.clear()
+        self._history.reset_all()
 
     def _prompt_encryption_choice(self) -> str | None:
         return prompt_encryption_choice(self)
@@ -343,3 +350,5 @@ class TabEditar(TabNavMixin, TabDocumentMixin, TabActionsMixin, QWidget):
         if hasattr(self, "_cleanup_editor_temp_files"):
             self._cleanup_editor_temp_files()
         super().closeEvent(event)
+
+

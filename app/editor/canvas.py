@@ -1,3 +1,4 @@
+
 # app/editor/canvas.py
 """PDF_Editor – PdfEditCanvas facade: visual PDF edit canvas with live background refresh, grouping/ungrouping, z-order, rotate/flip, opacity, lock, and object manipulation."""
 
@@ -244,6 +245,18 @@ class PdfEditCanvas(QWidget, CanvasModesMixin, CanvasOverlayOpsMixin, CanvasView
 
     def keyPressEvent(self, e):
         if (
+            e.key() == Qt.Key.Key_R
+            and (e.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            and not (e.modifiers() & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier))
+        ):
+            from app.editor.canvas_events_helpers import _find_tab_editar
+            tab = _find_tab_editar(self)
+            if tab and hasattr(tab, "reset_pdf"):
+                tab.reset_pdf()
+                e.accept()
+                return
+
+        if (
             e.key() == Qt.Key.Key_G
             and (e.modifiers() & Qt.KeyboardModifier.ControlModifier)
             and (e.modifiers() & Qt.KeyboardModifier.ShiftModifier)
@@ -258,3 +271,4 @@ class PdfEditCanvas(QWidget, CanvasModesMixin, CanvasOverlayOpsMixin, CanvasView
 
     def contextMenuEvent(self, e):
         self._event_handler.handle_context_menu(e)
+

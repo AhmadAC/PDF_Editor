@@ -1,3 +1,4 @@
+
 # app/editor/canvas_text1.py
 """Inline text editor controller for Foxit-style in-place editing & insertion with per-selection color, live shadow/outline preview, downward multi-line expansion, and pixel-locked typography."""
 
@@ -936,7 +937,7 @@ class CanvasInlineTextManager:
                 if (mods & Qt.KeyboardModifier.ControlModifier) and not (
                     mods & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)
                 ):
-                    if Qt.Key.Key_0 <= event.key() <= Qt.Key.Key_9:
+                    if Qt.Key.Key_0 <= event.key() <= Qt.Key.Key_9 or event.key() == Qt.Key.Key_R:
                         event.accept()
                         return True
             elif etype == QEvent.Type.KeyPress:
@@ -944,6 +945,13 @@ class CanvasInlineTextManager:
                 if (mods & Qt.KeyboardModifier.ControlModifier) and not (
                     mods & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)
                 ):
+                    if event.key() == Qt.Key.Key_R:
+                        self.cancel()
+                        tab = _find_tab_editar(self.canvas)
+                        if tab and hasattr(tab, "reset_pdf"):
+                            tab.reset_pdf()
+                            event.accept()
+                            return True
                     key = event.key()
                     if Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
                         digit = key - Qt.Key.Key_0
@@ -962,3 +970,5 @@ class CanvasInlineTextManager:
                 self.commit()
                 return False
         return False
+
+

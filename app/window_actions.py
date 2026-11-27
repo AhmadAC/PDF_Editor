@@ -1,5 +1,7 @@
+
+
 # app/window_actions.py
-"""PDF_Editor – WindowActionsMixin facade: navigation, themes, unsaved dirty indicators, presentation mode, and viewer UI interactions."""
+"""PDF_Editor – WindowActionsMixin facade: navigation, themes, unsaved dirty indicators, presentation mode, reset, and viewer UI interactions."""
 
 from __future__ import annotations
 
@@ -58,7 +60,7 @@ def _has_dirty_user_pending(pending_list: list) -> bool:
 
 
 class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsRouterMixin, _Base):
-    """Facade orchestrating zoom actions, theme switching, dirty indicators, presentation launch, and file drag-and-drop."""
+    """Facade orchestrating zoom actions, theme switching, dirty indicators, presentation launch, reset, and file drag-and-drop."""
 
     if TYPE_CHECKING:
         stack: QStackedWidget
@@ -193,6 +195,25 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
             else:
                 self.setWindowTitle(t("app.name"))
         self._update_breadcrumb()
+
+    def _handle_global_reset(self) -> None:
+        """Reset the active PDF (deleting all added text, drawings, and edits) without confirmation, undoable via Ctrl+Z."""
+        edit_idx = self._edit_tool_idx() if hasattr(self, "_edit_tool_idx") else -1
+        if self._current_tool == edit_idx and edit_idx >= 0:
+            edit_w: Any = self._get_or_create_tool(edit_idx)
+            reset_fn = getattr(edit_w, "reset_pdf", None)
+            if callable(reset_fn):
+                reset_fn()
+                self._update_undo_redo_buttons()
+                self._sync_edit_dirty_indicator()
+                return
+        viewer = getattr(self, "_viewer", None)
+        if viewer:
+            reset_fn = getattr(viewer, "reset_pdf", None)
+            if callable(reset_fn):
+                reset_fn()
+                self._update_undo_redo_buttons()
+                self._sync_edit_dirty_indicator()
 
     def _zoom_in_current(self):
         pres = getattr(self, "_presentation", None)
@@ -721,3 +742,5 @@ class WindowActionsMixin(WindowRecentMenuMixin, WindowNavPageMixin, WindowToolsR
         pres = getattr(self, "_presentation", None)
         if pres is not None and isValid(pres):
             pres.update_theme(self._dark_mode)
+
+

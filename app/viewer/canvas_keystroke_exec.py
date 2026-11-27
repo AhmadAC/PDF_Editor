@@ -1,4 +1,3 @@
-
 # app/viewer/canvas_keystroke_exec.py
 """PDF_Editor – Keyboard navigation, shortcuts, undo/redo, page clipboard, and active item manipulation."""
 from __future__ import annotations
@@ -29,7 +28,16 @@ class CanvasKeystrokeHandler:
         key = e.key()
         modifiers = e.modifiers()
 
-        # 1. Zoom shortcuts
+        # 1. Reset PDF shortcut (Ctrl+R) without confirmation, undoable with Ctrl+Z
+        if (modifiers & Qt.KeyboardModifier.ControlModifier) and key == Qt.Key.Key_R and not (
+            modifiers & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)
+        ):
+            win: Any = c.window()
+            if win and hasattr(win, "_handle_global_reset"):
+                win._handle_global_reset()
+                return True
+
+        # 2. Zoom shortcuts
         if modifiers & Qt.KeyboardModifier.ControlModifier:
             if key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
                 c.zoom_in()
@@ -41,12 +49,12 @@ class CanvasKeystrokeHandler:
                 c.zoom_reset()
                 return True
 
-        # 2. Placing signature cancellation
+        # 3. Placing signature cancellation
         if c._placing_signature and key == Qt.Key.Key_Escape:
             c.cancel_signature_placement()
             return True
 
-        # 3. Active Signature manipulation
+        # 4. Active Signature manipulation
         if c._active_sig is not None:
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape):
                 c.commit_active_signature()
@@ -79,7 +87,7 @@ class CanvasKeystrokeHandler:
                 c.update()
                 return True
 
-        # 4. Crop Mode shortcuts
+        # 5. Crop Mode shortcuts
         if c._crop_mode and key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             c.crop_applied.emit()
             return True
@@ -94,7 +102,7 @@ class CanvasKeystrokeHandler:
                 c.crop_redo_requested.emit()
                 return True
 
-        # 5. Page switching Left / Right
+        # 6. Page switching Left / Right
         if not (modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)):
             if key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
                 cur_p = getattr(c, "_active_page_idx", None)
@@ -113,7 +121,7 @@ class CanvasKeystrokeHandler:
                     c.page_action_requested.emit("go_to_page", target)
                     return True
 
-        # 6. Scroll navigation
+        # 7. Scroll navigation
         if c._active_sig is None and not c._placing_signature:
             if not (modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)):
                 if key in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_PageUp, Qt.Key.Key_PageDown, Qt.Key.Key_Home, Qt.Key.Key_End):
@@ -145,7 +153,7 @@ class CanvasKeystrokeHandler:
                                 sb.setValue(sb.maximum())
                                 return True
 
-        # 7. Document operations
+        # 8. Document operations
         if modifiers & Qt.KeyboardModifier.ControlModifier:
             sa = c._get_scroll_area()
             sb_val = sa.verticalScrollBar().value() if sa else 0

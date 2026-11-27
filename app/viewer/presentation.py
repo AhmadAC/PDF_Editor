@@ -1,3 +1,5 @@
+
+
 # app/viewer/presentation.py
 """PDF_Editor – Presentation mode facade: fullscreen single-page viewer with transitions, auto-advance, and annotation sync."""
 
@@ -329,7 +331,7 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
                 act_t.setIcon(svg_icon(SVG_CHECK, color=ACCENT, size=15))
             act_t.triggered.connect(lambda _=False, m=int(mode_val): self._on_tool_selected(m))
 
-        act_clear = menu.addAction(svg_icon(SVG_TRASH, color="#EF4444", size=15), "Clear Page Annotations")
+        act_clear = menu.addAction(svg_icon(SVG_TRASH, color="#EF4444", size=15), "Clear Page Annotations (Ctrl+R)")
         act_clear.triggered.connect(lambda _=False: self._on_clear_requested())
 
         menu.addSeparator()
@@ -580,6 +582,10 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
                 return
 
         if modifiers & Qt.KeyboardModifier.ControlModifier:
+            if key == Qt.Key.Key_R and not (modifiers & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)):
+                self._on_clear_requested()
+                e.accept()
+                return
             if key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
                 self._zoom_in()
                 e.accept()
@@ -819,3 +825,4 @@ class PresentationWidget(PresentationZoomPanMixin, PresentationTransitionsMixin,
                     _log.warning("Failed to layout normal view on exit: %s", e)
 
         super().closeEvent(event)
+
